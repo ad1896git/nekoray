@@ -26,7 +26,10 @@ public:
         const QString &methodName,
         const google::protobuf::Message &req,
         google::protobuf::Message *rsp,
-        qint64 timeout_ms = 0) {
+        qint64 timeout_ms) {
+        if (timeout_ms <= 0) {
+            return QNetworkReply::ProtocolInvalidOperationError;
+        }
 
         if (!NekoGui::dataStore->core_running) {
             return QNetworkReply::NetworkError(-1919);
@@ -87,111 +90,166 @@ private:
 
 namespace NekoGui_rpc {
 
-    Client::Client(std::function<void(const QString &)> onError, const QString &target, const QString &token) {
-        this->make_grpc_channel = [=]() { return std::make_unique<QtGrpc::Http2GrpcChannelPrivate>(target, token, "libcore.LibcoreService"); };
-        this->default_grpc_channel = make_grpc_channel();
-        this->onError = std::move(onError);
-    }
+namespace {
 
-#define NOT_OK      \
-    *rpcOK = false; \
-    onError(QStringLiteral("QNetworkReply::NetworkError code: %1\n").arg(status));
+constexpr qint64 ExitTimeoutMs = 500;
+constexpr qint64 ControlTimeoutMs = 10000;
+constexpr qint64 PollTimeoutMs = 500;
+constexpr qint64 UpdateCheckTimeoutMs = 15000;
+constexpr qint64 UpdateDownloadTimeoutMs = 300000;
 
-    void Client::Exit() {
-        libcore::EmptyReq request;
-        libcore::EmptyResp reply;
-        default_grpc_channel->Call("Exit", request, &reply, 500);
-    }
-
-    QString Client::Start(bool *rpcOK, const libcore::LoadConfigReq &request) {
-        libcore::ErrorResp reply;
-        auto status = default_grpc_channel->Call("Start", request, &reply);
-
-        if (status == QNetworkReply::NoError) {
-            *rpcOK = true;
-            return {reply.error().c_str()};
-        } else {
-            NOT_OK
-            return "";
+QString rpcFailure(const QString &operation,
+                   QNetworkReply::NetworkError status,
+                   qint64 timeoutMs) {
+    if (status == QNetworkReply::TimeoutError) {
+        QString message =
+            QStringLiteral(
+                "RPC %1 timed out after %2 ms "
+                "(QNetworkReply::TimeoutError).")
+                .arg(operation)
+                .arg(timeoutMs);
+        if (operation == QStringLiteral("Start") ||
+            operation == QStringLiteral("Stop")) {
+            message += QStringLiteral(
+                " Core state is unknown; restart the core before retrying.");
         }
+        return message;
     }
 
-    QString Client::Stop(bool *rpcOK) {
-        libcore::EmptyReq request;
-        libcore::ErrorResp reply;
-        auto status = default_grpc_channel->Call("Stop", request, &reply);
+    return QStringLiteral(
+               "RPC %1 failed: QNetworkReply::NetworkError code: %2")
+        .arg(operation)
+        .arg(static_cast<int>(status));
+}
 
-        if (status == QNetworkReply::NoError) {
-            *rpcOK = true;
-            return {reply.error().c_str()};
-        } else {
-            NOT_OK
-            return "";
-        }
+} // namespace
+
+Client::Client(std::function<void(const QString &)> onError,
+               const QString &target,
+               const QString &token) {
+    this->make_grpc_channel = [=]() {
+        return std::make_unique<QtGrpc::Http2GrpcChannelPrivate>(
+            target, token, "libcore.LibcoreService");
+    };
+    this->default_grpc_channel = make_grpc_channel();
+    this->onError = std::move(onError);
+}
+
+Client::~Client() = default;
+
+void Client::Exit() {
+    libcore::EmptyReq request;
+    libcore::EmptyResp reply;
+    const auto status = default_grpc_channel->Call(
+        "Exit", request, &reply, ExitTimeoutMs);
+
+    // Normal core exit can close the connection before a response arrives.
+    if (status == QNetworkReply::TimeoutError) {
+        onError(rpcFailure("Exit", status, ExitTimeoutMs));
     }
+}
 
-    long long Client::QueryStats(const std::string &tag, const std::string &direct) {
-        libcore::QueryStatsReq request;
-        request.set_tag(tag);
-        request.set_direct(direct);
+QString Client::Start(bool *rpcOK,
+                      const libcore::LoadConfigReq &request) {
+    libcore::ErrorResp reply;
+    const auto status = default_grpc_channel->Call(
+        "Start", request, &reply, ControlTimeoutMs);
 
-        libcore::QueryStatsResp reply;
-        auto status = default_grpc_channel->Call("QueryStats", request, &reply, 500);
-
-        if (status == QNetworkReply::NoError) {
-            return reply.traffic();
-        } else {
-            return 0;
-        }
+    *rpcOK = status == QNetworkReply::NoError;
+    if (!*rpcOK) {
+        onError(rpcFailure("Start", status, ControlTimeoutMs));
+        return {};
     }
+    return QString::fromStdString(reply.error());
+}
 
-    std::string Client::ListConnections() {
-        libcore::EmptyReq request;
-        libcore::ListConnectionsResp reply;
-        auto status = default_grpc_channel->Call("ListConnections", request, &reply, 500);
+QString Client::Stop(bool *rpcOK) {
+    libcore::EmptyReq request;
+    libcore::ErrorResp reply;
+    const auto status = default_grpc_channel->Call(
+        "Stop", request, &reply, ControlTimeoutMs);
 
-        if (status == QNetworkReply::NoError) {
-            return reply.nekoray_connections_json();
-        } else {
-            return "";
-        }
+    *rpcOK = status == QNetworkReply::NoError;
+    if (!*rpcOK) {
+        onError(rpcFailure("Stop", status, ControlTimeoutMs));
+        return {};
     }
+    return QString::fromStdString(reply.error());
+}
 
-    //
+long long Client::QueryStats(const std::string &tag,
+                            const std::string &direct) {
+    libcore::QueryStatsReq request;
+    request.set_tag(tag);
+    request.set_direct(direct);
 
-    libcore::TestResp Client::Test(bool *rpcOK,
-                                  const libcore::TestReq &request) {
-        libcore::TestResp reply;
-        const qint64 timeoutMs = NkrW04::testTimeoutMs(
-            request.timeout(),
-            request.mode() == libcore::FullTest,
-            request.full_speed(),
-            request.full_speed_timeout());
+    libcore::QueryStatsResp reply;
+    const auto status = default_grpc_channel->Call(
+        "QueryStats", request, &reply, PollTimeoutMs);
 
-        auto status = make_grpc_channel()->Call(
-            "Test", request, &reply, timeoutMs);
-
-        if (status == QNetworkReply::NoError) {
-            *rpcOK = true;
-            return reply;
-        } else {
-            NOT_OK
-            return reply;
-        }
+    if (status == QNetworkReply::NoError) {
+        return reply.traffic();
     }
-
-    libcore::UpdateResp Client::Update(bool *rpcOK, const libcore::UpdateReq &request) {
-        libcore::UpdateResp reply;
-        auto status = default_grpc_channel->Call("Update", request, &reply);
-
-        if (status == QNetworkReply::NoError) {
-            *rpcOK = true;
-            return reply;
-        } else {
-            NOT_OK
-            return reply;
-        }
+    if (status == QNetworkReply::TimeoutError) {
+        onError(rpcFailure("QueryStats", status, PollTimeoutMs));
     }
+    return 0;
+}
+
+std::string Client::ListConnections() {
+    libcore::EmptyReq request;
+    libcore::ListConnectionsResp reply;
+    const auto status = default_grpc_channel->Call(
+        "ListConnections", request, &reply, PollTimeoutMs);
+
+    if (status == QNetworkReply::NoError) {
+        return reply.nekoray_connections_json();
+    }
+    if (status == QNetworkReply::TimeoutError) {
+        onError(rpcFailure("ListConnections", status, PollTimeoutMs));
+    }
+    return {};
+}
+
+libcore::TestResp Client::Test(bool *rpcOK,
+                              const libcore::TestReq &request) {
+    libcore::TestResp reply;
+    const qint64 timeoutMs = NkrW04::testTimeoutMs(
+        request.timeout(),
+        request.mode() == libcore::FullTest,
+        request.full_speed(),
+        request.full_speed_timeout());
+
+    const auto status = make_grpc_channel()->Call(
+        "Test", request, &reply, timeoutMs);
+
+    *rpcOK = status == QNetworkReply::NoError;
+    if (!*rpcOK) {
+        onError(rpcFailure("Test", status, timeoutMs));
+    }
+    return reply;
+}
+
+libcore::UpdateResp Client::Update(bool *rpcOK,
+                                  const libcore::UpdateReq &request) {
+    libcore::UpdateResp reply;
+    const bool checking = request.action() == libcore::Check;
+    const qint64 timeoutMs =
+        checking ? UpdateCheckTimeoutMs : UpdateDownloadTimeoutMs;
+    const QString operation =
+        checking ? QStringLiteral("Update(Check)")
+                 : QStringLiteral("Update(Download)");
+
+    const auto status = default_grpc_channel->Call(
+        "Update", request, &reply, timeoutMs);
+
+    *rpcOK = status == QNetworkReply::NoError;
+    if (!*rpcOK) {
+        onError(rpcFailure(operation, status, timeoutMs));
+    }
+    return reply;
+}
+
 } // namespace NekoGui_rpc
 
 #endif

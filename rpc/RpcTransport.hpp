@@ -109,7 +109,9 @@ public:
                     result.error = reply->property("nkrTimedOut").toBool()
                                        ? QNetworkReply::TimeoutError
                                        : reply->error();
-                    result.body = reply->readAll();
+                    // abort() closes the QIODevice before emitting finished().
+                    // Error bodies are unused; do not read a closed reply.
+                    if (reply->isOpen()) result.body = reply->readAll();
                     result.grpcStatus = reply->rawHeader("grpc-status");
                     result.grpcMessage = reply->rawHeader("grpc-message");
                     state->completion.complete(std::move(result));
