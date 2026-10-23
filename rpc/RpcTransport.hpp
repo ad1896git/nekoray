@@ -4,12 +4,16 @@
 
 #include <QByteArray>
 #include <QCoreApplication>
+#include <QList>
 #include <QMetaObject>
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
 #include <QNetworkRequest>
 #include <QThread>
 #include <QTimer>
+#if QT_VERSION >= QT_VERSION_CHECK(6, 8, 0)
+#include <QHttpHeaders>
+#endif
 
 #include <climits>
 #include <memory>
@@ -21,6 +25,58 @@ struct WireReply {
     QByteArray body;
     QByteArray grpcStatus;
     QByteArray grpcMessage;
+};
+
+// Qt 6 can append an entire cumulative HTTP/2 header snapshot on each
+// metaDataChanged notification. Read each appended batch separately instead
+// of rawHeader(), which joins those repeated snapshots with commas. Qt 5
+// replaces fields in place; a changed prefix then selects the full snapshot.
+class ReplyMetadata {
+public:
+    using Headers = QList<QNetworkReply::RawHeaderPair>;
+
+    void update(const QNetworkReply &reply) {
+#if QT_VERSION >= QT_VERSION_CHECK(6, 8, 0)
+        // rawHeaderPairs() also joins duplicate fields on these versions.
+        update(reply.headers().toListOfPairs());
+#else
+        update(reply.rawHeaderPairs());
+#endif
+    }
+
+    void update(const Headers &headers) {
+        bool appended = headers.size() >= previous_.size();
+        for (decltype(headers.size()) i = 0; appended && i < previous_.size(); ++i)
+            appended = headers.at(i) == previous_.at(i);
+
+        const auto first = appended ? previous_.size() : 0;
+        QByteArray status;
+        QByteArray message;
+        bool hasStatus = false;
+        bool hasMessage = false;
+        for (auto i = first; i < headers.size(); ++i) {
+            const auto &header = headers.at(i);
+            if (header.first.compare("grpc-status", Qt::CaseInsensitive) == 0) {
+                // Preserve duplicate fields within a batch as invalid status.
+                if (hasStatus) status += ", ";
+                status += header.second;
+                hasStatus = true;
+            } else if (header.first.compare("grpc-message", Qt::CaseInsensitive) == 0) {
+                if (hasMessage) message += ", ";
+                message += header.second;
+                hasMessage = true;
+            }
+        }
+        if (hasStatus || !appended) grpcStatus = status;
+        if (hasMessage || !appended) grpcMessage = message;
+        previous_ = headers;
+    }
+
+    QByteArray grpcStatus;
+    QByteArray grpcMessage;
+
+private:
+    Headers previous_;
 };
 
 class RpcTransport {
@@ -82,6 +138,11 @@ public:
                 }
 
                 auto *reply = manager->post(request, body);
+                const auto metadata = std::make_shared<ReplyMetadata>();
+                QObject::connect(reply, &QNetworkReply::metaDataChanged, reply,
+                                 [reply, metadata] {
+                    metadata->update(*reply);
+                });
 
                 if (state->timeout > 0) {
                     auto *timer = new QTimer(reply);
@@ -102,7 +163,7 @@ public:
                             state->remaining(), INT_MAX))));
                 }
 
-                const auto finished = [reply, state] {
+                const auto finished = [reply, state, metadata] {
                     if (reply->property("nkrFinished").toBool()) return;
                     reply->setProperty("nkrFinished", true);
                     WireReply result;
@@ -112,8 +173,9 @@ public:
                     // abort() closes the QIODevice before emitting finished().
                     // Error bodies are unused; do not read a closed reply.
                     if (reply->isOpen()) result.body = reply->readAll();
-                    result.grpcStatus = reply->rawHeader("grpc-status");
-                    result.grpcMessage = reply->rawHeader("grpc-message");
+                    metadata->update(*reply);
+                    result.grpcStatus = metadata->grpcStatus;
+                    result.grpcMessage = metadata->grpcMessage;
                     state->completion.complete(std::move(result));
                     reply->deleteLater();
                 };

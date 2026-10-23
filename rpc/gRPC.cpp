@@ -9,7 +9,7 @@
 
 #include "RpcTransport.hpp"
 
-#include <QtEndian>
+#include "GrpcFrame.hpp"
 
 namespace QtGrpc {
 
@@ -39,6 +39,12 @@ public:
         if (!req.SerializeToString(&serialized)) {
             return QNetworkReply::NetworkError(-114514);
         }
+        if (!NkrGrpcFrame::payloadSizeSupported(
+                static_cast<quint64>(serialized.size()))) {
+            MW_show_log(
+                QStringLiteral("gRPC request payload exceeds codec size limit"));
+            return QNetworkReply::ProtocolInvalidOperationError;
+        }
         const auto args = QByteArray::fromStdString(serialized);
 
         QNetworkRequest request(
@@ -49,31 +55,41 @@ public:
         request.setHeader(QNetworkRequest::ContentTypeHeader,
                           QLatin1String("application/grpc"));
         request.setRawHeader("Cache-Control", "no-store");
-        request.setRawHeader("grpc-accept-encoding", "identity,deflate,gzip");
+        request.setRawHeader("grpc-accept-encoding", "identity");
         request.setRawHeader("accept-encoding", "identity,gzip");
         request.setRawHeader("te", "trailers");
         request.setRawHeader("nekoray_auth", auth_);
 
-        // Preserve the existing framing implementation for W10 / PR-12.
-        QByteArray message(5, '\0');
-        *reinterpret_cast<int *>(message.data() + 1) =
-            qToBigEndian(static_cast<int>(args.size()));
-        message += args;
+        const auto encoded = NkrGrpcFrame::encode(args);
+        if (encoded.error != NkrGrpcFrame::Error::None) {
+            MW_show_log(
+                QStringLiteral("gRPC request rejected: %1")
+                    .arg(QString::fromLatin1(
+                        NkrGrpcFrame::errorText(encoded.error))));
+            return QNetworkReply::ProtocolInvalidOperationError;
+        }
 
-        const auto result = transport_.send(request, message, timeout_ms);
+        const auto result =
+            transport_.send(request, encoded.bytes, timeout_ms);
         if (result.error != QNetworkReply::NoError) return result.error;
 
-        const int grpcStatus = result.grpcStatus.toInt();
-        if (grpcStatus != 0) {
+        const auto decoded =
+            NkrGrpcFrame::decode(result.body, result.grpcStatus);
+        if (decoded.error != NkrGrpcFrame::Error::None) {
             MW_show_log(
-                QStringLiteral("grpc-status error code: %1, error msg: %2")
-                    .arg(grpcStatus)
+                QStringLiteral(
+                    "gRPC response rejected: %1; "
+                    "grpc-status: %2; error msg: %3")
+                    .arg(QString::fromLatin1(
+                        NkrGrpcFrame::errorText(decoded.error)))
+                    .arg(QString::fromLatin1(result.grpcStatus))
                     .arg(QString::fromLatin1(result.grpcMessage)));
             return QNetworkReply::ProtocolUnknownError;
         }
 
-        const QByteArray response = result.body.mid(5);
-        if (!rsp->ParseFromArray(response.constData(), response.size())) {
+        if (!rsp->ParseFromArray(
+                decoded.bytes.constData(),
+                static_cast<int>(decoded.bytes.size()))) {
             return QNetworkReply::NetworkError(-114514);
         }
         return QNetworkReply::NoError;

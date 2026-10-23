@@ -2,6 +2,8 @@
 
 #include "main/NekoGui.hpp"
 #include "rpc/gRPC.h"
+#include "rpc/GrpcFrame.hpp"
+#include "rpc/RpcTransport.hpp"
 
 #include <QElapsedTimer>
 #include <QHostAddress>
@@ -336,12 +338,126 @@ private slots:
         MW_show_log = previousLog_;
     }
 
+    void metadataSnapshots() {
+        using Headers = NkrW04::ReplyMetadata::Headers;
+        using Error = NkrGrpcFrame::Error;
+        const Headers initial{{"content-type", "application/grpc"}};
+        Headers complete = initial;
+        complete.append(QNetworkReply::RawHeaderPair{"grpc-status", "0"});
+        complete.append(QNetworkReply::RawHeaderPair{"grpc-message", "OK"});
+
+        NkrW04::ReplyMetadata metadata;
+        metadata.update(initial);
+        QVERIFY(metadata.grpcStatus.isEmpty());
+        metadata.update(complete); // Qt 5 replaces the snapshot.
+        QCOMPARE(metadata.grpcStatus, QByteArray("0"));
+        QCOMPARE(metadata.grpcMessage, QByteArray("OK"));
+
+        // Qt 6 appends the whole snapshot, including earlier fields. When
+        // HEADERS and trailers arrive together, both notifications can already
+        // contain grpc-status. The final rawHeader() would then be "0, 0".
+        NkrW04::ReplyMetadata coalesced;
+        coalesced.update(complete);
+        coalesced.update(complete + complete);
+        coalesced.update(complete + complete); // finished() sees no new batch.
+        QCOMPARE(coalesced.grpcStatus, QByteArray("0"));
+        QCOMPARE(coalesced.grpcMessage, QByteArray("OK"));
+        const QByteArray wire(5, '\0');
+        QVERIFY(NkrGrpcFrame::decode(wire, coalesced.grpcStatus).error ==
+                Error::None);
+
+        NkrW04::ReplyMetadata separated;
+        separated.update(initial);
+        separated.update(initial + complete);
+        QCOMPARE(separated.grpcStatus, QByteArray("0"));
+
+        // A real duplicate field within one snapshot must still fail.
+        Headers duplicate = complete;
+        duplicate.append(QNetworkReply::RawHeaderPair{"grpc-status", "0"});
+        NkrW04::ReplyMetadata invalid;
+        invalid.update(duplicate);
+        QVERIFY(NkrGrpcFrame::decode(wire, invalid.grpcStatus).error ==
+                Error::InvalidStatus);
+        coalesced.update(complete + complete + duplicate);
+        QVERIFY(NkrGrpcFrame::decode(wire, coalesced.grpcStatus).error ==
+                Error::InvalidStatus);
+
+        Headers failed = initial;
+        failed.append(QNetworkReply::RawHeaderPair{"grpc-status", "7"});
+        metadata.update(failed); // An in-place update must not retain success.
+        QVERIFY(NkrGrpcFrame::decode({}, metadata.grpcStatus).error ==
+                Error::NonzeroStatus);
+        metadata.update(initial);
+        QVERIFY(NkrGrpcFrame::decode(wire, metadata.grpcStatus).error ==
+                Error::MissingStatus);
+
+        Headers malformed = initial;
+        malformed.append(QNetworkReply::RawHeaderPair{"grpc-status", "0,0"});
+        metadata.update(malformed);
+        QVERIFY(NkrGrpcFrame::decode(wire, metadata.grpcStatus).error ==
+                Error::InvalidStatus);
+
+#if QT_VERSION >= QT_VERSION_CHECK(6, 8, 0)
+        // Exercise the actual public reply API: rawHeaderPairs() merges
+        // duplicate values too, so extraction must use QHttpHeaders instead.
+        class Reply : public QNetworkReply {
+        public:
+            using QNetworkReply::setHeaders;
+            void abort() override {}
+            qint64 readData(char *, qint64) override { return -1; }
+        } reply;
+        QHttpHeaders headers;
+        headers.append("content-type", "application/grpc");
+        headers.append("grpc-status", "0");
+        reply.setHeaders(headers);
+        NkrW04::ReplyMetadata actual;
+        actual.update(reply);
+        headers.append("content-type", "application/grpc");
+        headers.append("grpc-status", "0");
+        reply.setHeaders(headers);
+        QCOMPARE(reply.rawHeader("grpc-status"), QByteArray("0, 0"));
+        actual.update(reply);
+        QCOMPARE(actual.grpcStatus, QByteArray("0"));
+        QVERIFY(NkrGrpcFrame::decode(wire, actual.grpcStatus).error == Error::None);
+
+        NkrW04::ReplyMetadata actualDuplicate;
+        actualDuplicate.update(reply); // Both fields in the first snapshot.
+        QVERIFY(NkrGrpcFrame::decode(wire, actualDuplicate.grpcStatus).error ==
+                Error::InvalidStatus);
+#endif
+    }
+
+    void successfulCallsWithTrailers() {
+        Peer peer;
+        peer.respond = true;
+        QVERIFY2(peer.server.listen(QHostAddress::LocalHost),
+                 qPrintable(peer.server.errorString()));
+
+        Messages messages;
+        Messages logs;
+        MW_show_log = [&](const QString &message) { logs.append(message); };
+        NekoGui_rpc::Client client(
+            [&](const QString &message) { messages.append(message); },
+            QStringLiteral("127.0.0.1:%1").arg(peer.server.serverPort()),
+            QStringLiteral("test-token"));
+        const auto results = runCalls(client, {0, 1, 2, 3, 4, 5, 6, 7, 8}, 3000);
+        QCOMPARE(peer.responses, int(Cases.size()));
+        QVERIFY2(messages.snapshot().isEmpty(),
+                 qPrintable((messages.snapshot() + logs.snapshot()).join('\n')));
+        for (size_t i = 0; i < Cases.size(); ++i) {
+            QVERIFY2(results[i].ok, Cases[i].operation);
+            QVERIFY2(results[i].empty, Cases[i].operation);
+        }
+    }
+
     void stalledCallsAndSubsequentSuccess() {
         Peer peer;
         QVERIFY2(peer.server.listen(QHostAddress::LocalHost),
                  qPrintable(peer.server.errorString()));
 
         Messages messages;
+        Messages logs;
+        MW_show_log = [&](const QString &message) { logs.append(message); };
         NekoGui_rpc::Client client(
             [&](const QString &message) {
                 messages.append(message);
@@ -378,7 +494,8 @@ private slots:
         const auto succeeded = runCalls(client, indices, 3000);
 
         QCOMPARE(peer.responses - before, int(Cases.size()));
-        QVERIFY(messages.snapshot().isEmpty());
+        QVERIFY2(messages.snapshot().isEmpty(),
+                 qPrintable((messages.snapshot() + logs.snapshot()).join('\n')));
         for (size_t i = 0; i < Cases.size(); ++i) {
             QVERIFY2(succeeded[i].ok, Cases[i].operation);
             QVERIFY2(succeeded[i].empty, Cases[i].operation);

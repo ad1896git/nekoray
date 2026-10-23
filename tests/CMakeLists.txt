@@ -180,3 +180,22 @@ endforeach()
 target_compile_definitions(tst_w13 PRIVATE
     NKR_VPN_TEMPLATE_PATH="${PROJECT_SOURCE_DIR}/res/vpn/sing-box-vpn.json"
 )
+
+add_executable(tst_grpc_frame
+    tst_grpc_frame.cpp
+)
+set_target_properties(tst_grpc_frame PROPERTIES
+    AUTOMOC ON
+    CXX_STANDARD 17
+    CXX_STANDARD_REQUIRED ON
+    CXX_EXTENSIONS OFF
+)
+target_link_libraries(tst_grpc_frame PRIVATE
+    nkr_grpc_frame
+    Qt${QT_VERSION_MAJOR}::Test
+)
+add_test(NAME grpc_frame COMMAND tst_grpc_frame)
+set_tests_properties(grpc_frame PROPERTIES
+    TIMEOUT 30
+    LABELS "W10"
+)
