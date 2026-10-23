@@ -1,3 +1,5 @@
+#include "main/UiOwnership.hpp"
+#include <exception>
 #include "db/ProfileFilter.hpp"
 #include "fmt/includes.h"
 #include "fmt/Preset.hpp"
@@ -509,6 +511,7 @@ namespace NekoGui_sub {
             return;
         }
 
+        NekoGui_concurrency::RequireUiThread();
         const QString content = str.trimmed();
         bool asURL = false;
         bool createNewGroup = false;
@@ -560,6 +563,9 @@ namespace NekoGui_sub {
         runOnNewThread([this, content, gid, asURL, finish] {
             try {
                 Update(content, gid, asURL);
+            } catch (const std::exception &error) {
+                emit updateNotice(QStringLiteral("Subscription update failed: %1")
+                                      .arg(QString::fromUtf8(error.what())));
             } catch (...) {
                 emit updateNotice(
                     QObject::tr("Subscription update failed."));
@@ -567,13 +573,10 @@ namespace NekoGui_sub {
 
             // The global updater lives for the application lifetime.
             // Its continuation runs on its UI thread.
-            QMetaObject::invokeMethod(
-                this,
-                [this, gid, finish] {
-                    emit asyncUpdateCallback(gid);
-                    if (finish) finish();
-                },
-                Qt::QueuedConnection);
+            NekoGui_concurrency::PostUi([this, gid, finish] {
+                emit asyncUpdateCallback(gid);
+                if (finish) finish();
+            });
         });
     }
 
@@ -681,46 +684,35 @@ namespace NekoGui_sub {
     }
 } // namespace NekoGui_sub
 
+namespace {
 bool UI_update_all_groups_Updating = false;
-
-#define should_skip_group(g) (g == nullptr || g->url.isEmpty() || g->archive || (onlyAllowed && g->skip_auto_update))
-
-void serialUpdateSubscription(const QList<int> &groupsTabOrder, int _order, bool onlyAllowed) {
-    if (_order >= groupsTabOrder.size()) {
-        UI_update_all_groups_Updating = false;
-        return;
-    }
-
-    // calculate this group
-    auto group = NekoGui::profileManager->GetGroup(groupsTabOrder[_order]);
-    if (group == nullptr || should_skip_group(group)) {
-        serialUpdateSubscription(groupsTabOrder, _order + 1, onlyAllowed);
-        return;
-    }
-
-    int nextOrder = _order + 1;
-    while (nextOrder < groupsTabOrder.size()) {
-        auto nextGid = groupsTabOrder[nextOrder];
-        auto nextGroup = NekoGui::profileManager->GetGroup(nextGid);
-        if (!should_skip_group(nextGroup)) {
-            break;
-        }
-        nextOrder += 1;
-    }
-
-    // Async update current group
-    UI_update_all_groups_Updating = true;
-    NekoGui_sub::groupUpdater->AsyncUpdate(group->url, group->id, [=] {
-        serialUpdateSubscription(groupsTabOrder, nextOrder, onlyAllowed);
-    });
+bool SkipSubscriptionGroup(const std::shared_ptr<NekoGui::Group> &group, bool onlyAllowed) {
+    return !group || group->url.isEmpty() || group->archive ||
+           (onlyAllowed && group->skip_auto_update);
 }
-
+}
+void serialUpdateSubscription(const QList<int> &groupsTabOrder, int order, bool onlyAllowed) {
+    NekoGui_concurrency::RequireUiThread();
+    while (order < groupsTabOrder.size()) {
+        auto group = NekoGui::profileManager->GetGroup(groupsTabOrder.at(order));
+        if (SkipSubscriptionGroup(group, onlyAllowed)) { ++order; continue; }
+        const QString url = group->url;
+        const int gid = group->id;
+        const int next = order + 1;
+        NekoGui_sub::groupUpdater->AsyncUpdate(url, gid, [groupsTabOrder, next, onlyAllowed] {
+            serialUpdateSubscription(groupsTabOrder, next, onlyAllowed);
+        });
+        return;
+    }
+    UI_update_all_groups_Updating = false;
+}
 void UI_update_all_groups(bool onlyAllowed) {
+    NekoGui_concurrency::RequireUiThread();
     if (UI_update_all_groups_Updating) {
         MW_show_log("The last subscription update has not exited.");
         return;
     }
-
-    auto groupsTabOrder = NekoGui::profileManager->groupsTabOrder;
-    serialUpdateSubscription(groupsTabOrder, 0, onlyAllowed);
+    UI_update_all_groups_Updating = true;
+    const auto order = NekoGui::profileManager->groupsTabOrder;
+    serialUpdateSubscription(order, 0, onlyAllowed);
 }

@@ -4,6 +4,7 @@
 #include <QNetworkReply>
 #include <QNetworkRequest>
 #include <QObject>
+#include <QNetworkProxy>
 #include <functional>
 
 namespace NekoGui_network {
@@ -13,6 +14,12 @@ namespace NekoGui_network {
         QList<QPair<QByteArray, QByteArray>> header;
     };
 
+    struct NekoHTTPOptions {
+        QNetworkProxy proxy;
+        QString userAgent;
+        QString error;
+        bool insecure = false;
+    };
     class NetworkRequestHelper : QObject {
         Q_OBJECT
 
@@ -22,7 +29,9 @@ namespace NekoGui_network {
         ;
 
     public:
+        static NekoHTTPOptions SnapshotOptions();
         static NekoHTTPResponse HttpGet(const QUrl &url);
+        static NekoHTTPResponse HttpGet(const QUrl &url, const NekoHTTPOptions &options);
 
         static QString GetHeader(const QList<QPair<QByteArray, QByteArray>> &header, const QString &name);
     };

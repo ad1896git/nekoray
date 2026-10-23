@@ -118,3 +118,21 @@ target_link_libraries(tst_w04 PRIVATE
 
 add_test(NAME w04 COMMAND tst_w04)
 set_tests_properties(w04 PROPERTIES TIMEOUT 45)
+
+add_executable(tst_w03b
+    tst_w03b.cpp
+    ${PROJECT_SOURCE_DIR}/main/NekoGui_UiThread.cpp
+)
+set_target_properties(tst_w03b PROPERTIES
+    AUTOMOC ON
+    CXX_STANDARD 17
+    CXX_STANDARD_REQUIRED ON
+)
+target_include_directories(tst_w03b PRIVATE "${PROJECT_SOURCE_DIR}")
+target_link_libraries(tst_w03b PRIVATE
+    Qt${QT_VERSION_MAJOR}::Core
+    Qt${QT_VERSION_MAJOR}::Test
+    Threads::Threads
+)
+add_test(NAME w03b COMMAND tst_w03b)
+set_tests_properties(w03b PROPERTIES TIMEOUT 30)

@@ -1,3 +1,5 @@
+#include "main/UiOwnership.hpp"
+#include "db/traffic/TrafficLooper.hpp"
 #include "./ui_mainwindow.h"
 #include "mainwindow.h"
 
@@ -675,6 +677,7 @@ void MainWindow::on_menu_exit_triggered() {
             mu_exit.unlock(); // retry
             return;
         }
+        NekoGui_traffic::trafficLooper->RequestShutdown();
         shutdownUiThreadDispatcher();
         RegisterHotkey(true);
         //
@@ -1181,7 +1184,7 @@ void MainWindow::on_menu_reset_traffic_triggered() {
     auto ents = get_now_selected_list();
     if (ents.count() == 0) return;
     for (const auto &ent: ents) {
-        ent->traffic_data->Reset();
+        NekoGui_traffic::trafficLooper->ResetTraffic(ent->traffic_data);
         ent->Save();
         refresh_proxy_list(ent->id);
     }
@@ -1474,7 +1477,9 @@ void MainWindow::on_menu_resolve_domain_triggered() {
 
     for (const auto &profile: profiles) {
         profile->bean->ResolveDomainToIP([=] {
-            profile->Save();
+            if (NekoGui::profileManager->GetProfile(profile->id) == profile) {
+                profile->Save();
+            }
             if (--NekoGui::dataStore->resolve_count != 0) return;
             refresh_proxy_list();
             mw_sub_updating.store(false);

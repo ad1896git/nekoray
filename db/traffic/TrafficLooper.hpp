@@ -1,34 +1,71 @@
 #pragma once
-
-#include <QString>
+#include "TrafficData.hpp"
+#include "TrafficBatch.hpp"
+#include <QJsonArray>
 #include <QList>
 #include <QMutex>
-
+#include <QPointer>
 #include <atomic>
-
-#include "TrafficData.hpp"
-
+#include <chrono>
+#include <memory>
+#include <string>
+#include <vector>
+class MainWindow;
+namespace NekoGui { class ProxyEntity; }
 namespace NekoGui_traffic {
-    class TrafficLooper {
-    public:
-        std::atomic<bool> loop_enabled{false};
-        std::atomic<bool> looping{false};
-        QMutex loop_mutex;
-
-        QList<std::shared_ptr<TrafficData>> items;
-        TrafficData *proxy = nullptr;
-
-        void UpdateAll();
-
-        void Loop();
-
-    private:
-        TrafficData *bypass = new TrafficData("bypass");
-
-        [[nodiscard]] static TrafficData *update_stats(TrafficData *item);
-
-        [[nodiscard]] static QJsonArray get_connection_list();
+struct TrafficTarget {
+    int id = -1;
+    std::string tag;
+    std::weak_ptr<NekoGui::ProxyEntity> profile;
+    std::weak_ptr<TrafficData> traffic;
+    std::shared_ptr<TrafficGeneration> generation;
+};
+struct TrafficSession {
+    QList<TrafficTarget> targets;
+    std::vector<std::string> tags;
+    std::string proxyTag;
+    QPointer<MainWindow> window;
+};
+class TrafficLooper {
+public:
+    std::atomic<bool> loop_enabled{false};
+    std::atomic<bool> looping{false};
+    // UI thread only.
+    std::shared_ptr<const TrafficSession> MakeSession(
+        const QList<std::shared_ptr<TrafficData>> &items,
+        const std::shared_ptr<TrafficData> &proxy);
+    void ResetTraffic(const std::shared_ptr<TrafficData> &traffic);
+    // Worker threads only.
+    void Start(std::shared_ptr<const TrafficSession> session);
+    void Stop(bool sampleFinal);
+    void Loop();
+    // Any thread; does not wait for an outstanding RPC.
+    void RequestShutdown();
+private:
+    struct Options { int interval = 1000; bool connections = false; };
+    struct Packet {
+        std::shared_ptr<const TrafficSession> session;
+        TrafficDeltas deltas;
+        QJsonArray connections;
+        std::vector<unsigned long long> generations;
+        long long intervalMs = 1;
+        bool showConnections = false;
+        bool final = false;
+        bool save = false;
     };
-
-    extern TrafficLooper *trafficLooper;
+    void CollectLocked(bool connections, bool final, bool sample);
+    void Apply(const Packet &packet);
+    QMutex mutex_;
+    std::shared_ptr<const TrafficSession> session_;
+    std::chrono::steady_clock::time_point lastSample_;
+    std::atomic<bool> shutdown_{false};
+    // Accessed exclusively on the UI thread.
+    std::shared_ptr<const TrafficSession> uiSession_;
+    struct ResetIdentity {
+        std::weak_ptr<TrafficData> traffic;
+        std::shared_ptr<TrafficGeneration> generation;
+    };
+    std::map<TrafficData *, ResetIdentity> resetIdentities_;
+};
+extern TrafficLooper *trafficLooper;
 } // namespace NekoGui_traffic

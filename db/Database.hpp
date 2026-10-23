@@ -9,6 +9,8 @@ namespace NekoGui {
     public:
         // JsonStore
 
+        // Application-thread-owned: groupsTabOrder, profiles, groups, and every
+        // registered Group/ProxyEntity. Workers may construct detached objects.
         // order -> id
         QList<int> groupsTabOrder;
 

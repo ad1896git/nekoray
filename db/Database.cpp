@@ -1,3 +1,4 @@
+#include "main/UiOwnership.hpp"
 #include "Database.hpp"
 #include <QSet>
 
@@ -70,6 +71,7 @@ namespace NekoGui {
     }
 
     bool ProfileManager::LoadManager() {
+        NekoGui_concurrency::RequireUiThread();
         const auto previousProfiles = profiles;
         const auto previousGroups = groups;
         const auto previousProfileIds = profilesIdOrder;
@@ -181,6 +183,7 @@ namespace NekoGui {
     }
 
     void ProfileManager::SaveManager() {
+        NekoGui_concurrency::RequireUiThread();
         JsonStore::Save();
     }
 
@@ -303,6 +306,7 @@ namespace NekoGui {
     // Profile
 
     int ProfileManager::NewProfileID() const {
+        NekoGui_concurrency::RequireUiThread();
         int first = 0;
         if (!profiles.empty()) {
             const int highest = profiles.rbegin()->first;
@@ -313,6 +317,7 @@ namespace NekoGui {
     }
 
     bool ProfileManager::AddProfile(const std::shared_ptr<ProxyEntity> &ent, int gid) {
+        NekoGui_concurrency::RequireUiThread();
         if (!ent || ent->id >= 0 || !ent->bean) return false;
         const int newId = NewProfileID();
         if (newId < 0) return false;
@@ -334,6 +339,7 @@ namespace NekoGui {
     }
 
     bool ProfileManager::DeleteProfile(int id) {
+        NekoGui_concurrency::RequireUiThread();
         if (id < 0 || dataStore->started_id == id) return false;
         const auto found = profiles.find(id);
         if (found == profiles.end()) return false;
@@ -350,6 +356,7 @@ namespace NekoGui {
 
     void ProfileManager::MoveProfile(
         const std::shared_ptr<ProxyEntity> &ent, int gid) {
+        NekoGui_concurrency::RequireUiThread();
         if (gid == ent->gid || gid < 0) return;
         const auto oldGroup = GetGroup(ent->gid);
         if (oldGroup && oldGroup->HasExplicitOrder()) {
@@ -368,6 +375,7 @@ namespace NekoGui {
     }
 
     std::shared_ptr<ProxyEntity> ProfileManager::GetProfile(int id) {
+        NekoGui_concurrency::RequireUiThread();
         return profiles.count(id) ? profiles[id] : nullptr;
     }
 
@@ -408,6 +416,7 @@ namespace NekoGui {
     }
 
     int ProfileManager::NewGroupID() const {
+        NekoGui_concurrency::RequireUiThread();
         int first = 0;
         if (!groups.empty()) {
             const int highest = groups.rbegin()->first;
@@ -418,6 +427,7 @@ namespace NekoGui {
     }
 
     bool ProfileManager::AddGroup(const std::shared_ptr<Group> &ent) {
+        NekoGui_concurrency::RequireUiThread();
         if (!ent || ent->id >= 0) return false;
         const int newId = NewGroupID();
         if (newId < 0) return false;
@@ -437,6 +447,7 @@ namespace NekoGui {
     }
 
     void ProfileManager::DeleteGroup(int gid) {
+        NekoGui_concurrency::RequireUiThread();
         if (groups.size() <= 1) return;
         QList<int> toDelete;
         for (const auto &[id, profile]: profiles) {
@@ -457,14 +468,17 @@ namespace NekoGui {
     }
 
     std::shared_ptr<Group> ProfileManager::GetGroup(int id) {
+        NekoGui_concurrency::RequireUiThread();
         return groups.count(id) ? groups[id] : nullptr;
     }
 
     std::shared_ptr<Group> ProfileManager::CurrentGroup() {
+        NekoGui_concurrency::RequireUiThread();
         return GetGroup(dataStore->current_group);
     }
 
     QList<std::shared_ptr<ProxyEntity>> Group::Profiles() const {
+        NekoGui_concurrency::RequireUiThread();
         QList<std::shared_ptr<ProxyEntity>> ret;
         for (const auto &[_, profile]: profileManager->profiles) {
             if (id == profile->gid) ret += profile;
@@ -473,6 +487,7 @@ namespace NekoGui {
     }
 
     QList<std::shared_ptr<ProxyEntity>> Group::ProfilesWithOrder() const {
+        NekoGui_concurrency::RequireUiThread();
         if (!HasExplicitOrder()) return Profiles();
         QList<std::shared_ptr<ProxyEntity>> result;
         QSet<int> seen;

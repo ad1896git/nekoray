@@ -1,3 +1,4 @@
+#include "main/UiOwnership.hpp"
 #include "db/ConfigBuilder.hpp"
 #include "db/Database.hpp"
 #include "fmt/includes.h"
@@ -71,6 +72,7 @@ namespace NekoGui {
     // Common
 
     std::shared_ptr<BuildConfigResult> BuildConfig(const std::shared_ptr<ProxyEntity> &ent, bool forTest, bool forExport) {
+        NekoGui_concurrency::RequireUiThread();
         auto result = std::make_shared<BuildConfigResult>();
         auto status = std::make_shared<BuildConfigStatus>();
         status->ent = ent;
