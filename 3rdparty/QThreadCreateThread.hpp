@@ -2,6 +2,8 @@
 
 #include <future>
 #include <QThread>
+#include <QDebug>
+#include <exception>
 
 // FOR OLD QT
 
@@ -15,7 +17,13 @@ public:
 
 private:
     void run() override {
-        m_future.get();
+        try {
+            m_future.get();
+        } catch (const std::exception &e) {
+            qWarning("Background task failed: %s", e.what());
+        } catch (...) {
+            qWarning("Background task failed: unknown exception");
+        }
     }
 
     std::future<void> m_future;
