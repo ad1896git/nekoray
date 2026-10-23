@@ -60,3 +60,34 @@ target_link_libraries(tst_external_credentials PRIVATE
 )
 add_test(NAME external_credentials COMMAND tst_external_credentials)
 set_tests_properties(external_credentials PROPERTIES TIMEOUT 60)
+
+find_package(Qt${QT_VERSION_MAJOR} REQUIRED COMPONENTS Core Test)
+find_package(Threads REQUIRED)
+
+add_executable(nkr_ui_thread
+        tst_ui_thread.cpp
+        ${PROJECT_SOURCE_DIR}/main/NekoGui_UiThread.cpp
+)
+
+set_target_properties(nkr_ui_thread PROPERTIES
+        AUTOMOC ON
+        CXX_STANDARD 17
+        CXX_STANDARD_REQUIRED ON
+)
+
+target_include_directories(nkr_ui_thread PRIVATE
+        ${PROJECT_SOURCE_DIR}
+)
+
+# Assertion probes must run even in the required Release build.
+# This definition affects this test executable only.
+target_compile_definitions(nkr_ui_thread PRIVATE QT_FORCE_ASSERTS)
+
+target_link_libraries(nkr_ui_thread PRIVATE
+        Qt${QT_VERSION_MAJOR}::Core
+        Qt${QT_VERSION_MAJOR}::Test
+        Threads::Threads
+)
+
+add_test(NAME nkr_ui_thread COMMAND nkr_ui_thread)
+set_tests_properties(nkr_ui_thread PROPERTIES TIMEOUT 60)

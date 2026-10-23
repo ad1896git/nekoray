@@ -4,13 +4,15 @@
 #include <QList>
 #include <QMutex>
 
+#include <atomic>
+
 #include "TrafficData.hpp"
 
 namespace NekoGui_traffic {
     class TrafficLooper {
     public:
-        bool loop_enabled = false;
-        bool looping = false;
+        std::atomic<bool> loop_enabled{false};
+        std::atomic<bool> looping{false};
         QMutex loop_mutex;
 
         QList<std::shared_ptr<TrafficData>> items;

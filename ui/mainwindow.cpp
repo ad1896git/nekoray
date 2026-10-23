@@ -48,12 +48,15 @@
 #include <QDir>
 #include <QFileInfo>
 
+#include <atomic>
+
 void UI_InitMainWindow() {
     mainwindow = new MainWindow;
 }
 
 MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWindow) {
     mainwindow = this;
+    initializeUiThreadDispatcher(this);
     MW_dialog_message = [=](const QString &a, const QString &b) {
         runOnUiThread([=] { dialog_message_impl(a, b); });
     };
@@ -447,6 +450,7 @@ void MainWindow::closeEvent(QCloseEvent *event) {
 }
 
 MainWindow::~MainWindow() {
+    shutdownUiThreadDispatcher();
     delete ui;
 }
 
@@ -660,6 +664,7 @@ void MainWindow::on_menu_exit_triggered() {
             mu_exit.unlock(); // retry
             return;
         }
+        shutdownUiThreadDispatcher();
         RegisterHotkey(true);
         //
         on_commitDataRequest();
@@ -1400,14 +1405,15 @@ void MainWindow::on_menu_delete_repeat_triggered() {
     }
 }
 
-bool mw_sub_updating = false;
+std::atomic<bool> mw_sub_updating{false};
 
 void MainWindow::on_menu_update_subscription_triggered() {
     auto group = NekoGui::profileManager->CurrentGroup();
     if (group->url.isEmpty()) return;
-    if (mw_sub_updating) return;
-    mw_sub_updating = true;
-    NekoGui_sub::groupUpdater->AsyncUpdate(group->url, group->id, [&] { mw_sub_updating = false; });
+    if (mw_sub_updating.exchange(true)) return;
+    NekoGui_sub::groupUpdater->AsyncUpdate(
+        group->url, group->id,
+        [] { mw_sub_updating.store(false); });
 }
 
 void MainWindow::on_menu_remove_unavailable_triggered() {
@@ -1449,8 +1455,7 @@ void MainWindow::on_menu_resolve_domain_triggered() {
                               tr("Resolving domain to IP, if support.")) != QMessageBox::StandardButton::Yes) {
         return;
     }
-    if (mw_sub_updating) return;
-    mw_sub_updating = true;
+    if (mw_sub_updating.exchange(true)) return;
     NekoGui::dataStore->resolve_count = profiles.count();
 
     for (const auto &profile: profiles) {
@@ -1458,7 +1463,7 @@ void MainWindow::on_menu_resolve_domain_triggered() {
             profile->Save();
             if (--NekoGui::dataStore->resolve_count != 0) return;
             refresh_proxy_list();
-            mw_sub_updating = false;
+            mw_sub_updating.store(false);
         });
     }
 }

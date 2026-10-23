@@ -6,6 +6,8 @@
 #include <QString>
 #include <QDebug>
 
+#include "NekoGui_UiThread.hpp"
+
 //
 
 inline QString software_name = "NekoBox";

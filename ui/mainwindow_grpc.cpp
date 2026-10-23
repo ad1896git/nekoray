@@ -18,6 +18,8 @@
 #include <QMessageBox>
 #include <QDialogButtonBox>
 
+#include <atomic>
+
 // ext core
 
 std::list<std::shared_ptr<NekoGui_sys::ExternalProcess>> CreateExtCFromExtR(const std::list<std::shared_ptr<NekoGui_fmt::ExternalBuildResult>> &extRs, bool start) {
@@ -60,11 +62,11 @@ void MainWindow::setup_grpc() {
 
 // 测速
 
-inline bool speedtesting = false;
+inline std::atomic<bool> speedtesting{false};
 inline QList<QThread *> speedtesting_threads = {};
 
 void MainWindow::speedtest_current_group(int mode, bool test_group) {
-    if (speedtesting) {
+    if (speedtesting.load()) {
         MessageBoxWarning(software_name, QObject::tr("The last speed test did not exit completely, please wait. If it persists, please restart the program."));
         return;
     }
@@ -81,7 +83,7 @@ void MainWindow::speedtest_current_group(int mode, bool test_group) {
             auto t = speedtesting_threads.takeFirst();
             if (t != nullptr) t->exit();
         }
-        speedtesting = false;
+        speedtesting.store(false);
         return;
     }
 
@@ -121,7 +123,10 @@ void MainWindow::speedtest_current_group(int mode, bool test_group) {
         w->deleteLater();
         if (full_test_flags.isEmpty()) return;
     }
-    speedtesting = true;
+    if (speedtesting.exchange(true)) {
+        MessageBoxWarning(software_name, QObject::tr("The last speed test did not exit completely, please wait. If it persists, please restart the program."));
+        return;
+    }
 
     runOnNewThread([this, profiles, mode, full_test_flags]() {
         QMutex lock_write;
@@ -243,7 +248,7 @@ void MainWindow::speedtest_current_group(int mode, bool test_group) {
         // Control
         lock_return.lock();
         lock_return.unlock();
-        speedtesting = false;
+        speedtesting.store(false);
         MW_show_log(QObject::tr("Speedtest finished."));
     });
 #endif
@@ -332,7 +337,7 @@ void MainWindow::neko_start(int _id) {
         NekoGui_traffic::trafficLooper->proxy = result->outboundStat.get();
         NekoGui_traffic::trafficLooper->items = result->outboundStats;
         NekoGui::dataStore->ignoreConnTag = result->ignoreConnTag;
-        NekoGui_traffic::trafficLooper->loop_enabled = true;
+        NekoGui_traffic::trafficLooper->loop_enabled.store(true);
 #endif
 
         runOnUiThread(
@@ -429,7 +434,7 @@ void MainWindow::neko_stop(bool crash, bool sem) {
             DS_cores);
 
 #ifndef NKR_NO_GRPC
-        NekoGui_traffic::trafficLooper->loop_enabled = false;
+        NekoGui_traffic::trafficLooper->loop_enabled.store(false);
         NekoGui_traffic::trafficLooper->loop_mutex.lock();
         if (NekoGui::dataStore->traffic_loop_interval != 0) {
             NekoGui_traffic::trafficLooper->UpdateAll();

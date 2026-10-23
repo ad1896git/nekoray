@@ -85,10 +85,10 @@ namespace NekoGui_traffic {
             if (NekoGui::dataStore->traffic_loop_interval == 0) continue; // user disabled
 
             // profile start and stop
-            if (!loop_enabled) {
+            if (!loop_enabled.load()) {
                 // 停止
-                if (looping) {
-                    looping = false;
+                if (looping.load()) {
+                    looping.store(false);
                     runOnUiThread([=] {
                         auto m = GetMainWindow();
                         m->refresh_status("STOP");
@@ -97,8 +97,8 @@ namespace NekoGui_traffic {
                 continue;
             } else {
                 // 开始
-                if (!looping) {
-                    looping = true;
+                if (!looping.load()) {
+                    looping.store(true);
                 }
             }
 

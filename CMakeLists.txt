@@ -132,6 +132,7 @@ set(PROJECT_SOURCES
         main/main.cpp
         main/NekoGui.cpp
         main/NekoGui_Utils.cpp
+        main/NekoGui_UiThread.cpp
         main/HTTPRequestHelper.cpp
 
         3rdparty/base64.cpp
