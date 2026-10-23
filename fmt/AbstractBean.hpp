@@ -4,6 +4,7 @@
 #include <QJsonArray>
 
 #include "main/NekoGui.hpp"
+#include "sys/ExternalTempFiles.hpp"
 
 namespace NekoGui_fmt {
     struct CoreObjOutboundBuildResult {
@@ -22,6 +23,7 @@ namespace NekoGui_fmt {
         //
         QString error;
         QString config_export;
+        std::shared_ptr<NekoGui_sys::ExternalTempFiles> tempFiles;
     };
 
     class AbstractBean : public JsonStore {

@@ -49,7 +49,7 @@ namespace NekoGui_sys {
                     }
                 }
             });
-            MW_show_log_ext(tag, "External core starting: " + env.join(" ") + " " + program + " " + arguments.join(" "));
+            MW_show_log_ext(tag, QStringLiteral("External core starting"));
         }
 
         QProcess::setEnvironment(env);

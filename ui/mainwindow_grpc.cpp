@@ -6,6 +6,8 @@
 #include "db/ConfigBuilder.hpp"
 #include "db/traffic/TrafficLooper.hpp"
 #include "rpc/gRPC.h"
+#include "sys/ExternalTempFiles.hpp"
+#include <utility>
 #include "ui/widget/MessageBoxTimer.h"
 
 #include <QTimer>
@@ -27,6 +29,8 @@ std::list<std::shared_ptr<NekoGui_sys::ExternalProcess>> CreateExtCFromExtR(cons
         extC->program = extR->program;
         extC->arguments = extR->arguments;
         extC->env = extR->env;
+        NekoGui_sys::AttachExternalTempFiles(
+            *extC, std::move(extR->tempFiles));
         l.emplace_back(extC);
         //
         if (start) extC->Start();

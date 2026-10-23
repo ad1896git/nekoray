@@ -38,3 +38,25 @@ add_test(NAME stop_traffic_persistence
 set_tests_properties(stop_traffic_persistence PROPERTIES TIMEOUT 15)
 
 add_subdirectory(w06)
+
+find_package(Qt${QT_VERSION_MAJOR} REQUIRED COMPONENTS Test)
+
+add_executable(tst_external_credentials
+    tst_external_credentials.cpp
+    ${PROJECT_SOURCE_DIR}/sys/ExternalProcess.cpp
+)
+set_target_properties(tst_external_credentials PROPERTIES
+    AUTOMOC ON
+    CXX_STANDARD 17
+    CXX_STANDARD_REQUIRED ON
+)
+target_include_directories(tst_external_credentials PRIVATE
+    ${PROJECT_SOURCE_DIR}
+)
+target_link_libraries(tst_external_credentials PRIVATE
+    Qt${QT_VERSION_MAJOR}::Core
+    Qt${QT_VERSION_MAJOR}::Widgets
+    Qt${QT_VERSION_MAJOR}::Test
+)
+add_test(NAME external_credentials COMMAND tst_external_credentials)
+set_tests_properties(external_credentials PROPERTIES TIMEOUT 60)
