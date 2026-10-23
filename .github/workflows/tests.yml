@@ -1,8 +1,12 @@
 name: Nekoray tests
 
+# Remote CI only for major releases (tags v*) and manual runs. Routine checks run
+# locally with .pipeline/ci_local.sh.
 on:
+  workflow_dispatch:
   push:
-  pull_request:
+    tags:
+      - 'v*'
 
 permissions:
   contents: read
