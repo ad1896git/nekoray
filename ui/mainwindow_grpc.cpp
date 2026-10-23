@@ -1,5 +1,6 @@
 #include "./ui_mainwindow.h"
 #include "mainwindow.h"
+#include "StopTrafficPersistence.hpp"
 
 #include "db/Database.hpp"
 #include "db/ConfigBuilder.hpp"
@@ -428,10 +429,16 @@ void MainWindow::neko_stop(bool crash, bool sem) {
         NekoGui_traffic::trafficLooper->loop_mutex.lock();
         if (NekoGui::dataStore->traffic_loop_interval != 0) {
             NekoGui_traffic::trafficLooper->UpdateAll();
-            for (const auto &item: NekoGui_traffic::trafficLooper->items) {
-                NekoGui::profileManager->GetProfile(item->id)->Save();
-                runOnUiThread([=] { refresh_proxy_list(item->id); });
-            }
+            NekoGui::SaveExistingTrafficProfiles(
+                NekoGui_traffic::trafficLooper->items,
+                [](int profileId) {
+                    return NekoGui::profileManager->GetProfile(profileId);
+                },
+                [this](int profileId) {
+                    runOnUiThread([this, profileId] {
+                        refresh_proxy_list(profileId);
+                    });
+                });
         }
         NekoGui_traffic::trafficLooper->loop_mutex.unlock();
 
