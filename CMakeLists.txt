@@ -263,9 +263,26 @@ target_link_libraries(nkr_subscription PUBLIC
     Qt${QT_VERSION_MAJOR}::Network
 )
 
+# Share the production link parser with regression tests.
+add_library(nkr_link_parser STATIC fmt/Link2Bean.cpp)
+set_target_properties(nkr_link_parser PROPERTIES
+    CXX_STANDARD 17
+    CXX_STANDARD_REQUIRED ON
+    CXX_EXTENSIONS OFF
+    POSITION_INDEPENDENT_CODE ON
+)
+target_include_directories(nkr_link_parser PUBLIC "${PROJECT_SOURCE_DIR}")
+target_link_libraries(nkr_link_parser PUBLIC
+    Qt${QT_VERSION_MAJOR}::Widgets
+    Qt${QT_VERSION_MAJOR}::Network
+)
+
 # Keep PROJECT_SOURCES intact for the Qt 5 translation scan.
 set(NKR_APPLICATION_SOURCES ${PROJECT_SOURCES})
-list(REMOVE_ITEM NKR_APPLICATION_SOURCES db/ProfileFilter.cpp)
+list(REMOVE_ITEM NKR_APPLICATION_SOURCES
+    db/ProfileFilter.cpp
+    fmt/Link2Bean.cpp
+)
 
 set(NKR_AUTORUN_TARGET)
 if (APPLE)
@@ -307,7 +324,7 @@ set_target_properties(nkr_runtime PROPERTIES
     AUTOMOC ON AUTOUIC ON AUTORCC ON POSITION_INDEPENDENT_CODE ON
     CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
 target_include_directories(nkr_runtime PUBLIC "${PROJECT_SOURCE_DIR}")
-target_link_libraries(nkr_runtime PUBLIC nkr_subscription
+target_link_libraries(nkr_runtime PUBLIC nkr_subscription nkr_link_parser
     ${NKR_AUTORUN_TARGET}
     Qt${QT_VERSION_MAJOR}::Widgets Qt${QT_VERSION_MAJOR}::Network Qt${QT_VERSION_MAJOR}::Svg
     Threads::Threads ${NKR_EXTERNAL_TARGETS} ${PLATFORM_LIBRARIES})
@@ -402,7 +419,7 @@ if (NKR_BUILD_TESTS)
     endforeach()
     target_compile_definitions(tst_renumber PRIVATE NKR_RENUMBER_SOURCE_DIR="${PROJECT_SOURCE_DIR}")
     set_tests_properties(persistence PROPERTIES TIMEOUT 90)
-    set_tests_properties(subscription_commit PROPERTIES TIMEOUT 180 LABELS "W01;W08")
+    set_tests_properties(subscription_commit PROPERTIES TIMEOUT 180 LABELS "W01;W08;W16")
     # Exhaustive recovery is one QtTest function; its default five-minute
     # watchdog must not preempt CTest's checked crash-matrix timeout.
     set_tests_properties(renumber PROPERTIES

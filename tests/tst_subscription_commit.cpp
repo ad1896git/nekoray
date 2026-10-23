@@ -5,6 +5,9 @@
 #include <QElapsedTimer>
 #include <QFile>
 #include <QJsonDocument>
+#include <QJsonArray>
+#include <QJsonObject>
+#include <QMap>
 #include <QMessageBox>
 #include <QProcess>
 #include <QSemaphore>
@@ -21,6 +24,7 @@
 #include <utility>
 
 #include "db/Database.hpp"
+#include "fmt/VMessBean.hpp"
 #include "db/Renumber.hpp"
 #include "db/ProfileFilter.hpp"
 #include "main/NekoGui_UiThread_p.hpp"
@@ -102,6 +106,29 @@ int CrashChild(const QString &directory, const QString &cut) {
     };
     S::Commit(group, Nodes({"c", "d"}), true, false, "new", io);
     return 9;
+}
+QString VMessJsonLink(const QByteArray &json) {
+    return QStringLiteral("vmess://") + QString::fromLatin1(json.toBase64());
+}
+QJsonObject ValidVMessJson() {
+    return QJsonObject{
+        {QStringLiteral("id"), QStringLiteral("11111111-1111-4111-8111-111111111111")},
+        {QStringLiteral("add"), QStringLiteral("vmess.example")},
+        {QStringLiteral("port"), 443}
+    };
+}
+QMap<QString, QByteArray> VMessSavedFiles() {
+    QMap<QString, QByteArray> result;
+    const QStringList directories{QStringLiteral("profiles"), QStringLiteral("groups")};
+    for (const QString &directory : directories) {
+        const QDir dir(directory);
+        const QStringList files = dir.entryList(QDir::Files, QDir::Name);
+        for (const QString &file : files) {
+            const QString path = dir.filePath(file);
+            result.insert(path, Read(path));
+        }
+    }
+    return result;
 }
 } // namespace
 
@@ -254,6 +281,304 @@ private slots:
         QCOMPARE(Read(group->fn), disk);
         QVERIFY(S::Succeeded(S::Commit(group, staged, true, false, "new")));
         QCOMPARE(Names(group->ProfilesWithOrder()), QStringList({"a", "b"}));
+    }
+    void vmessRequiredFields_data() {
+        QTest::addColumn<QString>("link");
+        QTest::addColumn<bool>("accepted");
+        QTest::addColumn<int>("expectedPort");
+
+        const auto addObject = [](const QByteArray &name,
+                                  const QJsonObject &object,
+                                  bool accepted,
+                                  int expectedPort) {
+            QTest::newRow(name.constData())
+                << VMessJsonLink(QJsonDocument(object).toJson(QJsonDocument::Compact))
+                << accepted << expectedPort;
+        };
+        struct PortCase {
+            const char *name;
+            QJsonValue value;
+            bool accepted;
+            int expectedPort;
+        };
+        const PortCase ports[] = {
+            {"number-1", QJsonValue(1), true, 1},
+            {"number-443", QJsonValue(443), true, 443},
+            {"number-65535", QJsonValue(65535), true, 65535},
+            {"string-1", QJsonValue(QStringLiteral("1")), true, 1},
+            {"string-443", QJsonValue(QStringLiteral("443")), true, 443},
+            {"string-65535", QJsonValue(QStringLiteral("65535")), true, 65535},
+            {"string-trimmed", QJsonValue(QStringLiteral(" 443 ")), true, 443},
+            {"string-tabs", QJsonValue(QStringLiteral("\t443\r\n")), true, 443},
+            {"string-leading-zeroes", QJsonValue(QStringLiteral("00443")), true, 443},
+            {"number-zero", QJsonValue(0), false, 0},
+            {"number-negative", QJsonValue(-1), false, 0},
+            {"number-overflow", QJsonValue(65536), false, 0},
+            {"number-fraction", QJsonValue(443.5), false, 0},
+            {"number-below-minimum", QJsonValue(0.5), false, 0},
+            {"number-above-maximum", QJsonValue(65535.5), false, 0},
+            {"number-huge", QJsonValue(1e100), false, 0},
+            {"string-zero", QJsonValue(QStringLiteral("0")), false, 0},
+            {"string-negative", QJsonValue(QStringLiteral("-1")), false, 0},
+            {"string-overflow", QJsonValue(QStringLiteral("65536")), false, 0},
+            {"string-huge", QJsonValue(QStringLiteral("999999999999999999999999999999")), false, 0},
+            {"string-empty", QJsonValue(QStringLiteral("")), false, 0},
+            {"string-blank", QJsonValue(QStringLiteral(" \t ")), false, 0},
+            {"string-bad", QJsonValue(QStringLiteral("bad")), false, 0},
+            {"string-fraction", QJsonValue(QStringLiteral("443.5")), false, 0},
+            {"string-decimal-point", QJsonValue(QStringLiteral("443.0")), false, 0},
+            {"string-exponent", QJsonValue(QStringLiteral("4.43e2")), false, 0},
+            {"string-plus", QJsonValue(QStringLiteral("+443")), false, 0},
+            {"string-hex", QJsonValue(QStringLiteral("0x1bb")), false, 0},
+            {"string-internal-space", QJsonValue(QStringLiteral("4 43")), false, 0},
+            {"string-trailing-junk", QJsonValue(QStringLiteral("443x")), false, 0},
+            {"string-non-ascii", QJsonValue(QString::fromUtf8("\xEF\xBC\x94\xEF\xBC\x94\xEF\xBC\x93")), false, 0},
+            {"boolean-true", QJsonValue(true), false, 0},
+            {"boolean-false", QJsonValue(false), false, 0},
+            {"null", QJsonValue(QJsonValue::Null), false, 0},
+            {"array", QJsonValue(QJsonArray{}), false, 0},
+            {"object", QJsonValue(QJsonObject{}), false, 0}
+        };
+        for (const auto &test : ports) {
+            auto object = ValidVMessJson();
+            object.insert(QStringLiteral("port"), test.value);
+            addObject(QByteArray("port-") + test.name, object, test.accepted, test.expectedPort);
+        }
+        auto missingPort = ValidVMessJson();
+        missingPort.remove(QStringLiteral("port"));
+        addObject("port-missing", missingPort, false, 0);
+
+        struct TextCase { const char *name; QJsonValue value; };
+        const TextCase invalidText[] = {
+            {"empty", QJsonValue(QStringLiteral(""))},
+            {"blank", QJsonValue(QStringLiteral(" \t\r\n"))},
+            {"number", QJsonValue(123)},
+            {"boolean", QJsonValue(true)},
+            {"null", QJsonValue(QJsonValue::Null)},
+            {"array", QJsonValue(QJsonArray{})},
+            {"object", QJsonValue(QJsonObject{})}
+        };
+        const QStringList requiredText{QStringLiteral("id"), QStringLiteral("add")};
+        for (const QString &field : requiredText) {
+            auto missing = ValidVMessJson();
+            missing.remove(field);
+            addObject(field.toUtf8() + "-missing", missing, false, 0);
+            for (const auto &test : invalidText) {
+                auto object = ValidVMessJson();
+                object.insert(field, test.value);
+                addObject(field.toUtf8() + "-" + test.name, object, false, 0);
+            }
+        }
+        auto namedId = ValidVMessJson();
+        namedId.insert(QStringLiteral("id"), QStringLiteral("named-user"));
+        addObject("noncanonical-id-remains-supported", namedId, true, 443);
+        auto paddedText = ValidVMessJson();
+        paddedText.insert(QStringLiteral("id"), QStringLiteral(" user "));
+        paddedText.insert(QStringLiteral("add"), QStringLiteral(" vmess.example "));
+        addObject("required-text-preserves-whitespace", paddedText, true, 443);
+        addObject("optional-fields-only",
+                  QJsonObject{{QStringLiteral("ps"), QStringLiteral("not-a-node")}}, false, 0);
+        const auto addRaw = [](const char *name, const QByteArray &json, bool accepted, int port) {
+            QTest::newRow(name) << VMessJsonLink(json) << accepted << port;
+        };
+        addRaw("numeric-integral-decimal", R"({"id":"user","add":"vmess.example","port":443.0})", true, 443);
+        addRaw("numeric-integral-exponent", R"({"id":"user","add":"vmess.example","port":4.43e2})", true, 443);
+        addRaw("empty-object", "{}", false, 0);
+        addRaw("top-level-array", "[1,2]", false, 0);
+        addRaw("top-level-null", "null", false, 0);
+        addRaw("malformed-json", "{\"id\":", false, 0);
+        addRaw("non-json", "not json", false, 0);
+        QTest::newRow("invalid-base64") << QStringLiteral("vmess://%%%") << false << 0;
+        struct UriCase { const char *name; const char *uri; bool accepted; int expectedPort; };
+        const UriCase uris[] = {
+            {"uri-default-port", "vmess://11111111-1111-4111-8111-111111111111@vmess.example", true, 443},
+            {"uri-port-1", "vmess://11111111-1111-4111-8111-111111111111@vmess.example:1", true, 1},
+            {"uri-port-65535", "vmess://11111111-1111-4111-8111-111111111111@vmess.example:65535", true, 65535},
+            {"uri-port-zero", "vmess://11111111-1111-4111-8111-111111111111@vmess.example:0", false, 0},
+            {"uri-port-overflow", "vmess://11111111-1111-4111-8111-111111111111@vmess.example:65536", false, 0},
+            {"uri-port-negative", "vmess://11111111-1111-4111-8111-111111111111@vmess.example:-1", false, 0},
+            {"uri-port-fraction", "vmess://11111111-1111-4111-8111-111111111111@vmess.example:443.5", false, 0},
+            {"uri-port-junk", "vmess://11111111-1111-4111-8111-111111111111@vmess.example:bad", false, 0},
+            {"uri-missing-id", "vmess://vmess.example:443", false, 0},
+            {"uri-empty-id", "vmess://@vmess.example:443", false, 0},
+            {"uri-blank-id", "vmess://%20%20@vmess.example:443", false, 0},
+            {"uri-missing-host", "vmess://11111111-1111-4111-8111-111111111111@:443", false, 0}
+        };
+        for (const auto &test : uris) {
+            QTest::newRow(test.name) << QString::fromLatin1(test.uri) << test.accepted << test.expectedPort;
+        }
+    }
+
+    void vmessRequiredFields() {
+        QFETCH(QString, link);
+        QFETCH(bool, accepted);
+        QFETCH(int, expectedPort);
+        seed(0);
+        const auto memoryBefore = group->ToJsonBytes();
+        const auto filesBefore = VMessSavedFiles();
+        const auto idsBefore = Ids(group->Profiles());
+        NekoGui_fmt::VMessBean bean;
+        QCOMPARE(bean.TryParseLink(link), accepted);
+        S::Entities staged;
+        QCOMPARE(S::Parse(link, staged), accepted);
+        QCOMPARE(int(staged.size()), accepted ? 1 : 0);
+        QCOMPARE(group->ToJsonBytes(), memoryBefore);
+        QCOMPARE(VMessSavedFiles(), filesBefore);
+        QCOMPARE(Ids(group->Profiles()), idsBefore);
+        QCOMPARE(int(manager->profiles.size()), 2);
+        if (accepted) {
+            QCOMPARE(bean.serverPort, expectedPort);
+            QVERIFY(!bean.uuid.trimmed().isEmpty());
+            QVERIFY(!bean.serverAddress.trimmed().isEmpty());
+            const auto document = QJsonDocument::fromJson(QByteArray::fromBase64(
+                link.mid(QStringLiteral("vmess://").size()).toLatin1()));
+            if (document.isObject()) {
+                QCOMPARE(bean.uuid, document.object().value(QStringLiteral("id")).toString());
+                QCOMPARE(bean.serverAddress, document.object().value(QStringLiteral("add")).toString());
+            }
+            const auto &entity = staged.first();
+            QCOMPARE(entity->type, QStringLiteral("vmess"));
+            QCOMPARE(entity->id, -1);
+            QVERIFY(entity->fn.isEmpty());
+            QCOMPARE(entity->VMessBean()->uuid, bean.uuid);
+            QCOMPARE(entity->bean->serverAddress, bean.serverAddress);
+            QCOMPARE(entity->bean->serverPort, expectedPort);
+            return;
+        }
+        for (const bool subscription : {false, true}) {
+            for (const bool clear : {false, true}) {
+                const auto reply = S::Apply(group, link, subscription, clear, "new-info");
+                QCOMPARE(int(reply.status), int(S::Status::Rejected));
+                QCOMPARE(group->ToJsonBytes(), memoryBefore);
+                QCOMPARE(VMessSavedFiles(), filesBefore);
+                QCOMPARE(Ids(group->Profiles()), idsBefore);
+                QCOMPARE(int(manager->profiles.size()), 2);
+                QCOMPARE(Names(group->ProfilesWithOrder()), QStringList({"a", "b"}));
+            }
+        }
+        reload();
+        QCOMPARE(group->ToJsonBytes(), memoryBefore);
+        QCOMPARE(VMessSavedFiles(), filesBefore);
+        QCOMPARE(Ids(group->Profiles()), idsBefore);
+        QCOMPARE(Names(group->ProfilesWithOrder()), QStringList({"a", "b"}));
+    }
+
+    void vmessMixedSubscription_data() {
+        QTest::addColumn<bool>("subscription");
+        QTest::addColumn<bool>("clear");
+        QTest::addColumn<bool>("outerBase64");
+        for (const bool subscription : {false, true}) {
+            for (const bool clear : {false, true}) {
+                for (const bool outerBase64 : {false, true}) {
+                    const QByteArray name = QStringLiteral("subscription%1-clear%2-base64%3")
+                        .arg(subscription ? 1 : 0).arg(clear ? 1 : 0).arg(outerBase64 ? 1 : 0).toLatin1();
+                    QTest::newRow(name.constData()) << subscription << clear << outerBase64;
+                }
+            }
+        }
+    }
+    void vmessMixedSubscription() {
+        QFETCH(bool, subscription);
+        QFETCH(bool, clear);
+        QFETCH(bool, outerBase64);
+        seed(0);
+        const auto memoryBefore = group->ToJsonBytes();
+        const auto filesBefore = VMessSavedFiles();
+        const auto encode = [](const QJsonObject &object) {
+            return VMessJsonLink(QJsonDocument(object).toJson(QJsonDocument::Compact));
+        };
+        auto valid = ValidVMessJson();
+        valid.insert(QStringLiteral("ps"), QStringLiteral("json-valid"));
+        valid.insert(QStringLiteral("port"), QStringLiteral(" 443 "));
+        auto missingId = valid;
+        missingId.remove(QStringLiteral("id"));
+        auto fractional = valid;
+        fractional.insert(QStringLiteral("port"), 443.5);
+        auto missingAddress = valid;
+        missingAddress.remove(QStringLiteral("add"));
+        QString content = QStringList{
+            encode(missingId), encode(valid), encode(fractional),
+            QStringLiteral("vmess://11111111-1111-4111-8111-111111111111@vmess.example:8443?security=tls#uri-valid"),
+            QStringLiteral("vmess://11111111-1111-4111-8111-111111111111@vmess.example:0"),
+            encode(missingAddress)
+        }.join(QStringLiteral("\n"));
+        if (outerBase64) content = QString::fromLatin1(content.toUtf8().toBase64());
+        S::Entities staged;
+        QVERIFY(S::Parse(content, staged));
+        QCOMPARE(int(staged.size()), 2);
+        QCOMPARE(Names(staged), QStringList({"json-valid", "uri-valid"}));
+        QCOMPARE(staged.at(0)->bean->serverPort, 443);
+        QCOMPARE(staged.at(1)->bean->serverPort, 8443);
+        for (const auto &entity : staged) {
+            QCOMPARE(entity->type, QStringLiteral("vmess"));
+            QCOMPARE(entity->id, -1);
+            QVERIFY(entity->fn.isEmpty());
+        }
+        QCOMPARE(group->ToJsonBytes(), memoryBefore);
+        QCOMPARE(VMessSavedFiles(), filesBefore);
+        QCOMPARE(int(manager->profiles.size()), 2);
+        const auto reply = S::Apply(group, content, subscription, clear, "new-info");
+        QCOMPARE(int(reply.status), int(S::Status::Committed));
+        const QStringList expected = subscription ? QStringList{"json-valid", "uri-valid"}
+            : QStringList{"a", "b", "json-valid", "uri-valid"};
+        QCOMPARE(Names(group->ProfilesWithOrder()), expected);
+        QCOMPARE(int(manager->profiles.size()), int(expected.size()));
+        QCOMPARE(int(QDir("profiles").entryList(QDir::Files).size()), int(expected.size()));
+        QVERIFY(Unique(group->order));
+        reload();
+        QCOMPARE(Names(group->ProfilesWithOrder()), expected);
+        QCOMPARE(int(manager->profiles.size()), int(expected.size()));
+        QVERIFY(!group->recoveryRequired);
+    }
+
+    void vmessLegacyRoundTrip() {
+        dataStore->old_share_link_format = true;
+        NekoGui_fmt::VMessBean source;
+        source.uuid = QStringLiteral("11111111-1111-4111-8111-111111111111");
+        source.serverAddress = QStringLiteral("vmess.example");
+        source.serverPort = 443;
+        source.name = QStringLiteral("legacy fixture");
+        source.aid = 64;
+        source.security = QStringLiteral("aes-128-gcm");
+        source.stream->network = QStringLiteral("ws");
+        source.stream->host = QStringLiteral("cdn.example");
+        source.stream->path = QStringLiteral("/socket");
+        source.stream->sni = QStringLiteral("tls.example");
+        source.stream->security = QStringLiteral("tls");
+        source.stream->header_type = QStringLiteral("none");
+        const QString link = source.ToShareLink();
+        const QString prefix = QStringLiteral("vmess://");
+        QVERIFY(link.startsWith(prefix));
+        const auto document = QJsonDocument::fromJson(QByteArray::fromBase64(link.mid(prefix.size()).toLatin1()));
+        QVERIFY(document.isObject());
+        const auto object = document.object();
+        QVERIFY(object.value(QStringLiteral("port")).isString());
+        QCOMPARE(object.value(QStringLiteral("port")).toString(), QStringLiteral("443"));
+        NekoGui_fmt::VMessBean parsed;
+        QVERIFY(parsed.TryParseLink(link));
+        QCOMPARE(parsed.uuid, source.uuid);
+        QCOMPARE(parsed.serverAddress, source.serverAddress);
+        QCOMPARE(parsed.serverPort, source.serverPort);
+        QCOMPARE(parsed.name, source.name);
+        QCOMPARE(parsed.aid, source.aid);
+        QCOMPARE(parsed.security, source.security);
+        QCOMPARE(parsed.stream->network, source.stream->network);
+        QCOMPARE(parsed.stream->host, source.stream->host);
+        QCOMPARE(parsed.stream->path, source.stream->path);
+        QCOMPARE(parsed.stream->sni, source.stream->sni);
+        QCOMPARE(parsed.stream->security, source.stream->security);
+        QCOMPARE(parsed.stream->header_type, source.stream->header_type);
+        auto h2 = object;
+        h2.insert(QStringLiteral("net"), QStringLiteral("h2"));
+        NekoGui_fmt::VMessBean h2Parsed;
+        QVERIFY(h2Parsed.TryParseLink(VMessJsonLink(QJsonDocument(h2).toJson(QJsonDocument::Compact))));
+        QCOMPARE(h2Parsed.stream->network, QStringLiteral("http"));
+        NekoGui_fmt::VMessBean minimal;
+        QVERIFY(minimal.TryParseLink(VMessJsonLink(QJsonDocument(ValidVMessJson()).toJson(QJsonDocument::Compact))));
+        QCOMPARE(minimal.aid, 0);
+        QCOMPARE(minimal.security, QStringLiteral("auto"));
+        QCOMPARE(minimal.stream->network, QStringLiteral("tcp"));
+        QVERIFY(minimal.name.isEmpty());
     }
     void unchangedRetainsEveryIdAndTraffic_data() {
         QTest::addColumn<bool>("running");
