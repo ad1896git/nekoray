@@ -16,8 +16,6 @@ jobs:
     name: linux-qt6
     runs-on: ubuntu-22.04
     timeout-minutes: 30
-    env:
-      NKR_BUILD_DIR: ${{ runner.temp }}/nkr-pr0-qt6
 
     steps:
       - name: Checkout
@@ -59,6 +57,8 @@ jobs:
           done
 
       - name: Configure
+        env:
+          NKR_BUILD_DIR: ${{ runner.temp }}/nkr-pr0-qt6
         run: |
           /usr/bin/cmake -S "$GITHUB_WORKSPACE" -B "$NKR_BUILD_DIR" -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
@@ -69,9 +69,13 @@ jobs:
             -DNKR_BUILD_TESTS=ON
 
       - name: Build
+        env:
+          NKR_BUILD_DIR: ${{ runner.temp }}/nkr-pr0-qt6
         run: /usr/bin/cmake --build "$NKR_BUILD_DIR" --parallel 2
 
       - name: Run tests
+        env:
+          NKR_BUILD_DIR: ${{ runner.temp }}/nkr-pr0-qt6
         run: |
           /usr/bin/ctest --test-dir "$NKR_BUILD_DIR" \
             --output-on-failure --no-tests=error --verbose
@@ -80,8 +84,6 @@ jobs:
     name: linux-qt5
     runs-on: ubuntu-22.04
     timeout-minutes: 30
-    env:
-      NKR_BUILD_DIR: ${{ runner.temp }}/nkr-pr0-qt5
 
     steps:
       - name: Checkout
@@ -122,6 +124,8 @@ jobs:
           done
 
       - name: Configure
+        env:
+          NKR_BUILD_DIR: ${{ runner.temp }}/nkr-pr0-qt5
         run: |
           /usr/bin/cmake -S "$GITHUB_WORKSPACE" -B "$NKR_BUILD_DIR" -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
@@ -132,9 +136,13 @@ jobs:
             -DNKR_BUILD_TESTS=ON
 
       - name: Build
+        env:
+          NKR_BUILD_DIR: ${{ runner.temp }}/nkr-pr0-qt5
         run: /usr/bin/cmake --build "$NKR_BUILD_DIR" --parallel 2
 
       - name: Run tests
+        env:
+          NKR_BUILD_DIR: ${{ runner.temp }}/nkr-pr0-qt5
         run: |
           /usr/bin/ctest --test-dir "$NKR_BUILD_DIR" \
             --output-on-failure --no-tests=error --verbose
