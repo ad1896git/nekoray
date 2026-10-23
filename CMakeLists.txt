@@ -321,11 +321,43 @@ target_link_libraries(nkr_link_parser PUBLIC
     Qt${QT_VERSION_MAJOR}::Network
 )
 
+add_library(nkr_data STATIC
+    db/Database.cpp
+)
+set_target_properties(nkr_data PROPERTIES
+    CXX_STANDARD 17
+    CXX_STANDARD_REQUIRED ON
+    CXX_EXTENSIONS OFF
+    POSITION_INDEPENDENT_CODE ON
+)
+target_include_directories(nkr_data PUBLIC "${PROJECT_SOURCE_DIR}")
+target_link_libraries(nkr_data PUBLIC
+    Qt${QT_VERSION_MAJOR}::Widgets
+    Qt${QT_VERSION_MAJOR}::Network
+)
+
+add_library(nkr_timed_process STATIC
+    sys/TimedProcess.cpp
+    sys/TimedProcess.hpp
+)
+set_target_properties(nkr_timed_process PROPERTIES
+    AUTOMOC ON
+    CXX_STANDARD 17
+    CXX_STANDARD_REQUIRED ON
+    CXX_EXTENSIONS OFF
+    POSITION_INDEPENDENT_CODE ON
+)
+target_include_directories(nkr_timed_process PUBLIC "${PROJECT_SOURCE_DIR}")
+target_link_libraries(nkr_timed_process PUBLIC
+    Qt${QT_VERSION_MAJOR}::Core
+)
+
 # Keep PROJECT_SOURCES intact for the Qt 5 translation scan.
 set(NKR_APPLICATION_SOURCES ${PROJECT_SOURCES})
 list(REMOVE_ITEM NKR_APPLICATION_SOURCES
     db/ProfileFilter.cpp
     fmt/Link2Bean.cpp
+    db/Database.cpp
 )
 
 set(NKR_AUTORUN_TARGET)
@@ -368,7 +400,7 @@ set_target_properties(nkr_runtime PROPERTIES
     AUTOMOC ON AUTOUIC ON AUTORCC ON POSITION_INDEPENDENT_CODE ON
     CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
 target_include_directories(nkr_runtime PUBLIC "${PROJECT_SOURCE_DIR}")
-target_link_libraries(nkr_runtime PUBLIC nkr_grpc_frame nkr_subscription nkr_vpn_process nkr_input_escaping nkr_link_parser
+target_link_libraries(nkr_runtime PUBLIC nkr_data nkr_timed_process nkr_grpc_frame nkr_subscription nkr_vpn_process nkr_input_escaping nkr_link_parser
     ${NKR_AUTORUN_TARGET}
     Qt${QT_VERSION_MAJOR}::Widgets Qt${QT_VERSION_MAJOR}::Network Qt${QT_VERSION_MAJOR}::Svg
     Threads::Threads ${NKR_EXTERNAL_TARGETS} ${PLATFORM_LIBRARIES})
@@ -475,7 +507,7 @@ if (NKR_BUILD_TESTS)
         )
     endif ()
 
-    foreach(_name IN ITEMS persistence subscription_commit renumber)
+    foreach(_name IN ITEMS persistence subscription_commit renumber w19)
         add_executable(tst_${_name} tests/tst_${_name}.cpp
             res/neko.qrc res/theme/feiyangqingyun/qss.qrc)
         set_target_properties(tst_${_name} PROPERTIES
@@ -487,6 +519,7 @@ if (NKR_BUILD_TESTS)
         set_tests_properties(${_name} PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
     endforeach()
     target_compile_definitions(tst_renumber PRIVATE NKR_RENUMBER_SOURCE_DIR="${PROJECT_SOURCE_DIR}")
+    set_tests_properties(w19 PROPERTIES TIMEOUT 45 LABELS "W19")
     set_tests_properties(persistence PROPERTIES TIMEOUT 90)
     set_tests_properties(subscription_commit PROPERTIES TIMEOUT 180 LABELS "W01;W08;W16")
     # Exhaustive recovery is one QtTest function; its default five-minute

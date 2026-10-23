@@ -218,3 +218,34 @@ set_tests_properties(runtime_fixes PROPERTIES
     TIMEOUT 60
     LABELS "W12;W15;W18"
 )
+
+add_executable(tst_w20 tst_w20.cpp)
+set_target_properties(tst_w20 PROPERTIES
+    AUTOMOC ON
+    CXX_STANDARD 17
+    CXX_STANDARD_REQUIRED ON
+    CXX_EXTENSIONS OFF
+)
+target_link_libraries(tst_w20 PRIVATE
+    nkr_timed_process
+    Qt${QT_VERSION_MAJOR}::Test
+)
+add_test(NAME w20 COMMAND tst_w20)
+set_tests_properties(w20 PROPERTIES TIMEOUT 30 LABELS "W20")
+
+if (TARGET myproto)
+    add_executable(tst_w22 tst_w22.cpp)
+    set_target_properties(tst_w22 PROPERTIES
+        AUTOMOC ON
+        CXX_STANDARD 17
+        CXX_STANDARD_REQUIRED ON
+        CXX_EXTENSIONS OFF
+    )
+    target_link_libraries(tst_w22 PRIVATE
+        myproto
+        Qt${QT_VERSION_MAJOR}::Core
+        Qt${QT_VERSION_MAJOR}::Test
+    )
+    add_test(NAME w22 COMMAND tst_w22)
+    set_tests_properties(w22 PROPERTIES TIMEOUT 15 LABELS "W22")
+endif()
