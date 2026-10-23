@@ -9,9 +9,7 @@ namespace NekoGui_sub {
 
         void update(const QString &str);
 
-        int gid_add_to = -1; // 导入到指定组 -1 为当前选中组
-
-        QList<std::shared_ptr<NekoGui::ProxyEntity>> updated_order; // 新增的配置，按照导入时处理的先后排序
+        QList<std::shared_ptr<NekoGui::ProxyEntity>> updated_order; // staged only
     };
 
     class GroupUpdater : public QObject {
@@ -25,6 +23,7 @@ namespace NekoGui_sub {
     signals:
 
         void asyncUpdateCallback(int gid);
+        void updateNotice(const QString &message);
     };
 
     extern GroupUpdater *groupUpdater;

@@ -1,4 +1,5 @@
 #include "dialog_edit_profile.h"
+#include "sub/SubscriptionCommit.hpp"
 #include "ui_dialog_edit_profile.h"
 
 #include "ui/edit/edit_socks_http.h"
@@ -377,8 +378,22 @@ void DialogEditProfile::accept() {
     QStringList msg = {"accept"};
 
     if (newEnt) {
-        if (!NekoGui::profileManager->AddProfile(ent)) {
-            MessageBoxWarning(tr("Error"), tr("Could not save the profile. Check the log and directory permissions."));
+        const auto result = NekoGui_sub::Subscription::Commit(
+            NekoGui::profileManager->CurrentGroup(),
+            {ent}, false, false, QString());
+        if (!NekoGui_sub::Subscription::Succeeded(result)) {
+            const bool recoveryFailed =
+                result.status == NekoGui_sub::Subscription::Status::RecoveryFailed;
+            MessageBoxWarning(
+                tr("Error"),
+                recoveryFailed
+                    ? tr("Could not save the profile, and recovery is incomplete. "
+                         "Repair storage access before trying again.")
+                    : tr("Could not save the profile. "
+                         "Check the log and directory permissions."));
+            // A failed rollback may leave this entity registered but hidden.
+            // Do not reuse it as a fresh unassigned editor entity.
+            if (recoveryFailed) QDialog::reject();
             return;
         }
     } else {
@@ -486,7 +501,7 @@ void DialogEditProfile::do_apply_to_group(const std::shared_ptr<NekoGui::Group> 
     auto stream = GetStreamSettings(ent->bean.get());
 
     auto copyStream = [=](void *p) {
-        for (const auto &profile: group->Profiles()) {
+        for (const auto &profile: group->ProfilesWithOrder()) {
             auto newStream = GetStreamSettings(profile->bean.get());
             if (newStream == nullptr) continue;
             if (stream == newStream) continue;
@@ -497,7 +512,7 @@ void DialogEditProfile::do_apply_to_group(const std::shared_ptr<NekoGui::Group> 
     };
 
     auto copyBean = [=](void *p) {
-        for (const auto &profile: group->Profiles()) {
+        for (const auto &profile: group->ProfilesWithOrder()) {
             if (profile == ent) continue;
             profile->bean->_setValue(ent->bean->_name(p), p);
             // qDebug() << profile->bean->ToJsonBytes();

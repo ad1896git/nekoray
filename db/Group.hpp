@@ -19,6 +19,15 @@ namespace NekoGui {
         bool manually_column_width = false;
         QList<int> column_width;
         QList<int> order;
+        // Missing in legacy files: an empty order retains legacy fallback.
+        bool order_explicit = false;
+
+        // Persisted conservatively across an unfinished update/cleanup.
+        bool recoveryRequired = false;
+
+        [[nodiscard]] bool HasExplicitOrder() const {
+            return order_explicit || !order.isEmpty();
+        }
 
         Group();
 

@@ -1,4 +1,5 @@
 #include "Database.hpp"
+#include <QSet>
 
 #include "fmt/includes.h"
 
@@ -139,7 +140,7 @@ namespace NekoGui {
                 for (auto gid: groupsTabOrder) {
                     auto group = GetGroup(gid);
                     gidOld2New[gid] = ii++;
-                    for (auto const &profile: group->ProfilesWithOrder()) {
+                    for (auto const &profile: group->Profiles()) {
                         auto oldId = profile->id;
                         auto newId = i++;
                         profile->id = newId;
@@ -149,7 +150,9 @@ namespace NekoGui {
                         newProfiles[newId] = profile;
                         newProfilesIdOrder << newId;
                     }
-                    group->order = {};
+                    group->order.clear();
+                    group->order_explicit = false;
+                    group->recoveryRequired = false;
                     group->Save();
                 }
                 profiles = newProfiles;
@@ -345,16 +348,19 @@ namespace NekoGui {
         return true;
     }
 
-    void ProfileManager::MoveProfile(const std::shared_ptr<ProxyEntity> &ent, int gid) {
+    void ProfileManager::MoveProfile(
+        const std::shared_ptr<ProxyEntity> &ent, int gid) {
         if (gid == ent->gid || gid < 0) return;
-        auto oldGroup = GetGroup(ent->gid);
-        if (oldGroup != nullptr && !oldGroup->order.isEmpty()) {
+        const auto oldGroup = GetGroup(ent->gid);
+        if (oldGroup && oldGroup->HasExplicitOrder()) {
+            oldGroup->order_explicit = true;
             oldGroup->order.removeAll(ent->id);
             oldGroup->Save();
         }
-        auto newGroup = GetGroup(gid);
-        if (newGroup != nullptr && !newGroup->order.isEmpty()) {
-            newGroup->order.push_back(ent->id);
+        const auto newGroup = GetGroup(gid);
+        if (newGroup && newGroup->HasExplicitOrder()) {
+            newGroup->order_explicit = true;
+            if (!newGroup->order.contains(ent->id)) newGroup->order.append(ent->id);
             newGroup->Save();
         }
         ent->gid = gid;
@@ -374,6 +380,8 @@ namespace NekoGui {
         _add(new configItem("skip_auto_update", &skip_auto_update, itemType::boolean));
         _add(new configItem("name", &name, itemType::string));
         _add(new configItem("order", &order, itemType::integerList));
+        _add(new configItem("order_explicit", &order_explicit, itemType::boolean));
+        _add(new configItem("recovery_required", &recoveryRequired, itemType::boolean));
         _add(new configItem("url", &url, itemType::string));
         _add(new configItem("info", &info, itemType::string));
         _add(new configItem("lastup", &sub_last_update, itemType::integer64));
@@ -465,16 +473,16 @@ namespace NekoGui {
     }
 
     QList<std::shared_ptr<ProxyEntity>> Group::ProfilesWithOrder() const {
-        if (order.isEmpty()) {
-            return Profiles();
-        } else {
-            QList<std::shared_ptr<ProxyEntity>> ret;
-            for (auto _id: order) {
-                auto ent = profileManager->GetProfile(_id);
-                if (ent != nullptr) ret += ent;
-            }
-            return ret;
+        if (!HasExplicitOrder()) return Profiles();
+        QList<std::shared_ptr<ProxyEntity>> result;
+        QSet<int> seen;
+        for (const int profileId : order) {
+            const auto ent = profileManager->GetProfile(profileId);
+            if (!ent || ent->gid != id || seen.contains(profileId)) continue;
+            seen.insert(profileId);
+            result.append(ent);
         }
+        return result;
     }
 
 } // namespace NekoGui

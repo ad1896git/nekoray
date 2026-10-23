@@ -1,4 +1,5 @@
 #include "ProfileFilter.hpp"
+#include <QSet>
 
 namespace NekoGui {
 
@@ -33,18 +34,22 @@ namespace NekoGui {
                                QList<std::shared_ptr<ProxyEntity>> &outSrc,
                                QList<std::shared_ptr<ProxyEntity>> &outDst,
                                bool by_address) {
-        QMap<QString, std::shared_ptr<ProxyEntity>> hashMap;
-
-        for (const auto &ent: src) {
-            QString key = ProfileFilter_ent_key(ent, by_address);
-            hashMap[key] = ent;
+        using Entity = std::shared_ptr<ProxyEntity>;
+        QMap<QString, QList<Entity>> available;
+        QSet<const ProxyEntity *> inserted;
+        QSet<const ProxyEntity *> consumed;
+        for (const auto &ent : src) {
+            if (!ent || !ent->bean || inserted.contains(ent.get())) continue;
+            inserted.insert(ent.get());
+            available[ProfileFilter_ent_key(ent, by_address)].append(ent);
         }
-        for (const auto &ent: dst) {
-            QString key = ProfileFilter_ent_key(ent, by_address);
-            if (hashMap.contains(key)) {
-                outDst += ent;
-                outSrc += hashMap[key];
-            }
+        for (const auto &ent : dst) {
+            if (!ent || !ent->bean || consumed.contains(ent.get())) continue;
+            auto it = available.find(ProfileFilter_ent_key(ent, by_address));
+            if (it == available.end() || it.value().isEmpty()) continue;
+            outSrc.append(it.value().takeFirst());
+            outDst.append(ent);
+            consumed.insert(ent.get());
         }
     }
 

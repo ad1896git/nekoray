@@ -65,7 +65,7 @@ void GroupItem::refresh_data() {
 
     auto type = ent->url.isEmpty() ? tr("Basic") : tr("Subscription");
     if (ent->archive) type = tr("Archive") + " " + type;
-    type += " (" + Int2String(ent->Profiles().length()) + ")";
+    type += " (" + Int2String(ent->ProfilesWithOrder().length()) + ")";
     ui->type->setText(type);
 
     if (ent->url.isEmpty()) {
