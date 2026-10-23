@@ -1,0 +1,140 @@
+name: Nekoray tests
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  linux-qt6:
+    name: linux-qt6
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    env:
+      NKR_BUILD_DIR: ${{ runner.temp }}/nkr-pr0-qt6
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install build and Qt runtime dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake ninja-build \
+            libgl1-mesa-dev libgstreamer-gl1.0-0 libpulse-dev \
+            libxcb-glx0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 \
+            libxcb-randr0 libxcb-render-util0 libxcb-render0 \
+            libxcb-shape0 libxcb-shm0 libxcb-sync1 libxcb-util1 \
+            libxcb-xfixes0 libxcb-xinerama0 libxcb1 \
+            libxkbcommon-dev libxkbcommon-x11-0 libxcb-xkb-dev \
+            libxcb-cursor0
+
+      - name: Install Qt 6.7.3
+        uses: jurplel/install-qt-action@v4.3.1
+        with:
+          version: '6.7.3'
+          host: linux
+          target: desktop
+          arch: linux_gcc_64
+          dir: ${{ runner.temp }}/nkr-sdk
+          install-deps: 'false'
+          cache: 'false'
+          aqtversion: '==3.3.0'
+
+      - name: Verify SDK and tools
+        run: |
+          /usr/bin/cmake --version
+          /usr/bin/ctest --version
+          "$QT_ROOT_DIR/bin/qmake" -query QT_VERSION
+          test "$("$QT_ROOT_DIR/bin/qmake" -query QT_VERSION)" = "6.7.3"
+          for component in Core Widgets Network Svg LinguistTools Test; do
+            test -f "$QT_ROOT_DIR/lib/cmake/Qt6${component}/Qt6${component}Config.cmake"
+          done
+
+      - name: Configure
+        run: |
+          /usr/bin/cmake -S "$GITHUB_WORKSPACE" -B "$NKR_BUILD_DIR" -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_PREFIX_PATH="$QT_ROOT_DIR" \
+            -DQt6_DIR="$QT_ROOT_DIR/lib/cmake/Qt6" \
+            -DQT_VERSION_MAJOR=6 \
+            -DNKR_NO_EXTERNAL=ON \
+            -DNKR_BUILD_TESTS=ON
+
+      - name: Build
+        run: /usr/bin/cmake --build "$NKR_BUILD_DIR" --parallel 2
+
+      - name: Run tests
+        run: |
+          /usr/bin/ctest --test-dir "$NKR_BUILD_DIR" \
+            --output-on-failure --no-tests=error --verbose
+
+  linux-qt5:
+    name: linux-qt5
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    env:
+      NKR_BUILD_DIR: ${{ runner.temp }}/nkr-pr0-qt5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install build and Qt runtime dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake ninja-build \
+            libgl1-mesa-dev libgstreamer-gl1.0-0 libpulse-dev \
+            libxcb-glx0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 \
+            libxcb-randr0 libxcb-render-util0 libxcb-render0 \
+            libxcb-shape0 libxcb-shm0 libxcb-sync1 libxcb-util1 \
+            libxcb-xfixes0 libxcb-xinerama0 libxcb1 \
+            libxkbcommon-dev libxkbcommon-x11-0 libxcb-xkb-dev
+
+      - name: Install Qt 5.12.12
+        uses: jurplel/install-qt-action@v4.3.1
+        with:
+          version: '5.12.12'
+          host: linux
+          target: desktop
+          arch: gcc_64
+          dir: ${{ runner.temp }}/nkr-sdk
+          install-deps: 'false'
+          cache: 'false'
+          aqtversion: '==3.3.0'
+
+      - name: Verify SDK and tools
+        run: |
+          /usr/bin/cmake --version
+          /usr/bin/ctest --version
+          "$QT_ROOT_DIR/bin/qmake" -query QT_VERSION
+          test "$("$QT_ROOT_DIR/bin/qmake" -query QT_VERSION)" = "5.12.12"
+          for component in Core Widgets Network Svg LinguistTools Test; do
+            test -f "$QT_ROOT_DIR/lib/cmake/Qt5${component}/Qt5${component}Config.cmake"
+          done
+
+      - name: Configure
+        run: |
+          /usr/bin/cmake -S "$GITHUB_WORKSPACE" -B "$NKR_BUILD_DIR" -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_PREFIX_PATH="$QT_ROOT_DIR" \
+            -DQt5_DIR="$QT_ROOT_DIR/lib/cmake/Qt5" \
+            -DQT_VERSION_MAJOR=5 \
+            -DNKR_NO_EXTERNAL=ON \
+            -DNKR_BUILD_TESTS=ON
+
+      - name: Build
+        run: /usr/bin/cmake --build "$NKR_BUILD_DIR" --parallel 2
+
+      - name: Run tests
+        run: |
+          /usr/bin/ctest --test-dir "$NKR_BUILD_DIR" \
+            --output-on-failure --no-tests=error --verbose
