@@ -10,6 +10,7 @@
 #include "db/ConfigBuilder.hpp"
 #include "sub/GroupUpdater.hpp"
 #include "sys/ExternalProcess.hpp"
+#include "sys/VpnProcess.hpp"
 #include "sys/AutoRun.hpp"
 
 #include "ui/ThemeManager.hpp"
@@ -51,6 +52,7 @@
 #include <QMessageBox>
 #include <QDir>
 #include <QFileInfo>
+#include <QNetworkInterface>
 
 #include <atomic>
 
@@ -866,6 +868,13 @@ void MainWindow::refresh_status(const QString &traffic_update) {
     //
     ui->checkBox_VPN->setChecked(NekoGui::dataStore->spmode_vpn);
     ui->checkBox_SystemProxy->setChecked(NekoGui::dataStore->spmode_system_proxy);
+#ifndef Q_OS_WIN
+    const bool vpnPending = vpnProcess_ && !vpnProcess_->isReady();
+    ui->checkBox_VPN->setToolTip(
+        vpnPending
+            ? tr("Waiting for VPN authorization or Tun startup")
+            : QString());
+#endif
     if (select_mode) {
         ui->label_running->setText(tr("Select") + " *");
         ui->label_running->setToolTip(tr("Select mode, double-click or press Enter to select a profile, press ESC to exit."));
@@ -873,14 +882,19 @@ void MainWindow::refresh_status(const QString &traffic_update) {
         ui->label_running->setToolTip({});
     }
 
+    QString tunLabel = QStringLiteral("Tun");
+#ifndef Q_OS_WIN
+    if (vpnProcess_ && !vpnProcess_->isReady())
+        tunLabel = tr("Tun starting");
+#endif
     auto make_title = [=](bool isTray) {
         QStringList tt;
         if (!isTray && NekoGui::IsAdmin()) tt << "[Admin]";
         if (select_mode) tt << "[" + tr("Select") + "]";
         if (!title_error.isEmpty()) tt << "[" + title_error + "]";
-        if (NekoGui::dataStore->spmode_vpn && !NekoGui::dataStore->spmode_system_proxy) tt << "[Tun]";
+        if (NekoGui::dataStore->spmode_vpn && !NekoGui::dataStore->spmode_system_proxy) tt << "[" + tunLabel + "]";
         if (!NekoGui::dataStore->spmode_vpn && NekoGui::dataStore->spmode_system_proxy) tt << "[" + tr("System Proxy") + "]";
-        if (NekoGui::dataStore->spmode_vpn && NekoGui::dataStore->spmode_system_proxy) tt << "[Tun+" + tr("System Proxy") + "]";
+        if (NekoGui::dataStore->spmode_vpn && NekoGui::dataStore->spmode_system_proxy) tt << "[" + tunLabel + "+" + tr("System Proxy") + "]";
         tt << software_name;
         if (!isTray) tt << "(" + QString(NKR_VERSION) + ")";
         if (!NekoGui::dataStore->active_routing.isEmpty() && NekoGui::dataStore->active_routing != "Default") {
@@ -1820,6 +1834,17 @@ void MainWindow::HotkeyEvent(const QString &key) {}
 // VPN Launcher
 
 bool MainWindow::StartVPNProcess() {
+#ifndef Q_OS_WIN
+    if (vpnProcess_) {
+        if (vpnProcess_->stopRequested()) {
+            MessageBoxWarning(
+                tr("Error"),
+                tr("The previous VPN process is still stopping."));
+            return false;
+        }
+        return true;
+    }
+#endif
     //
     if (vpn_pid != 0) {
         return true;
@@ -1838,30 +1863,84 @@ bool MainWindow::StartVPNProcess() {
         runOnUiThread([=] { neko_set_spmode_vpn(false); });
     });
 #else
-    //
-    auto vpn_process = new QProcess;
-    QProcess::connect(vpn_process, &QProcess::stateChanged, this, [=](QProcess::ProcessState state) {
-        if (state == QProcess::NotRunning) {
-            vpn_pid = 0;
-            vpn_process->deleteLater();
-            GetMainWindow()->neko_set_spmode_vpn(false);
-        }
+    const auto interfaceName =
+        NekoGui_runtime::TunInterfaceName(
+            ReadFileText(configPath).toUtf8());
+    if (interfaceName.isEmpty()) {
+        MessageBoxWarning(
+            tr("Error"),
+            tr("Cannot determine a single named Tun interface "
+               "from the generated VPN configuration."));
+        return false;
+    }
+
+    auto *process = new NekoGui_runtime::VpnProcess(
+        [interfaceName] {
+            return QNetworkInterface::interfaceFromName(
+                       interfaceName).isValid();
+        },
+        this);
+    vpnProcess_ = process;
+
+    connect(process, &NekoGui_runtime::VpnProcess::ready,
+            this, [this, process] {
+        if (vpnProcess_ != process) return;
+        refresh_status();
     });
-    //
-    vpn_process->setProcessChannelMode(QProcess::ForwardedChannels);
+
+    connect(process, &NekoGui_runtime::VpnProcess::ended,
+            this, [this, process](const QString &error) {
+        if (vpnProcess_ != process) {
+            process->deleteLater();
+            return;
+        }
+
+        // Clear ownership before UI callbacks or a modal warning can
+        // re-enter this window. No stop request is needed after exit.
+        vpnProcess_ = nullptr;
+        vpn_pid = 0;
+        process->deleteLater();
+        neko_set_spmode_vpn(false);
+
+        if (!error.isEmpty())
+            MessageBoxWarning(tr("Error"), error);
+    });
+
 #ifdef Q_OS_MACOS
-    vpn_process->start("osascript", {"-e", QStringLiteral("do shell script \"%1\" with administrator privileges")
-                                               .arg("bash " + scriptPath)});
+    const bool started = process->start(
+        QStringLiteral("osascript"),
+        {QStringLiteral("-e"),
+         QStringLiteral(
+             "do shell script \"%1\" with administrator privileges")
+             .arg("bash " + scriptPath)});
 #else
-    vpn_process->start("pkexec", {"bash", scriptPath});
+    const bool started = process->start(
+        QStringLiteral("pkexec"),
+        {QStringLiteral("bash"), scriptPath});
 #endif
-    vpn_process->waitForStarted();
-    vpn_pid = vpn_process->processId(); // actually it's pkexec or bash PID
+
+    if (!started) {
+        const auto error = process->errorString();
+        vpnProcess_ = nullptr;
+        vpn_pid = 0;
+        process->deleteLater();
+        MessageBoxWarning(tr("Error"), error);
+        return false;
+    }
+
+    vpn_pid = process->processId();
 #endif
     return true;
 }
 
 bool MainWindow::StopVPNProcess(bool unconditional) {
+#ifndef Q_OS_WIN
+    auto *stoppingProcess = vpnProcess_;
+    const bool alreadyStopping =
+        stoppingProcess && stoppingProcess->stopRequested();
+    if (stoppingProcess)
+        stoppingProcess->setStopRequested(true);
+#endif
     if (unconditional || vpn_pid != 0) {
         bool ok;
         core_process->processId();
@@ -1884,6 +1963,10 @@ bool MainWindow::StopVPNProcess(bool unconditional) {
 #endif
         p.waitForFinished();
         ok = p.exitCode() == 0;
+#endif
+#ifndef Q_OS_WIN
+        if (!ok && vpnProcess_ == stoppingProcess && stoppingProcess)
+            stoppingProcess->setStopRequested(alreadyStopping);
 #endif
         if (!unconditional) {
             ok ? vpn_pid = 0 : MessageBoxWarning(tr("Error"), tr("Failed to stop Tun process"));
