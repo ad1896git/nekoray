@@ -4,6 +4,13 @@
 #include <QUrlQuery>
 
 namespace NekoGui_fmt {
+    namespace {
+        bool ParseLinkAllowInsecure(const QString &value) {
+            const QString normalized = value.trimmed().toLower();
+            return normalized == QStringLiteral("1") ||
+                   normalized == QStringLiteral("true");
+        }
+    } // namespace
 
 #define DECODE_V2RAY_N_1                                                                                                        \
     QString linkN = DecodeB64IfValid(SubStrBefore(SubStrAfter(link, "://"), "#"), QByteArray::Base64Option::Base64UrlEncoding); \
@@ -71,7 +78,8 @@ namespace NekoGui_fmt {
         if (!sni1.isEmpty()) stream->sni = sni1;
         if (!sni2.isEmpty()) stream->sni = sni2;
         stream->alpn = GetQueryValue(query, "alpn");
-        if (!query.queryItemValue("allowInsecure").isEmpty()) stream->allow_insecure = true;
+        stream->allow_insecure =
+            ParseLinkAllowInsecure(query.queryItemValue("allowInsecure"));
         stream->reality_pbk = GetQueryValue(query, "pbk", "");
         stream->reality_sid = GetQueryValue(query, "sid", "");
         stream->reality_spx = GetQueryValue(query, "spx", "");
@@ -201,7 +209,8 @@ namespace NekoGui_fmt {
             auto sni2 = GetQueryValue(query, "peer");
             if (!sni1.isEmpty()) stream->sni = sni1;
             if (!sni2.isEmpty()) stream->sni = sni2;
-            if (!query.queryItemValue("allowInsecure").isEmpty()) stream->allow_insecure = true;
+            stream->allow_insecure =
+                ParseLinkAllowInsecure(query.queryItemValue("allowInsecure"));
             stream->reality_pbk = GetQueryValue(query, "pbk", "");
             stream->reality_sid = GetQueryValue(query, "sid", "");
             stream->reality_spx = GetQueryValue(query, "spx", "");

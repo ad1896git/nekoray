@@ -36,3 +36,5 @@ add_test(NAME stop_traffic_persistence
         COMMAND tst_stop_traffic_persistence
 )
 set_tests_properties(stop_traffic_persistence PROPERTIES TIMEOUT 15)
+
+add_subdirectory(w06)
