@@ -245,6 +245,15 @@ set(PROJECT_SOURCES
         ${QV2RAY_RC}
 )
 
+# Pure unary gRPC frame codec shared by production and tests.
+add_library(nkr_grpc_frame INTERFACE)
+target_include_directories(nkr_grpc_frame INTERFACE
+    "${PROJECT_SOURCE_DIR}"
+)
+target_link_libraries(nkr_grpc_frame INTERFACE
+    Qt${QT_VERSION_MAJOR}::Core
+)
+
 add_library(nkr_input_escaping STATIC
     main/pure/VpnAuth.cpp
     main/pure/VpnAuth.hpp
@@ -341,7 +350,7 @@ set_target_properties(nkr_runtime PROPERTIES
     AUTOMOC ON AUTOUIC ON AUTORCC ON POSITION_INDEPENDENT_CODE ON
     CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
 target_include_directories(nkr_runtime PUBLIC "${PROJECT_SOURCE_DIR}")
-target_link_libraries(nkr_runtime PUBLIC nkr_subscription nkr_input_escaping nkr_link_parser
+target_link_libraries(nkr_runtime PUBLIC nkr_grpc_frame nkr_subscription nkr_input_escaping nkr_link_parser
     ${NKR_AUTORUN_TARGET}
     Qt${QT_VERSION_MAJOR}::Widgets Qt${QT_VERSION_MAJOR}::Network Qt${QT_VERSION_MAJOR}::Svg
     Threads::Threads ${NKR_EXTERNAL_TARGETS} ${PLATFORM_LIBRARIES})
