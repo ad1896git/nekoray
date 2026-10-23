@@ -136,3 +136,24 @@ target_link_libraries(tst_w03b PRIVATE
 )
 add_test(NAME w03b COMMAND tst_w03b)
 set_tests_properties(w03b PROPERTIES TIMEOUT 30)
+
+if (APPLE)
+    add_executable(tst_autorun_mac
+        tst_autorun_mac.cpp
+    )
+    set_target_properties(tst_autorun_mac PROPERTIES
+        AUTOMOC ON
+        CXX_STANDARD 17
+        CXX_STANDARD_REQUIRED ON
+        CXX_EXTENSIONS OFF
+    )
+    target_link_libraries(tst_autorun_mac PRIVATE
+        nkr_autorun_mac
+        Qt${QT_VERSION_MAJOR}::Test
+    )
+    add_test(NAME autorun_mac COMMAND tst_autorun_mac)
+    set_tests_properties(autorun_mac PROPERTIES
+        TIMEOUT 30
+        LABELS "W23a"
+    )
+endif ()
