@@ -6,6 +6,7 @@
 #include "fmt/Preset.hpp"
 #include "db/ConfigBuilder.hpp"
 #include "db/Database.hpp"
+#include "main/pure/ArgCodec.hpp"
 
 #include <QMessageBox>
 #include <QClipboard>
@@ -25,9 +26,19 @@ EditCustom::~EditCustom() {
     delete ui;
 }
 
+bool EditCustom::readCommand(QStringList &command) {
+    if (NkrInput::decodeArgs(ui->command->text(), command)) {
+        return true;
+    }
+    MessageBoxWarning(software_name,
+                      tr("Command contains an unterminated quote."));
+    ui->command->setFocus();
+    return false;
+}
+
 #define SAVE_CUSTOM_BEAN                            \
     P_SAVE_COMBO_STRING(core)                       \
-    bean->command = ui->command->text().split(" "); \
+    bean->command = parsedCommand;                 \
     P_SAVE_STRING_PLAIN(config_simple)              \
     P_SAVE_COMBO_STRING(config_suffix)              \
     P_SAVE_INT(mapping_port)                        \
@@ -60,7 +71,7 @@ void EditCustom::onStart(std::shared_ptr<NekoGui::ProxyEntity> _ent) {
 
     // load core ui
     P_LOAD_COMBO_STRING(core)
-    ui->command->setText(bean->command.join(" "));
+    ui->command->setText(NkrInput::encodeArgs(bean->command));
     ui->config_simple->setPlainText(bean->config_simple);
     P_LOAD_COMBO_STRING(config_suffix)
     P_LOAD_INT(mapping_port)
@@ -91,6 +102,10 @@ void EditCustom::onStart(std::shared_ptr<NekoGui::ProxyEntity> _ent) {
 
     // Preview
     connect(ui->preview, &QPushButton::clicked, this, [=] {
+        QStringList parsedCommand;
+        if (!readCommand(parsedCommand)) {
+            return;
+        }
         // CustomBean::BuildExternal
         QStringList th;
         auto mapping_port = ui->mapping_port->text().toInt();
@@ -137,6 +152,10 @@ bool EditCustom::onEnd() {
         return false;
     }
 
+    QStringList parsedCommand;
+    if (!readCommand(parsedCommand)) {
+        return false;
+    }
     auto bean = this->ent->CustomBean();
 
     SAVE_CUSTOM_BEAN

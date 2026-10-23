@@ -26,6 +26,8 @@ public:
     bool onEnd() override;
 
 private:
+    bool readCommand(QStringList &command);
+
     Ui::EditCustom *ui;
     std::shared_ptr<NekoGui::ProxyEntity> ent;
 

@@ -1,3 +1,4 @@
+#include "main/pure/VpnAuth.hpp"
 #include "main/UiOwnership.hpp"
 #include "db/ConfigBuilder.hpp"
 #include "db/Database.hpp"
@@ -767,18 +768,11 @@ namespace NekoGui {
 
         // TODO bypass ext core process path?
 
-        // auth
-        QString socks_user_pass;
-        if (dataStore->inbound_auth->NeedAuth()) {
-            socks_user_pass = R"( "username": "%1", "password": "%2", )";
-            socks_user_pass = socks_user_pass.arg(dataStore->inbound_auth->username, dataStore->inbound_auth->password);
-        }
         // gen config
         auto configFn = ":/neko/vpn/sing-box-vpn.json";
         if (QFile::exists("vpn/sing-box-vpn.json")) configFn = "vpn/sing-box-vpn.json";
         auto config = ReadFileText(configFn)
                           .replace("//%IPV6_ADDRESS%", dataStore->vpn_ipv6 ? R"("inet6_address": "fdfe:dcba:9876::1/126",)" : "")
-                          .replace("//%SOCKS_USER_PASS%", socks_user_pass)
                           .replace("//%PROCESS_NAME_RULE%", process_name_rule)
                           .replace("//%CIDR_RULE%", cidr_rule)
                           .replace("%MTU%", Int2String(dataStore->vpn_mtu))
@@ -789,6 +783,11 @@ namespace NekoGui {
                           .replace("%DNS_ADDRESS%", BOX_UNDERLYING_DNS)
                           .replace("%FAKE_DNS_INBOUND%", dataStore->fake_dns ? "tun-in" : "empty")
                           .replace("%PORT%", Int2String(dataStore->inbound_socks_port));
+        config = NkrInput::applyVpnAuth(
+            config,
+            dataStore->inbound_auth->NeedAuth(),
+            dataStore->inbound_auth->username,
+            dataStore->inbound_auth->password);
         // write config
         QFile file;
         file.setFileName(QFileInfo(configFn).fileName());
