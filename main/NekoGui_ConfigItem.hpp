@@ -1,6 +1,12 @@
 // DO NOT INCLUDE THIS
 
+class QSaveFile;
+
 namespace NekoGui_ConfigItem {
+    struct SaveResult {
+        bool ok;
+        bool changed;
+    };
     // config 工具
     enum itemType {
         string,
@@ -40,6 +46,7 @@ namespace NekoGui_ConfigItem {
         QByteArray last_save_content;
 
         JsonStore() = default;
+        virtual ~JsonStore() = default;
 
         explicit JsonStore(QString fileName) {
             fn = std::move(fileName);
@@ -53,17 +60,33 @@ namespace NekoGui_ConfigItem {
 
         void _setValue(const QString &name, void *p);
 
-        QJsonObject ToJson(const QStringList &without = {});
+        virtual QJsonObject ToJson(const QStringList &without = {});
 
         QByteArray ToJsonBytes();
 
         void FromJson(QJsonObject object);
 
-        void FromJsonBytes(const QByteArray &data);
+        virtual bool Validate(const QJsonObject &object) const;
+
+        bool FromJsonBytes(const QByteArray &data);
+
+        SaveResult SaveChecked();
 
         bool Save();
 
         bool Load();
+
+        // Startup/default creation only. Does not overwrite a failed read
+        // or a file whose isolation failed.
+        bool LoadOrCreate();
+
+    protected:
+        virtual qint64 WriteSaveFile(QSaveFile &file, const QByteArray &data);
+        virtual bool CommitSaveFile(QSaveFile &file);
+
+    private:
+        QString blocked_save_path;
+        bool load_can_create = false;
     };
 } // namespace NekoGui_ConfigItem
 

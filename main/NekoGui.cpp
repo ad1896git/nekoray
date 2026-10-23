@@ -8,6 +8,12 @@
 #include <QJsonObject>
 #include <QJsonArray>
 #include <QJsonDocument>
+#include <QSaveFile>
+#include <QDateTime>
+#include <QUuid>
+
+#include <cmath>
+#include <limits>
 
 #ifdef Q_OS_WIN
 #include "sys/windows/guihelper.h"
@@ -169,53 +175,202 @@ namespace NekoGui_ConfigItem {
         if (callback_after_load != nullptr) callback_after_load();
     }
 
-    void JsonStore::FromJsonBytes(const QByteArray &data) {
-        QJsonParseError error{};
-        auto document = QJsonDocument::fromJson(data, &error);
+    namespace {
 
-        if (error.error != error.NoError) {
-            qDebug() << "QJsonParseError" << error.errorString();
-            return;
+        bool JsonInteger(const QJsonValue &value, double lower, double upperExclusive) {
+            if (!value.isDouble()) return false;
+            const double number = value.toDouble();
+            return std::isfinite(number) && std::trunc(number) == number &&
+                   number >= lower && number < upperExclusive;
         }
 
-        FromJson(document.object());
+        bool JsonInt(const QJsonValue &value) {
+            return JsonInteger(value, double(std::numeric_limits<int>::min()),
+                               double(std::numeric_limits<int>::max()) + 1.0);
+        }
+
+        bool IsolateCorruptFile(const QString &path) {
+            const QFileInfo source(path);
+            const QString directory = source.absolutePath() + "/corrupt";
+            if (!QDir().mkpath(directory)) {
+                qWarning() << "Cannot create corrupt-file directory" << directory;
+                return false;
+            }
+            const QString suffix =
+                QDateTime::currentDateTimeUtc().toString("yyyyMMddTHHmmsszzz") +
+                "-" + QUuid::createUuid().toString(QUuid::WithoutBraces);
+            const QString destination =
+                directory + "/" + source.fileName() + "." + suffix + ".corrupt";
+            QFile file(source.absoluteFilePath());
+            if (!file.rename(destination)) {
+                qWarning() << "Cannot isolate invalid config"
+                           << source.absoluteFilePath() << file.errorString();
+                return false;
+            }
+            qWarning() << "Isolated invalid config"
+                       << source.absoluteFilePath() << "as" << destination;
+            return true;
+        }
+
+    } // namespace
+
+    bool JsonStore::Validate(const QJsonObject &object) const {
+        for (auto it = object.constBegin(); it != object.constEnd(); ++it) {
+            const auto registered = _map.constFind(it.key());
+            if (registered == _map.constEnd()) continue;
+            const auto &item = registered.value();
+            if (!item || !item->ptr) return false;
+            const QJsonValue value = it.value();
+            switch (item->type) {
+                case itemType::string:
+                    if (!value.isString()) return false;
+                    break;
+                case itemType::integer:
+                    if (!JsonInt(value)) return false;
+                    break;
+                case itemType::integer64:
+                    // Exclusive upper bound avoids conversion out of range at 2^63.
+                    if (!JsonInteger(value, -9223372036854775808.0,
+                                      9223372036854775808.0)) return false;
+                    break;
+                case itemType::boolean:
+                    if (!value.isBool()) return false;
+                    break;
+                case itemType::stringList:
+                    if (!value.isArray()) return false;
+                    for (const auto element : value.toArray()) {
+                        if (!element.isString()) return false;
+                    }
+                    break;
+                case itemType::integerList:
+                    if (!value.isArray()) return false;
+                    for (const auto element : value.toArray()) {
+                        if (!JsonInt(element)) return false;
+                    }
+                    break;
+                case itemType::jsonStore:
+                    if (!value.isObject() ||
+                        !static_cast<JsonStore *>(item->ptr)->Validate(value.toObject())) {
+                        return false;
+                    }
+                    break;
+            }
+        }
+        return true;
+    }
+
+    bool JsonStore::FromJsonBytes(const QByteArray &data) {
+        QJsonParseError error{};
+        const auto document = QJsonDocument::fromJson(data, &error);
+        if (error.error != QJsonParseError::NoError || !document.isObject()) {
+            qWarning() << "Invalid JSON object" << fn << error.errorString();
+            return false;
+        }
+        const auto object = document.object();
+        if (!Validate(object)) {
+            qWarning() << "Invalid config schema" << fn;
+            return false;
+        }
+        FromJson(object);
+        return true;
+    }
+
+    qint64 JsonStore::WriteSaveFile(QSaveFile &file, const QByteArray &data) {
+        return file.write(data);
+    }
+
+    bool JsonStore::CommitSaveFile(QSaveFile &file) {
+        return file.commit();
+    }
+
+    SaveResult JsonStore::SaveChecked() {
+        if (callback_before_save != nullptr) callback_before_save();
+        if (save_control_no_save) return {false, false};
+        const QString absolutePath = QFileInfo(fn).absoluteFilePath();
+        if (fn.isEmpty() || absolutePath == blocked_save_path) {
+            qWarning() << "Config save blocked" << fn;
+            return {false, false};
+        }
+        const auto object = ToJson();
+        if (!Validate(object)) {
+            qWarning() << "Refusing to save invalid config" << fn;
+            return {false, false};
+        }
+        const QByteArray content = QJsonDocument(object).toJson(
+            save_control_compact ? QJsonDocument::Compact : QJsonDocument::Indented);
+        const bool changed = last_save_content != content;
+        QSaveFile file(fn);
+        file.setDirectWriteFallback(false);
+        if (!file.open(QIODevice::WriteOnly)) {
+            qWarning() << "Cannot open config for saving" << fn << file.errorString();
+            return {false, false};
+        }
+        if (WriteSaveFile(file, content) != content.size()) {
+            qWarning() << "Incomplete config write" << fn << file.errorString();
+            file.cancelWriting();
+            return {false, false};
+        }
+        if (!CommitSaveFile(file)) {
+            qWarning() << "Cannot commit config" << fn << file.errorString();
+            file.cancelWriting();
+            return {false, false};
+        }
+        last_save_content = content;
+        return {true, changed};
     }
 
     bool JsonStore::Save() {
-        if (callback_before_save != nullptr) callback_before_save();
-        if (save_control_no_save) return false;
-
-        auto save_content = ToJsonBytes();
-        auto changed = last_save_content != save_content;
-        last_save_content = save_content;
-
-        QFile file;
-        file.setFileName(fn);
-        file.open(QIODevice::ReadWrite | QIODevice::Truncate);
-        file.write(save_content);
-        file.close();
-
-        return changed;
+        return SaveChecked().changed;
     }
 
     bool JsonStore::Load() {
-        QFile file;
-        file.setFileName(fn);
-
-        if (!file.exists() && !load_control_must) {
+        load_can_create = false;
+        const QFileInfo info(fn);
+        const QString absolutePath = info.absoluteFilePath();
+        blocked_save_path = absolutePath;
+        if (fn.isEmpty()) {
+            qWarning() << "Cannot load config with an empty path";
             return false;
         }
-
-        bool ok = file.open(QIODevice::ReadOnly);
-        if (!ok) {
-            MessageBoxWarning("error", "can not open config " + fn + "\n" + file.errorString());
-        } else {
-            last_save_content = file.readAll();
-            FromJsonBytes(last_save_content);
+        if (!info.exists() && !info.isSymLink()) {
+            blocked_save_path.clear();
+            load_can_create = true;
+            if (load_control_must) qWarning() << "Required config does not exist" << fn;
+            return false;
         }
-
+        if (!info.isFile() || info.isSymLink()) {
+            qWarning() << "Config path is not a regular non-symlink file" << fn;
+            return false;
+        }
+        QFile file(fn);
+        if (!file.open(QIODevice::ReadOnly)) {
+            qWarning() << "Cannot open config" << fn << file.errorString();
+            return false;
+        }
+        const QByteArray content = file.readAll();
+        const bool readOk = file.error() == QFileDevice::NoError;
+        const QString readError = file.errorString();
         file.close();
-        return ok;
+        if (!readOk) {
+            qWarning() << "Cannot read config" << fn << readError;
+            return false;
+        }
+        if (!FromJsonBytes(content)) {
+            if (IsolateCorruptFile(fn)) {
+                blocked_save_path.clear();
+                load_can_create = true;
+            }
+            return false;
+        }
+        last_save_content = content;
+        blocked_save_path.clear();
+        return true;
+    }
+
+    bool JsonStore::LoadOrCreate() {
+        if (Load()) return true;
+        if (!load_can_create) return false;
+        return SaveChecked().ok;
     }
 
 } // namespace NekoGui_ConfigItem

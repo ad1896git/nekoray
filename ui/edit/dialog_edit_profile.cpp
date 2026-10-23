@@ -377,13 +377,19 @@ void DialogEditProfile::accept() {
     QStringList msg = {"accept"};
 
     if (newEnt) {
-        auto ok = NekoGui::profileManager->AddProfile(ent);
-        if (!ok) {
-            MessageBoxWarning("???", "id exists");
+        if (!NekoGui::profileManager->AddProfile(ent)) {
+            MessageBoxWarning(tr("Error"), tr("Could not save the profile. Check the log and directory permissions."));
+            return;
         }
     } else {
-        auto changed = ent->Save();
-        if (changed && NekoGui::dataStore->started_id == ent->id) msg << "restart";
+        const auto result = ent->SaveChecked();
+        if (!result.ok) {
+            MessageBoxWarning(tr("Error"), tr("Could not save the profile. Check the log and directory permissions."));
+            return;
+        }
+        if (result.changed && NekoGui::dataStore->started_id == ent->id) {
+            msg << "restart";
+        }
     }
 
     MW_dialog_message(Dialog_DialogEditProfile, msg.join(","));

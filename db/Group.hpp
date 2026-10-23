@@ -22,6 +22,9 @@ namespace NekoGui {
 
         Group();
 
+        QJsonObject ToJson(const QStringList &without = {}) override;
+        bool Validate(const QJsonObject &object) const override;
+
         // 按 id 顺序
         [[nodiscard]] QList<std::shared_ptr<ProxyEntity>> Profiles() const;
 

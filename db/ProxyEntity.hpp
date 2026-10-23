@@ -37,6 +37,8 @@ namespace NekoGui {
 
         ProxyEntity(NekoGui_fmt::AbstractBean *bean, const QString &type_);
 
+        bool Validate(const QJsonObject &object) const override;
+
         [[nodiscard]] QString DisplayLatency() const;
 
         [[nodiscard]] QColor DisplayLatencyColor() const;

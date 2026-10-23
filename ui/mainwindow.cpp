@@ -58,8 +58,6 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
         runOnUiThread([=] { dialog_message_impl(a, b); });
     };
 
-    // Load Manager
-    NekoGui::profileManager->LoadManager();
 
     // Setup misc UI
     themeManager->ApplyTheme(NekoGui::dataStore->theme);
@@ -522,7 +520,12 @@ void MainWindow::dialog_message_impl(const QString &sender, const QString &info)
         refresh_status();
     }
     if (info.contains("UpdateDataStore")) {
-        auto suggestRestartProxy = NekoGui::dataStore->Save();
+        const auto saveResult = NekoGui::dataStore->SaveChecked();
+        if (!saveResult.ok) {
+            MessageBoxWarning(tr("Error"), tr("Could not save settings. Check the log and directory permissions."));
+            return;
+        }
+        auto suggestRestartProxy = saveResult.changed;
         if (info.contains("RouteChanged")) {
             suggestRestartProxy = true;
         }
@@ -1146,7 +1149,10 @@ void MainWindow::on_menu_delete_triggered() {
     if (QMessageBox::question(this, tr("Confirmation"), QString(tr("Remove %1 item(s) ?")).arg(ents.count())) ==
         QMessageBox::StandardButton::Yes) {
         for (const auto &ent: ents) {
-            NekoGui::profileManager->DeleteProfile(ent->id);
+            if (!NekoGui::profileManager->DeleteProfile(ent->id) &&
+                NekoGui::dataStore->started_id != ent->id) {
+                MessageBoxWarning(tr("Error"), tr("Could not delete profile %1. It has been kept.").arg(ent->id));
+            }
         }
         refresh_proxy_list();
     }
@@ -1169,8 +1175,14 @@ void MainWindow::on_menu_profile_debug_info_triggered() {
     if (btn == 1) {
         QDesktopServices::openUrl(QUrl::fromLocalFile(QFileInfo(QStringLiteral("profiles/%1.json").arg(ents.first()->id)).absoluteFilePath()));
     } else if (btn == 2) {
-        NekoGui::dataStore->Load();
-        NekoGui::profileManager->LoadManager();
+        if (!NekoGui::dataStore->Load()) {
+            MessageBoxWarning(tr("Error"), tr("Could not reload settings. Check the log; invalid files are preserved in corrupt/."));
+            return;
+        }
+        if (!NekoGui::profileManager->LoadManager()) {
+            MessageBoxWarning(tr("Error"), tr("Could not reload profiles and groups. Check the log."));
+            return;
+        }
         refresh_proxy_list();
     }
 }
@@ -1379,7 +1391,10 @@ void MainWindow::on_menu_delete_repeat_triggered() {
     if (out_del.length() > 0 &&
         QMessageBox::question(this, tr("Confirmation"), tr("Remove %1 item(s) ?").arg(out_del.length()) + "\n" + remove_display) == QMessageBox::StandardButton::Yes) {
         for (const auto &ent: out_del) {
-            NekoGui::profileManager->DeleteProfile(ent->id);
+            if (!NekoGui::profileManager->DeleteProfile(ent->id) &&
+                NekoGui::dataStore->started_id != ent->id) {
+                MessageBoxWarning(tr("Error"), tr("Could not delete profile %1. It has been kept.").arg(ent->id));
+            }
         }
         refresh_proxy_list();
     }
@@ -1416,7 +1431,10 @@ void MainWindow::on_menu_remove_unavailable_triggered() {
     if (out_del.length() > 0 &&
         QMessageBox::question(this, tr("Confirmation"), tr("Remove %1 item(s) ?").arg(out_del.length()) + "\n" + remove_display) == QMessageBox::StandardButton::Yes) {
         for (const auto &ent: out_del) {
-            NekoGui::profileManager->DeleteProfile(ent->id);
+            if (!NekoGui::profileManager->DeleteProfile(ent->id) &&
+                NekoGui::dataStore->started_id != ent->id) {
+                MessageBoxWarning(tr("Error"), tr("Could not delete profile %1. It has been kept.").arg(ent->id));
+            }
         }
         refresh_proxy_list();
     }

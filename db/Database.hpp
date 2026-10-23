@@ -20,7 +20,7 @@ namespace NekoGui {
         ProfileManager();
 
         // LoadManager Reset and loads profiles & groups
-        void LoadManager();
+        bool LoadManager();
 
         void SaveManager();
 
@@ -30,7 +30,7 @@ namespace NekoGui {
 
         bool AddProfile(const std::shared_ptr<ProxyEntity> &ent, int gid = -1);
 
-        void DeleteProfile(int id);
+        bool DeleteProfile(int id);
 
         void MoveProfile(const std::shared_ptr<ProxyEntity> &ent, int gid);
 

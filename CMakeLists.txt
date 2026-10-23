@@ -311,3 +311,39 @@ endif ()
 if (NKR_BUILD_TESTS)
     add_subdirectory(tests)
 endif ()
+
+if (NKR_BUILD_TESTS)
+    find_package(Qt${QT_VERSION_MAJOR} REQUIRED COMPONENTS Test)
+
+    # Exercise production persistence through the full application sources.
+    set(NKR_PERSISTENCE_TEST_SOURCES ${PROJECT_SOURCES})
+    list(REMOVE_ITEM NKR_PERSISTENCE_TEST_SOURCES main/main.cpp)
+    add_executable(tst_persistence
+        ${NKR_PERSISTENCE_TEST_SOURCES}
+        tests/persistence_app_entry.cpp
+        tests/tst_persistence.cpp
+    )
+    set_target_properties(tst_persistence PROPERTIES
+        AUTOMOC ON
+        AUTOUIC ON
+        AUTORCC ON
+        CXX_STANDARD 17
+        CXX_STANDARD_REQUIRED ON
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests"
+    )
+    target_include_directories(tst_persistence PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+    target_link_libraries(tst_persistence PRIVATE
+        Qt${QT_VERSION_MAJOR}::Test
+        Qt${QT_VERSION_MAJOR}::Widgets
+        Qt${QT_VERSION_MAJOR}::Network
+        Qt${QT_VERSION_MAJOR}::Svg
+        Threads::Threads
+        ${NKR_EXTERNAL_TARGETS}
+        ${PLATFORM_LIBRARIES}
+    )
+    add_test(NAME persistence COMMAND tst_persistence)
+    set_tests_properties(persistence PROPERTIES
+        ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+        TIMEOUT 90
+    )
+endif ()
