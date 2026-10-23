@@ -91,3 +91,30 @@ target_link_libraries(nkr_ui_thread PRIVATE
 
 add_test(NAME nkr_ui_thread COMMAND nkr_ui_thread)
 set_tests_properties(nkr_ui_thread PROPERTIES TIMEOUT 60)
+
+find_package(Qt${QT_VERSION_MAJOR} REQUIRED COMPONENTS Core Network Test)
+find_package(Threads REQUIRED)
+
+add_executable(tst_w04
+    tst_w04.cpp
+)
+
+set_target_properties(tst_w04 PROPERTIES
+    AUTOMOC ON
+    CXX_STANDARD 17
+    CXX_STANDARD_REQUIRED ON
+)
+
+target_include_directories(tst_w04 PRIVATE
+    "${PROJECT_SOURCE_DIR}"
+)
+
+target_link_libraries(tst_w04 PRIVATE
+    Qt${QT_VERSION_MAJOR}::Core
+    Qt${QT_VERSION_MAJOR}::Network
+    Qt${QT_VERSION_MAJOR}::Test
+    Threads::Threads
+)
+
+add_test(NAME w04 COMMAND tst_w04)
+set_tests_properties(w04 PROPERTIES TIMEOUT 45)

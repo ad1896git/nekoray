@@ -7,192 +7,82 @@
 
 #include "main/NekoGui.hpp"
 
-#include <QCoreApplication>
-#include <QNetworkAccessManager>
-#include <QNetworkReply>
-#include <QTimer>
+#include "RpcTransport.hpp"
+
 #include <QtEndian>
-#include <QThread>
-#include <QMutex>
-#include <QAbstractNetworkCache>
 
 namespace QtGrpc {
-    const char *GrpcAcceptEncodingHeader = "grpc-accept-encoding";
-    const char *AcceptEncodingHeader = "accept-encoding";
-    const char *TEHeader = "te";
-    const char *GrpcStatusHeader = "grpc-status";
-    const char *GrpcStatusMessage = "grpc-message";
-    const int GrpcMessageSizeHeaderSize = 5;
 
-    class NoCache : public QAbstractNetworkCache {
-    public:
-        QNetworkCacheMetaData metaData(const QUrl &url) override {
-            return {};
-        }
-        void updateMetaData(const QNetworkCacheMetaData &metaData) override {
-        }
-        QIODevice *data(const QUrl &url) override {
-            return nullptr;
-        }
-        bool remove(const QUrl &url) override {
-            return false;
-        }
-        [[nodiscard]] qint64 cacheSize() const override {
-            return 0;
-        }
-        QIODevice *prepare(const QNetworkCacheMetaData &metaData) override {
-            return nullptr;
-        }
-        void insert(QIODevice *device) override {
-        }
-        void clear() override {
-        }
-    };
+class Http2GrpcChannelPrivate {
+public:
+    Http2GrpcChannelPrivate(const QString &url,
+                            const QString &auth,
+                            const QString &service)
+        : urlBase_("http://" + url),
+          serviceName_(service),
+          auth_(auth.toLatin1()) {}
 
-    class Http2GrpcChannelPrivate {
-    private:
-        QThread *thread;
-        QNetworkAccessManager *nm;
+    QNetworkReply::NetworkError Call(
+        const QString &methodName,
+        const google::protobuf::Message &req,
+        google::protobuf::Message *rsp,
+        qint64 timeout_ms = 0) {
 
-        QString url_base;
-        QString serviceName;
-        QByteArray nekoray_auth;
+        if (!NekoGui::dataStore->core_running) {
+            return QNetworkReply::NetworkError(-1919);
+        }
 
-        // async
-        QNetworkReply *post(const QString &method, const QString &service, const QByteArray &args) {
-            QUrl callUrl = url_base + "/" + service + "/" + method;
-            // qDebug() << "Service call url: " << callUrl;
+        std::string serialized;
+        if (!req.SerializeToString(&serialized)) {
+            return QNetworkReply::NetworkError(-114514);
+        }
+        const auto args = QByteArray::fromStdString(serialized);
 
-            QNetworkRequest request(callUrl);
-            // request.setAttribute(QNetworkRequest::CacheSaveControlAttribute, false);
-            // request.setAttribute(QNetworkRequest::CacheLoadControlAttribute, QNetworkRequest::AlwaysNetwork);
+        QNetworkRequest request(
+            QUrl(urlBase_ + "/" + serviceName_ + "/" + methodName));
 #if QT_VERSION >= QT_VERSION_CHECK(5, 11, 0)
-            request.setAttribute(QNetworkRequest::Http2DirectAttribute, true);
+        request.setAttribute(QNetworkRequest::Http2DirectAttribute, true);
 #endif
-            request.setHeader(QNetworkRequest::ContentTypeHeader, QLatin1String{"application/grpc"});
-            request.setRawHeader("Cache-Control", "no-store");
-            request.setRawHeader(GrpcAcceptEncodingHeader, QByteArray{"identity,deflate,gzip"});
-            request.setRawHeader(AcceptEncodingHeader, QByteArray{"identity,gzip"});
-            request.setRawHeader(TEHeader, QByteArray{"trailers"});
-            request.setRawHeader("nekoray_auth", nekoray_auth);
+        request.setHeader(QNetworkRequest::ContentTypeHeader,
+                          QLatin1String("application/grpc"));
+        request.setRawHeader("Cache-Control", "no-store");
+        request.setRawHeader("grpc-accept-encoding", "identity,deflate,gzip");
+        request.setRawHeader("accept-encoding", "identity,gzip");
+        request.setRawHeader("te", "trailers");
+        request.setRawHeader("nekoray_auth", auth_);
 
-            QByteArray msg(GrpcMessageSizeHeaderSize, '\0');
-            *reinterpret_cast<int *>(msg.data() + 1) = qToBigEndian((int) args.size());
-            msg += args;
-            // qDebug() << "SEND: " << msg.size();
+        // Preserve the existing framing implementation for W10 / PR-12.
+        QByteArray message(5, '\0');
+        *reinterpret_cast<int *>(message.data() + 1) =
+            qToBigEndian(static_cast<int>(args.size()));
+        message += args;
 
-            QNetworkReply *networkReply = nm->post(request, msg);
-            return networkReply;
+        const auto result = transport_.send(request, message, timeout_ms);
+        if (result.error != QNetworkReply::NoError) return result.error;
+
+        const int grpcStatus = result.grpcStatus.toInt();
+        if (grpcStatus != 0) {
+            MW_show_log(
+                QStringLiteral("grpc-status error code: %1, error msg: %2")
+                    .arg(grpcStatus)
+                    .arg(QString::fromLatin1(result.grpcMessage)));
+            return QNetworkReply::ProtocolUnknownError;
         }
 
-        static QByteArray processReply(QNetworkReply *networkReply, QNetworkReply::NetworkError &statusCode) {
-            // Check if no network error occured
-            if (networkReply->error() != QNetworkReply::NoError) {
-                statusCode = networkReply->error();
-                return {};
-            }
-
-            // Check if server answer with error
-            auto errCode = networkReply->rawHeader(GrpcStatusHeader).toInt();
-            if (errCode != 0) {
-                QStringList errstr;
-                errstr << "grpc-status error code:" << Int2String(errCode) << ", error msg:"
-                       << QLatin1String(networkReply->rawHeader(GrpcStatusMessage));
-                MW_show_log(errstr.join(" "));
-                statusCode = QNetworkReply::NetworkError::ProtocolUnknownError;
-                return {};
-            }
-            statusCode = QNetworkReply::NetworkError::NoError;
-            return networkReply->readAll().mid(GrpcMessageSizeHeaderSize);
+        const QByteArray response = result.body.mid(5);
+        if (!rsp->ParseFromArray(response.constData(), response.size())) {
+            return QNetworkReply::NetworkError(-114514);
         }
+        return QNetworkReply::NoError;
+    }
 
-        QNetworkReply::NetworkError call(const QString &method, const QString &service, const QByteArray &args, QByteArray &qByteArray, int timeout_ms) {
-            QNetworkReply *networkReply = post(method, service, args);
+private:
+    QString urlBase_;
+    QString serviceName_;
+    QByteArray auth_;
+    NkrW04::RpcTransport transport_;
+};
 
-            QTimer *abortTimer = nullptr;
-            if (timeout_ms > 0) {
-                abortTimer = new QTimer;
-                abortTimer->setSingleShot(true);
-                abortTimer->setInterval(timeout_ms);
-                QObject::connect(abortTimer, &QTimer::timeout, networkReply, &QNetworkReply::abort);
-                abortTimer->start();
-            }
-
-            {
-                QEventLoop loop;
-                QObject::connect(networkReply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
-                loop.exec();
-            }
-
-            if (abortTimer != nullptr) {
-                abortTimer->stop();
-                abortTimer->deleteLater();
-            }
-
-            auto grpcStatus = QNetworkReply::NetworkError::ProtocolUnknownError;
-            qByteArray = processReply(networkReply, grpcStatus);
-            // qDebug() << __func__ << "RECV: " << qByteArray.toHex() << "grpcStatus" << grpcStatus;
-            // qDebug() << networkReply->rawHeaderPairs();
-
-            networkReply->deleteLater();
-            return grpcStatus;
-        }
-
-    public:
-        Http2GrpcChannelPrivate(const QString &url_, const QString &nekoray_auth_, const QString &serviceName_) {
-            url_base = "http://" + url_;
-            nekoray_auth = nekoray_auth_.toLatin1();
-            serviceName = serviceName_;
-            //
-            thread = new QThread;
-            nm = new QNetworkAccessManager();
-            nm->setCache(new NoCache);
-            nm->moveToThread(thread);
-            thread->start();
-        }
-
-        ~Http2GrpcChannelPrivate() {
-            nm->deleteLater();
-            thread->quit();
-            thread->wait();
-            thread->deleteLater();
-        }
-
-        QNetworkReply::NetworkError Call(const QString &methodName,
-                                         const google::protobuf::Message &req, google::protobuf::Message *rsp,
-                                         int timeout_ms = 0) {
-            if (!NekoGui::dataStore->core_running) return QNetworkReply::NetworkError(-1919);
-
-            std::string reqStr;
-            req.SerializeToString(&reqStr);
-            auto requestArray = QByteArray::fromStdString(reqStr);
-
-            QByteArray responseArray;
-            QNetworkReply::NetworkError err;
-            QMutex lock;
-            lock.lock();
-
-            runOnUiThread(
-                [&] {
-                    err = call(methodName, serviceName, requestArray, responseArray, timeout_ms);
-                    lock.unlock();
-                },
-                nm);
-
-            lock.lock();
-            lock.unlock();
-            // qDebug() << "rsp err" << err;
-            // qDebug() << "rsp array" << responseArray;
-
-            if (err != QNetworkReply::NetworkError::NoError) {
-                return err;
-            }
-            if (!rsp->ParseFromArray(responseArray.data(), responseArray.size())) {
-                return QNetworkReply::NetworkError(-114514);
-            }
-            return QNetworkReply::NetworkError::NoError;
-        }
-    };
 } // namespace QtGrpc
 
 namespace NekoGui_rpc {
@@ -269,9 +159,17 @@ namespace NekoGui_rpc {
 
     //
 
-    libcore::TestResp Client::Test(bool *rpcOK, const libcore::TestReq &request) {
+    libcore::TestResp Client::Test(bool *rpcOK,
+                                  const libcore::TestReq &request) {
         libcore::TestResp reply;
-        auto status = make_grpc_channel()->Call("Test", request, &reply);
+        const qint64 timeoutMs = NkrW04::testTimeoutMs(
+            request.timeout(),
+            request.mode() == libcore::FullTest,
+            request.full_speed(),
+            request.full_speed_timeout());
+
+        auto status = make_grpc_channel()->Call(
+            "Test", request, &reply, timeoutMs);
 
         if (status == QNetworkReply::NoError) {
             *rpcOK = true;

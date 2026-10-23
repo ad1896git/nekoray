@@ -18,7 +18,15 @@
 #include <QMessageBox>
 #include <QDialogButtonBox>
 
-#include <atomic>
+#include "rpc/W04Support.hpp"
+
+#include <QCoreApplication>
+#include <QMetaObject>
+#include <QPointer>
+
+#include <list>
+#include <memory>
+
 
 // ext core
 
@@ -62,30 +70,32 @@ void MainWindow::setup_grpc() {
 
 // 测速
 
-inline std::atomic<bool> speedtesting{false};
-inline QList<QThread *> speedtesting_threads = {};
+namespace {
+NkrW04::BatchGate speedtestGate;
+}
 
 void MainWindow::speedtest_current_group(int mode, bool test_group) {
-    if (speedtesting.load()) {
-        MessageBoxWarning(software_name, QObject::tr("The last speed test did not exit completely, please wait. If it persists, please restart the program."));
-        return;
-    }
-
-    auto profiles = get_selected_or_group();
-    if (test_group) profiles = NekoGui::profileManager->CurrentGroup()->ProfilesWithOrder();
-    if (profiles.isEmpty()) return;
-    auto group = NekoGui::profileManager->CurrentGroup();
-    if (group->archive) return;
-
-    // menu_stop_testing
-    if (mode == 114514) {
-        while (!speedtesting_threads.isEmpty()) {
-            auto t = speedtesting_threads.takeFirst();
-            if (t != nullptr) t->exit();
+    if (speedtestGate.dispatchStop(mode)) {
+        if (speedtestGate.phase() == NkrW04::Phase::Cancelling) {
+            MW_show_log(QObject::tr("Cancelling speedtest..."));
         }
-        speedtesting.store(false);
         return;
     }
+
+    if (speedtestGate.phase() != NkrW04::Phase::Idle) {
+        MessageBoxWarning(
+            software_name,
+            QObject::tr("The last speed test did not exit completely, "
+                        "please wait. Stopping: waiting for the core process."));
+        return;
+    }
+
+    auto group = NekoGui::profileManager->CurrentGroup();
+    if (group == nullptr || group->archive) return;
+
+    auto profiles = test_group ? group->ProfilesWithOrder()
+                               : get_selected_or_group();
+    if (profiles.isEmpty()) return;
 
 #ifndef NKR_NO_GRPC
     QStringList full_test_flags;
@@ -123,134 +133,193 @@ void MainWindow::speedtest_current_group(int mode, bool test_group) {
         w->deleteLater();
         if (full_test_flags.isEmpty()) return;
     }
-    if (speedtesting.exchange(true)) {
-        MessageBoxWarning(software_name, QObject::tr("The last speed test did not exit completely, please wait. If it persists, please restart the program."));
+    // The options dialog runs a nested event loop: check admission again.
+    const auto batch = speedtestGate.begin();
+    if (!batch) {
+        MessageBoxWarning(
+            software_name,
+            QObject::tr("The last speed test did not exit completely, "
+                        "please wait. Stopping: waiting for the core process."));
         return;
     }
 
-    runOnNewThread([this, profiles, mode, full_test_flags]() {
-        QMutex lock_write;
-        QMutex lock_return;
-        int threadN = NekoGui::dataStore->test_concurrent;
-        int threadN_finished = 0;
-        auto profiles_test = profiles; // copy
+    const int concurrency = NekoGui::dataStore->test_concurrent;
+    const QString latencyUrl = NekoGui::dataStore->test_latency_url;
+    const QString downloadUrl = NekoGui::dataStore->test_download_url;
+    const int downloadSeconds = NekoGui::dataStore->test_download_timeout;
+    const QPointer<MainWindow> window(this);
 
-        // Threads
-        lock_return.lock();
-        for (int i = 0; i < threadN; i++) {
-            runOnNewThread([&] {
-                speedtesting_threads << QObject::thread();
-
-                forever {
-                    //
-                    lock_write.lock();
-                    if (profiles_test.isEmpty()) {
-                        threadN_finished++;
-                        if (threadN == threadN_finished) {
-                            // quit control thread
-                            lock_return.unlock();
-                        }
-                        lock_write.unlock();
-                        // quit of this thread
-                        speedtesting_threads.removeAll(QObject::thread());
+    // Queued publication owns its data. It neither captures a worker stack
+    // nor keeps a destroyed MainWindow alive.
+    const auto publish =
+        [window, batch](const std::shared_ptr<NekoGui::ProxyEntity> &profile,
+                        bool changeLatency, int latency,
+                        const QString &report, const QString &error) {
+            QMetaObject::invokeMethod(
+                QCoreApplication::instance(),
+                [window, batch, profile, changeLatency, latency, report, error] {
+                    if (!window || batch->speedtest_cancel.load() ||
+                        !speedtestGate.isLatest(batch)) {
                         return;
                     }
-                    auto profile = profiles_test.takeFirst();
-                    lock_write.unlock();
 
-                    //
-                    libcore::TestReq req;
-                    req.set_mode((libcore::TestMode) mode);
-                    req.set_timeout(10 * 1000);
-                    req.set_url(NekoGui::dataStore->test_latency_url.toStdString());
-
-                    //
-                    std::list<std::shared_ptr<NekoGui_sys::ExternalProcess>> extCs;
-                    QSemaphore extSem;
-
-                    if (mode == libcore::TestMode::UrlTest || mode == libcore::FullTest) {
-                        auto c = BuildConfig(profile, true, false);
-                        if (!c->error.isEmpty()) {
-                            profile->full_test_report = c->error;
-                            profile->Save();
-                            auto profileId = profile->id;
-                            runOnUiThread([this, profileId] {
-                                refresh_proxy_list(profileId);
-                            });
-                            continue;
-                        }
-                        //
-                        if (!c->extRs.empty()) {
-                            runOnUiThread(
-                                [&] {
-                                    extCs = CreateExtCFromExtR(c->extRs, true);
-                                    QThread::msleep(500);
-                                    extSem.release();
-                                },
-                                DS_cores);
-                            extSem.acquire();
-                        }
-                        //
-                        auto config = new libcore::LoadConfigReq;
-                        config->set_core_config(QJsonObject2QString(c->coreConfig, false).toStdString());
-                        req.set_allocated_config(config);
-                        req.set_in_address(profile->bean->serverAddress.toStdString());
-
-                        req.set_full_latency(full_test_flags.contains("1"));
-                        req.set_full_udp_latency(full_test_flags.contains("2"));
-                        req.set_full_speed(full_test_flags.contains("3"));
-                        req.set_full_in_out(full_test_flags.contains("4"));
-
-                        req.set_full_speed_url(NekoGui::dataStore->test_download_url.toStdString());
-                        req.set_full_speed_timeout(NekoGui::dataStore->test_download_timeout);
-                    } else if (mode == libcore::TcpPing) {
-                        req.set_address(profile->bean->DisplayAddress().toStdString());
+                    // Do not save a profile deleted while the test was running.
+                    if (NekoGui::profileManager->GetProfile(profile->id) != profile) {
+                        return;
                     }
 
-                    bool rpcOK;
-                    auto result = defaultClient->Test(&rpcOK, req);
-                    //
-                    if (!extCs.empty()) {
-                        runOnUiThread(
-                            [&] {
-                                for (const auto &extC: extCs) {
-                                    extC->Kill();
-                                }
-                                extSem.release();
-                            },
-                            DS_cores);
-                        extSem.acquire();
-                    }
-                    //
-                    if (!rpcOK) return;
-
-                    if (result.error().empty()) {
-                        profile->latency = result.ms();
-                        if (profile->latency == 0) profile->latency = 1; // nekoray use 0 to represents not tested
-                    } else {
-                        profile->latency = -1;
-                    }
-                    profile->full_test_report = result.full_report().c_str(); // higher priority
+                    if (changeLatency) profile->latency = latency;
+                    profile->full_test_report = report;
                     profile->Save();
 
-                    if (!result.error().empty()) {
-                        MW_show_log(tr("[%1] test error: %2").arg(profile->bean->DisplayTypeAndName(), result.error().c_str()));
+                    if (!error.isEmpty()) {
+                        MW_show_log(
+                            QObject::tr("[%1] test error: %2")
+                                .arg(profile->bean->DisplayTypeAndName(), error));
                     }
+                    window->refresh_proxy_list(profile->id);
+                },
+                Qt::QueuedConnection);
+        };
 
-                    auto profileId = profile->id;
-                    runOnUiThread([this, profileId] {
-                        refresh_proxy_list(profileId);
+    try {
+        runOnNewThread(
+            [batch, profiles, mode, full_test_flags, concurrency,
+             latencyUrl, downloadUrl, downloadSeconds, publish] {
+                NkrW04::Finally finished([batch] {
+                    if (speedtestGate.finish(batch)) {
+                        MW_show_log(QObject::tr("Speedtest finished."));
+                    } else {
+                        MW_show_log(QObject::tr("Stopping: waiting for the core process"));
+                    }
+                });
+
+                const bool workersOK = NkrW04::runBatch(
+                    concurrency, static_cast<int>(profiles.size()), batch,
+                    [&](int index) {
+                        if (batch->speedtest_cancel.load()) return;
+                        const auto profile = profiles.at(index);
+
+                        libcore::TestReq req;
+                        req.set_mode(static_cast<libcore::TestMode>(mode));
+                        req.set_timeout(10 * 1000);
+                        req.set_url(latencyUrl.toStdString());
+
+                        std::shared_ptr<NkrW04::OwnerLease> external;
+                        NkrW04::Finally cleanup([&external] {
+                            if (external &&
+                                !external->stop(NkrW04::ExternalWaitMs)) {
+                                MW_show_log(
+                                    QObject::tr("Speedtest external cleanup "
+                                                "is pending on the core thread."));
+                            }
+                        });
+
+                        if (mode == libcore::UrlTest ||
+                            mode == libcore::FullTest) {
+                            const auto config = BuildConfig(profile, true, false);
+                            if (!config->error.isEmpty()) {
+                                publish(profile, false, 0, config->error, {});
+                                return;
+                            }
+                            if (batch->speedtest_cancel.load()) return;
+
+                            if (!config->extRs.empty()) {
+                                using Processes =
+                                    std::list<std::shared_ptr<
+                                        NekoGui_sys::ExternalProcess>>;
+                                const auto processes =
+                                    std::make_shared<Processes>();
+                                const auto results = config->extRs;
+
+                                external =
+                                    std::make_shared<NkrW04::OwnerLease>(
+                                        [](NkrW04::OwnerLease::Task task) {
+                                            runOnUiThread(task, DS_cores);
+                                        },
+                                        [](NkrW04::OwnerLease::Task task) {
+                                            QTimer::singleShot(
+                                                NkrW04::ExternalWarmupMs,
+                                                std::move(task));
+                                        },
+                                        [processes, results] {
+                                            // Retain all objects before starting.
+                                            *processes =
+                                                CreateExtCFromExtR(results, false);
+                                            for (const auto &process : *processes) {
+                                                process->Start();
+                                            }
+                                        },
+                                        [processes] {
+                                            for (const auto &process : *processes) {
+                                                process->Kill();
+                                            }
+                                            // Destruction stays on DS_cores.
+                                            processes->clear();
+                                        },
+                                        [batch] {
+                                            if (speedtestGate.releaseExternal(batch)) {
+                                                MW_show_log(QObject::tr("Speedtest finished."));
+                                            }
+                                        });
+                                speedtestGate.retainExternal(batch);
+
+                                if (!external->start(NkrW04::ExternalWaitMs)) {
+                                    publish(
+                                        profile, true, -1, {},
+                                        QObject::tr("External test startup timed out."));
+                                    return;
+                                }
+                            }
+
+                            req.mutable_config()->set_core_config(
+                                QJsonObject2QString(config->coreConfig, false)
+                                    .toStdString());
+                            req.set_in_address(
+                                profile->bean->serverAddress.toStdString());
+                            req.set_full_latency(full_test_flags.contains("1"));
+                            req.set_full_udp_latency(full_test_flags.contains("2"));
+                            req.set_full_speed(full_test_flags.contains("3"));
+                            req.set_full_in_out(full_test_flags.contains("4"));
+                            req.set_full_speed_url(downloadUrl.toStdString());
+                            req.set_full_speed_timeout(downloadSeconds);
+                        } else if (mode == libcore::TcpPing) {
+                            req.set_address(
+                                profile->bean->DisplayAddress().toStdString());
+                        }
+
+                        if (batch->speedtest_cancel.load()) return;
+
+                        bool rpcOK = false;
+                        const auto result = defaultClient->Test(&rpcOK, req);
+
+                        // Returning ends this task, not the worker accounting.
+                        // The cleanup guard runs on every exit.
+                        if (!rpcOK || batch->speedtest_cancel.load()) return;
+
+                        int latency = -1;
+                        if (result.error().empty()) {
+                            latency = result.ms();
+                            if (latency == 0) latency = 1;
+                        }
+                        publish(
+                            profile, true, latency,
+                            QString::fromStdString(result.full_report()),
+                            QString::fromStdString(result.error()));
                     });
+
+                if (!workersOK) {
+                    MW_show_log(
+                        QObject::tr("Speedtest cancelled after a worker failure."));
                 }
             });
-        }
+    } catch (...) {
+        // Failure to launch the controller must not leave admission closed.
+        batch->speedtest_cancel.store(true);
+        speedtestGate.finish(batch);
+        MW_show_log(QObject::tr("Could not start speedtest workers."));
+    }
 
-        // Control
-        lock_return.lock();
-        lock_return.unlock();
-        speedtesting.store(false);
-        MW_show_log(QObject::tr("Speedtest finished."));
-    });
 #endif
 }
 
