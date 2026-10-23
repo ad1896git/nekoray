@@ -309,15 +309,18 @@ namespace NekoGui {
     void ProfileManager::MoveProfile(
         const std::shared_ptr<ProxyEntity> &ent, int gid) {
         NekoGui_concurrency::RequireUiThread();
-        if (gid == ent->gid || gid < 0) return;
+        if (!ent || gid < 0 || gid == ent->gid) return;
+
+        const auto newGroup = GetGroup(gid);
+        if (!newGroup) return;
+
         const auto oldGroup = GetGroup(ent->gid);
         if (oldGroup && oldGroup->HasExplicitOrder()) {
             oldGroup->order_explicit = true;
             oldGroup->order.removeAll(ent->id);
             oldGroup->Save();
         }
-        const auto newGroup = GetGroup(gid);
-        if (newGroup && newGroup->HasExplicitOrder()) {
+        if (newGroup->HasExplicitOrder()) {
             newGroup->order_explicit = true;
             if (!newGroup->order.contains(ent->id)) newGroup->order.append(ent->id);
             newGroup->Save();
