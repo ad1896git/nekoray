@@ -150,3 +150,56 @@ jobs:
         run: |
           /usr/bin/ctest --test-dir "$NKR_BUILD_DIR" \
             --output-on-failure --no-tests=error --verbose
+
+  linux-go:
+    name: linux-go
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    env:
+      GOTOOLCHAIN: local
+      CGO_ENABLED: '0'
+      GOWORK: 'off'
+      GOFLAGS: ''
+      NKR_GO_TAGS: with_clash_api,with_gvisor,with_quic,with_wireguard,with_utls,with_ech
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Go 1.22.12
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22.12'
+          check-latest: false
+          cache: false
+
+      - name: Fetch pinned Go dependencies
+        run: bash ./libs/get_source.sh
+
+      - name: Verify dependency revisions
+        run: |
+          source libs/get_source_env.sh
+          test "$(git -C ../sing-box rev-parse HEAD)" = "$COMMIT_SING_BOX"
+          test "$(git -C ../sing-quic rev-parse HEAD)" = "$COMMIT_SING_QUIC"
+          test "$(git -C ../libneko rev-parse HEAD)" = "$COMMIT_LIBNEKO"
+
+      - name: Test core lifecycle
+        working-directory: go/cmd/nekobox_core
+        run: |
+          go version
+          go test -mod=readonly -tags "$NKR_GO_TAGS" \
+            -count=1 -timeout=90s -v .
+
+      - name: Build core
+        working-directory: go/cmd/nekobox_core
+        run: |
+          go build -mod=readonly -tags "$NKR_GO_TAGS" \
+            -trimpath -o "$RUNNER_TEMP/nekobox_core" .
+
+      - name: Check dependency manifests remain unchanged
+        run: |
+          git diff --exit-code -- \
+            go/cmd/nekobox_core/go.mod \
+            go/cmd/nekobox_core/go.sum \
+            go/grpc_server/go.mod \
+            go/grpc_server/go.sum
