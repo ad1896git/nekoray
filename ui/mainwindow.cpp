@@ -1903,6 +1903,10 @@ void MainWindow::HotkeyEvent(const QString &key) {}
 
 bool MainWindow::StartVPNProcess() {
 #ifdef Q_OS_LINUX
+    if (linux_vpn_stopping) {
+        MessageBoxWarning(tr("Error"), tr("Tun is still stopping; try again."));
+        return false;
+    }
     if (linux_vpn_process) {
         if (linux_vpn_process->state() != QProcess::NotRunning)
             return true;
