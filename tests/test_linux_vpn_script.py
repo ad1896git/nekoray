@@ -468,14 +468,14 @@ def run_tests():
     case.clean()
 
     # Fresh case: the reused one still holds cores from the previous owner.
-    case = Case(PKEXEC_UID="0")
-    owner = case.spawn()
-    case.ready()
+    root_case = Case(PKEXEC_UID="0")
+    owner = root_case.spawn()
+    root_case.ready()
     # Wait for the release gate so the core is running before the signal.
-    until(lambda: any(case.root.glob("nekoray-vpn.ready.*")))
-    case.run(parameters=["--terminate"])
+    until(lambda: any(root_case.root.glob("nekoray-vpn.ready.*")))
+    root_case.run(parameters=["--terminate"])
     assert owner.wait(timeout=8) == 0
-    case.clean()
+    root_case.clean()
 
     owner = case.spawn()
     identity = case.ready()
