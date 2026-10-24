@@ -255,3 +255,74 @@ jobs:
             go/cmd/nekobox_core/go.sum \
             go/grpc_server/go.mod \
             go/grpc_server/go.sum
+
+  windows-build:
+    name: windows-build (Qt 6.7 x64, portable package)
+    runs-on: windows-2022
+    timeout-minutes: 90
+    env:
+      DL_QT_VER: '6.7'
+      ACTIONS_ALLOW_UNSECURE_COMMANDS: true
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install MSVC compiler
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          toolset: 14.2
+          arch: x64
+
+      - name: Download Qt 6.7 SDK
+        shell: bash
+        run: bash ./libs/download_qtsdk_win.sh
+
+      - name: Install ninja-build tool
+        uses: seanmiddleditch/gha-setup-ninja@v3
+
+      - name: Install Go 1.22.12
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22.12'
+          check-latest: false
+          cache: false
+
+      - name: Fetch pinned Go dependencies
+        shell: bash
+        run: ./libs/get_source.sh
+
+      - name: Build Go core (windows/amd64)
+        shell: bash
+        env:
+          GOOS: windows
+          GOARCH: amd64
+        run: ./libs/build_go.sh
+
+      - name: Build third-party dependencies
+        shell: bash
+        run: ./libs/build_deps_all.sh
+
+      - name: Build and deploy
+        shell: bash
+        env:
+          CC: cl.exe
+          CXX: cl.exe
+        run: |
+          source libs/env_qtsdk.sh $PWD/qtsdk/Qt
+          mkdir build
+          cd build
+          cmake -GNinja -DQT_VERSION_MAJOR=6 -DCMAKE_BUILD_TYPE=Release ..
+          ninja -j2
+          cd ..
+          ./libs/build_public_res.sh
+          ./libs/deploy_windows64.sh
+
+      - name: Upload portable package
+        uses: actions/upload-artifact@v4
+        with:
+          name: nekoray-windows-x64-qt6.7
+          path: deployment
+          if-no-files-found: error
