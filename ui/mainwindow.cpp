@@ -1,3 +1,5 @@
+#include "db/Renumber.hpp"
+#include <QPushButton>
 #include "main/UiOwnership.hpp"
 #include "db/traffic/TrafficLooper.hpp"
 #include "./ui_mainwindow.h"
@@ -1193,16 +1195,22 @@ void MainWindow::on_menu_reset_traffic_triggered() {
 void MainWindow::on_menu_profile_debug_info_triggered() {
     auto ents = get_now_selected_list();
     if (ents.count() != 1) return;
-    auto btn = QMessageBox::information(this, software_name, ents.first()->ToJsonBytes(), "OK", "Edit", "Reload", 0, 0);
-    if (btn == 1) {
+    QMessageBox box(QMessageBox::Information, software_name, ents.first()->ToJsonBytes(), QMessageBox::NoButton, this);
+    auto *ok = box.addButton(tr("OK"), QMessageBox::AcceptRole);
+    auto *edit = box.addButton(tr("Edit"), QMessageBox::ActionRole);
+    auto *reload = box.addButton(tr("Reload"), QMessageBox::ActionRole);
+    box.setDefaultButton(ok);
+    reload->setEnabled(!Renumber::Pending());
+    box.exec();
+    if (box.clickedButton() == edit) {
         QDesktopServices::openUrl(QUrl::fromLocalFile(QFileInfo(QStringLiteral("profiles/%1.json").arg(ents.first()->id)).absoluteFilePath()));
-    } else if (btn == 2) {
-        if (!NekoGui::dataStore->Load()) {
-            MessageBoxWarning(tr("Error"), tr("Could not reload settings. Check the log; invalid files are preserved in corrupt/."));
+    } else if (box.clickedButton() == reload) {
+        if (Renumber::Pending()) {
+            MessageBoxWarning(tr("Error"), tr("An unfinished renumbering requires application restart."));
             return;
         }
-        if (!NekoGui::profileManager->LoadManager()) {
-            MessageBoxWarning(tr("Error"), tr("Could not reload profiles and groups. Check the log."));
+        if (!NekoGui::ReloadConfiguration()) {
+            MessageBoxWarning(tr("Error"), tr("Could not reload configuration. Check the log."));
             return;
         }
         refresh_proxy_list();

@@ -152,6 +152,8 @@ set(PROJECT_SOURCES
         rpc/gRPC.cpp
 
         db/Database.cpp
+        db/Renumber.cpp
+        db/Renumber.hpp
         db/traffic/TrafficLooper.cpp
         db/ProfileFilter.cpp
         db/ConfigBuilder.cpp
@@ -264,12 +266,24 @@ target_link_libraries(nkr_subscription PUBLIC
 # Keep PROJECT_SOURCES intact for the Qt 5 translation scan.
 set(NKR_APPLICATION_SOURCES ${PROJECT_SOURCES})
 list(REMOVE_ITEM NKR_APPLICATION_SOURCES db/ProfileFilter.cpp)
+set(NKR_ENTRY_SOURCES main/main.cpp res/neko.qrc res/theme/feiyangqingyun/qss.qrc ${QV2RAY_RC})
+set(NKR_RUNTIME_SOURCES ${NKR_APPLICATION_SOURCES})
+list(REMOVE_ITEM NKR_RUNTIME_SOURCES ${NKR_ENTRY_SOURCES})
+add_library(nkr_runtime STATIC ${NKR_RUNTIME_SOURCES})
+set_target_properties(nkr_runtime PROPERTIES
+    AUTOMOC ON AUTOUIC ON AUTORCC ON POSITION_INDEPENDENT_CODE ON
+    CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
+target_include_directories(nkr_runtime PUBLIC "${PROJECT_SOURCE_DIR}")
+target_link_libraries(nkr_runtime PUBLIC nkr_subscription
+    Qt${QT_VERSION_MAJOR}::Widgets Qt${QT_VERSION_MAJOR}::Network Qt${QT_VERSION_MAJOR}::Svg
+    Threads::Threads ${NKR_EXTERNAL_TARGETS} ${PLATFORM_LIBRARIES})
+
 
 # Qt exe
 if (${QT_VERSION_MAJOR} GREATER_EQUAL 6)
     qt_add_executable(nekobox
             MANUAL_FINALIZATION
-            ${NKR_APPLICATION_SOURCES}
+            ${NKR_ENTRY_SOURCES}
     )
     # Define target properties for Android with Qt 6 as:
     #    set_property(TARGET nekobox APPEND PROPERTY QT_ANDROID_PACKAGE_SOURCE_DIR
@@ -278,13 +292,13 @@ if (${QT_VERSION_MAJOR} GREATER_EQUAL 6)
 else ()
     if (ANDROID)
         add_library(nekobox SHARED
-                ${NKR_APPLICATION_SOURCES}
+                ${NKR_ENTRY_SOURCES}
         )
         # Define properties for Android with Qt 5 after find_package() calls as:
         #    set(ANDROID_PACKAGE_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/android")
     else ()
         add_executable(nekobox
-                ${NKR_APPLICATION_SOURCES}
+                ${NKR_ENTRY_SOURCES}
         )
     endif ()
 endif ()
@@ -320,13 +334,7 @@ target_sources(nekobox PRIVATE ${CMAKE_BINARY_DIR}/translations.qrc)
 
 # Target Link
 
-target_link_libraries(nekobox PRIVATE
-        nkr_subscription
-        Qt${QT_VERSION_MAJOR}::Widgets Qt${QT_VERSION_MAJOR}::Network Qt${QT_VERSION_MAJOR}::Svg
-        Threads::Threads
-        ${NKR_EXTERNAL_TARGETS}
-        ${PLATFORM_LIBRARIES}
-)
+target_link_libraries(nekobox PRIVATE nkr_runtime)
 
 if (QT_VERSION_MAJOR EQUAL 6)
     qt_finalize_executable(nekobox)
@@ -334,54 +342,36 @@ endif ()
 
 if (NKR_BUILD_TESTS)
     add_subdirectory(tests)
+    # W06 also consumes JsonStore; use the shared runtime after its new
+    # recovery dependency rather than compiling a partial production graph.
+    set_property(TARGET tst_w06_tls_allow_insecure PROPERTY SOURCES
+        "${PROJECT_SOURCE_DIR}/tests/w06/tst_tls_allow_insecure.cpp"
+        "${PROJECT_SOURCE_DIR}/res/neko.qrc"
+        "${PROJECT_SOURCE_DIR}/res/theme/feiyangqingyun/qss.qrc")
+    set_property(TARGET tst_w06_tls_allow_insecure PROPERTY AUTORCC ON)
+    set_property(TARGET tst_w06_tls_allow_insecure APPEND PROPERTY LINK_LIBRARIES nkr_runtime)
 endif ()
 
 if (NKR_BUILD_TESTS)
     find_package(Qt${QT_VERSION_MAJOR} REQUIRED COMPONENTS Test)
 
-    # Real application implementations, without its process entry point.
-    set(NKR_INTEGRATION_TEST_SOURCES ${NKR_APPLICATION_SOURCES})
-    list(REMOVE_ITEM NKR_INTEGRATION_TEST_SOURCES main/main.cpp)
-
-    add_executable(tst_persistence
-        ${NKR_INTEGRATION_TEST_SOURCES}
-        tests/tst_persistence.cpp
-    )
-    add_executable(tst_subscription_commit
-        ${NKR_INTEGRATION_TEST_SOURCES}
-        tests/tst_subscription_commit.cpp
-    )
-    foreach(_target IN ITEMS tst_persistence tst_subscription_commit)
-        set_target_properties(${_target} PROPERTIES
-            AUTOMOC ON
-            AUTOUIC ON
-            AUTORCC ON
-            CXX_STANDARD 17
-            CXX_STANDARD_REQUIRED ON
-            CXX_EXTENSIONS OFF
-            RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests"
-        )
-        target_include_directories(${_target} PRIVATE "${PROJECT_SOURCE_DIR}")
-        target_link_libraries(${_target} PRIVATE
-            nkr_subscription
-            Qt${QT_VERSION_MAJOR}::Test
-            Qt${QT_VERSION_MAJOR}::Widgets
-            Qt${QT_VERSION_MAJOR}::Network
-            Qt${QT_VERSION_MAJOR}::Svg
-            Threads::Threads
-            ${NKR_EXTERNAL_TARGETS}
-            ${PLATFORM_LIBRARIES}
-        )
+    foreach(_name IN ITEMS persistence subscription_commit renumber)
+        add_executable(tst_${_name} tests/tst_${_name}.cpp
+            res/neko.qrc res/theme/feiyangqingyun/qss.qrc)
+        set_target_properties(tst_${_name} PROPERTIES
+            AUTOMOC ON AUTOUIC ON AUTORCC ON
+            CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF
+            RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests")
+        target_link_libraries(tst_${_name} PRIVATE nkr_runtime Qt${QT_VERSION_MAJOR}::Test)
+        add_test(NAME ${_name} COMMAND tst_${_name})
+        set_tests_properties(${_name} PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
     endforeach()
-    add_test(NAME persistence COMMAND tst_persistence)
-    set_tests_properties(persistence PROPERTIES
-        ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
-        TIMEOUT 90
-    )
-    add_test(NAME subscription_commit COMMAND tst_subscription_commit)
-    set_tests_properties(subscription_commit PROPERTIES
-        ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
-        TIMEOUT 180
-        LABELS "W01;W08"
-    )
+    target_compile_definitions(tst_renumber PRIVATE NKR_RENUMBER_SOURCE_DIR="${PROJECT_SOURCE_DIR}")
+    set_tests_properties(persistence PROPERTIES TIMEOUT 90)
+    set_tests_properties(subscription_commit PROPERTIES TIMEOUT 180 LABELS "W01;W08")
+    # Exhaustive recovery is one QtTest function; its default five-minute
+    # watchdog must not preempt CTest's checked crash-matrix timeout.
+    set_tests_properties(renumber PROPERTIES
+        TIMEOUT 1500 LABELS "W02;crash"
+        ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QTEST_FUNCTION_TIMEOUT=1500000")
 endif ()

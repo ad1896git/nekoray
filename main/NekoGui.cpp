@@ -1,3 +1,7 @@
+#include "db/Database.hpp"
+#include "db/Renumber.hpp"
+#include <QSet>
+#include <QRegularExpression>
 #include "NekoGui.hpp"
 #include "fmt/Preset.hpp"
 
@@ -325,6 +329,10 @@ namespace NekoGui_ConfigItem {
 
     bool JsonStore::Load() {
         load_can_create = false;
+        if (Renumber::Pending()) {
+            qWarning() << "Configuration load blocked by unfinished renumbering";
+            return false;
+        }
         const QFileInfo info(fn);
         const QString absolutePath = info.absoluteFilePath();
         blocked_save_path = absolutePath;
@@ -614,4 +622,190 @@ namespace NekoGui {
         return admin;
     };
 
+} // namespace NekoGui
+
+namespace NekoGui {
+namespace {
+QJsonObject RenumberObject(const QByteArray &bytes, const QString &path) {
+    QJsonParseError error{};
+    const auto document = QJsonDocument::fromJson(bytes, &error);
+    Renumber::Require(error.error == QJsonParseError::NoError && document.isObject(), "Invalid JSON: " + path);
+    return document.object();
+}
+QByteArray RenumberJson(const QJsonObject &object) {
+    return QJsonDocument(object).toJson(QJsonDocument::Compact);
+}
+int RenumberReference(int oldId, const QMap<int, int> &mapping, const QString &description,
+                      const QSet<int> &sentinels = {}) {
+    if (sentinels.contains(oldId)) return oldId;
+    Renumber::Require(mapping.contains(oldId), "Dangling " + description + ": " + QString::number(oldId));
+    return mapping.value(oldId);
+}
+QJsonArray RenumberReferences(const QJsonArray &values, const QMap<int, int> &mapping, const QString &description) {
+    QJsonArray result;
+    for (const auto &value : values) result.append(RenumberReference(value.toInt(), mapping, description));
+    return result;
+}
+int RenumberNumericFile(const QString &path, const QString &root) {
+    if (!path.startsWith(root + "/")) return -1;
+    const auto name = path.mid(root.size() + 1);
+    if (name.contains('/') || !name.endsWith(".json", Qt::CaseInsensitive)) return -1;
+    const auto stem = name.left(name.size() - 5);
+    bool ok = false;
+    const int id = stem.toInt(&ok);
+    if (!ok) {
+        const QRegularExpression numeric("^[+-]?[0-9]+$");
+        Renumber::Require(!numeric.match(stem).hasMatch(), "Out-of-range numeric filename: " + path);
+        return -1;
+    }
+    Renumber::Require(id >= 0 && name == QString::number(id) + ".json", "Noncanonical numeric filename: " + path);
+    return id;
+}
+void RenumberValidateProfile(const QJsonObject &object, const QString &path) {
+    ProxyEntity metadata(nullptr, QString());
+    metadata.fn = path;
+    Renumber::Require(metadata.Validate(object), "Invalid profile: " + path);
+}
+void RenumberValidateGroup(const QJsonObject &object, const QString &path) {
+    Group group;
+    group.fn = path;
+    Renumber::Require(group.Validate(object), "Invalid group: " + path);
+}
+} // namespace
+Renumber::Files BuildRenumbered(const Renumber::Files &oldFiles) {
+    using Renumber::Require;
+    QMap<int, QJsonObject> profiles;
+    QMap<int, QJsonObject> groups;
+    for (auto it = oldFiles.constBegin(); it != oldFiles.constEnd(); ++it) {
+        const int pid = RenumberNumericFile(it.key(), "profiles");
+        const int gid = RenumberNumericFile(it.key(), "groups");
+        if (pid >= 0) {
+            const auto object = RenumberObject(it.value(), it.key());
+            RenumberValidateProfile(object, it.key());
+            Require(!profiles.contains(pid), "Duplicate profile ID");
+            profiles.insert(pid, object);
+        } else if (gid >= 0) {
+            const auto object = RenumberObject(it.value(), it.key());
+            RenumberValidateGroup(object, it.key());
+            Require(!groups.contains(gid), "Duplicate group ID");
+            groups.insert(gid, object);
+        }
+    }
+    Require(!groups.isEmpty(), "Initialize at least one group before requesting renumbering");
+    Require(oldFiles.contains("groups/nekobox.json"), "Initialize settings before requesting renumbering");
+    auto settings = RenumberObject(oldFiles.value("groups/nekobox.json"), "groups/nekobox.json");
+    DataStore settingsValidator;
+    Require(settingsValidator.Validate(settings), "Invalid settings");
+    QJsonObject manager;
+    if (oldFiles.contains("groups/pm.json")) manager = RenumberObject(oldFiles.value("groups/pm.json"), "groups/pm.json");
+    QList<int> unusedTabs;
+    JsonStore managerValidator;
+    managerValidator._add(new configItem("groups", &unusedTabs, itemType::integerList));
+    Require(managerValidator.Validate(manager), "Invalid manager");
+    QList<int> tabOrder;
+    for (const auto &value : manager.value("groups").toArray()) {
+        const int id = value.toInt();
+        Require(groups.contains(id), "Dangling group-tab reference");
+        if (!tabOrder.contains(id)) tabOrder.append(id);
+    }
+    for (auto it = groups.constBegin(); it != groups.constEnd(); ++it)
+        if (!tabOrder.contains(it.key())) tabOrder.append(it.key());
+    for (auto it = profiles.constBegin(); it != profiles.constEnd(); ++it)
+        Require(groups.contains(it.value().value("gid").toInt()), "Profile belongs to a missing group");
+    QMap<int, int> groupMap;
+    QMap<int, int> profileMap;
+    QMap<int, QList<int>> visible;
+    int nextGroup = 0;
+    int nextProfile = 0;
+    for (int gid : tabOrder) {
+        groupMap.insert(gid, nextGroup++);
+        const auto group = groups.value(gid);
+        const auto order = group.value("order").toArray();
+        const bool explicitOrder = group.value("order_explicit").toBool(false) || !order.isEmpty();
+        if (explicitOrder) {
+            for (const auto &value : order) {
+                const int pid = value.toInt();
+                Require(profiles.contains(pid) && profiles.value(pid).value("gid").toInt() == gid,
+                        "Dangling or cross-group order reference");
+                if (!visible[gid].contains(pid)) visible[gid].append(pid);
+            }
+        } else {
+            for (auto it = profiles.constBegin(); it != profiles.constEnd(); ++it)
+                if (it.value().value("gid").toInt() == gid) visible[gid].append(it.key());
+        }
+        // Number visible profiles first, then every hidden member of this group.
+        for (int pid : visible.value(gid)) profileMap.insert(pid, nextProfile++);
+        for (auto it = profiles.constBegin(); it != profiles.constEnd(); ++it)
+            if (it.value().value("gid").toInt() == gid && !profileMap.contains(it.key()))
+                profileMap.insert(it.key(), nextProfile++);
+    }
+    Require(profileMap.size() == profiles.size() && groupMap.size() == groups.size(), "Incomplete identity mapping");
+    auto result = oldFiles;
+    // Remove all source names before inserting destinations, including overlapping IDs.
+    for (auto it = profiles.constBegin(); it != profiles.constEnd(); ++it)
+        result.remove(QString("profiles/%1.json").arg(it.key()));
+    for (auto it = groups.constBegin(); it != groups.constEnd(); ++it)
+        result.remove(QString("groups/%1.json").arg(it.key()));
+    for (auto it = profiles.constBegin(); it != profiles.constEnd(); ++it) {
+        auto object = it.value();
+        const int newId = profileMap.value(it.key());
+        object["id"] = newId;
+        object["gid"] = groupMap.value(object.value("gid").toInt());
+        if (object.value("type").toString() == "chain") {
+            auto bean = object.value("bean").toObject();
+            bean["list"] = RenumberReferences(bean.value("list").toArray(), profileMap, "chain member");
+            object["bean"] = bean;
+        }
+        // Traffic counters and unknown fields remain attached to the logical profile.
+        const auto path = QString("profiles/%1.json").arg(newId);
+        Require(!result.contains(path), "Destination profile collision");
+        RenumberValidateProfile(object, path);
+        result.insert(path, RenumberJson(object));
+    }
+    for (int oldId : tabOrder) {
+        auto object = groups.value(oldId);
+        const int newId = groupMap.value(oldId);
+        object["id"] = newId;
+        object["front_proxy_id"] = RenumberReference(object.value("front_proxy_id").toInt(-1), profileMap,
+                                                    "front proxy", QSet<int>{-1});
+        QJsonArray order;
+        for (int pid : visible.value(oldId)) order.append(profileMap.value(pid));
+        object["order"] = order;
+        object["order_explicit"] = true;
+        // Preserve recovery_required, including explicitly empty visibility.
+        const auto path = QString("groups/%1.json").arg(newId);
+        Require(!result.contains(path), "Destination group collision");
+        RenumberValidateGroup(object, path);
+        result.insert(path, RenumberJson(object));
+    }
+    QJsonArray tabs;
+    for (int gid : tabOrder) tabs.append(groupMap.value(gid));
+    manager["groups"] = tabs;
+    settings["current_group"] = RenumberReference(settings.value("current_group").toInt(0), groupMap,
+                                                  "current group", QSet<int>{-1});
+    settings["remember_id"] = RenumberReference(settings.value("remember_id").toInt(-1919), profileMap,
+                                                "remembered profile", QSet<int>{-1, -1919});
+    Require(managerValidator.Validate(manager) && settingsValidator.Validate(settings), "Invalid remapped configuration");
+    result.insert("groups/pm.json", RenumberJson(manager));
+    result.insert("groups/nekobox.json", RenumberJson(settings));
+    return result;
+}
+void PrepareConfiguration(bool reorder, Renumber::Lease &lease, const Renumber::Hooks &hooks) {
+    if (lease.Begin(reorder)) {
+        // Recover once, even when the original command line still requests reorder.
+        if (Renumber::Pending()) Renumber::Recover(lease, hooks);
+        else if (reorder) {
+            const auto oldFiles = Renumber::Scan();
+            Renumber::Start(lease, oldFiles, BuildRenumbered(oldFiles), hooks);
+        }
+    }
+    Renumber::Require(!Renumber::Pending(), "Recovery did not finish");
+    lease.Ready();
+    if (hooks.point) hooks.point("startup:ready");
+}
+bool ReloadConfiguration() {
+    if (Renumber::Pending()) return false;
+    if (!dataStore->Load()) return false;
+    return profileManager->LoadManager();
+}
 } // namespace NekoGui

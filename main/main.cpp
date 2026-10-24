@@ -1,3 +1,4 @@
+#include "db/Renumber.hpp"
 #include "db/Database.hpp"
 #include <csignal>
 
@@ -157,6 +158,17 @@ int main(int argc, char* argv[]) {
     // icon for no theme
     if (QIcon::themeName().isEmpty()) {
         QIcon::setThemeName("breeze");
+    }
+
+    // Hold the configuration lease through shutdown, before creating data directories or loading.
+    Renumber::Lease configurationLease;
+    try {
+        NekoGui::PrepareConfiguration(NekoGui::dataStore->flag_reorder, configurationLease);
+        NekoGui::dataStore->flag_reorder = false;
+    } catch (const std::exception &error) {
+        QMessageBox::critical(nullptr, "Configuration recovery", QString::fromUtf8(error.what()) +
+            "\nConfiguration was not loaded. Preserve any .renumber* directories and resolve the reported problem before retrying.");
+        return 1;
     }
 
     // Dir
