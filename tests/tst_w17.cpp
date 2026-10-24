@@ -68,8 +68,11 @@ private slots:
         QTemporaryDir temporary;
         QVERIFY(temporary.isValid());
 
+        // gio 2.72 cannot load a desktop entry whose program path contains '%',
+        // even when it is escaped as '%%'. Keep '%' in arguments (covered below)
+        // and leave it out of the executable path.
         const QString binDirectory =
-            temporary.path() + QStringLiteral("/app space $ ' %");
+            temporary.path() + QStringLiteral("/app space $ '");
         QVERIFY(QDir().mkpath(binDirectory));
         const QString probe = binDirectory + QStringLiteral("/argv-probe");
         QVERIFY(QFile::copy(QCoreApplication::applicationFilePath(), probe));
