@@ -146,6 +146,14 @@ def read_when_ready(path):
     return path.read_text().strip()
 
 
+def default_signals():
+    # bash cannot install a trap for a signal inherited as ignored, so a
+    # parent that ignores SIGINT (as ctest may) would make the supervisor
+    # and core deaf to --stop and --terminate. Restore the defaults first.
+    for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+        signal.signal(sig, signal.SIG_DFL)
+
+
 class Case:
     def __init__(self, mode="run", **extra):
         self.root = Path(tempfile.mkdtemp(dir=BASE, prefix="case-"))
@@ -176,6 +184,7 @@ class Case:
             stdout=self.log,
             stderr=subprocess.STDOUT,
             start_new_session=True,
+            preexec_fn=default_signals,
         )
         PROCESSES.append(process)
         return process
@@ -377,6 +386,7 @@ def run_tests():
         stdout=decoy_case.log,
         stderr=subprocess.STDOUT,
         start_new_session=True,
+        preexec_fn=default_signals,
     )
     PROCESSES.append(decoy)
     until(lambda: (decoy_case.root / "cores").exists())
