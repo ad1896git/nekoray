@@ -123,6 +123,14 @@ stop_token() {
         same_process "$token" || return 0
         sleep 0.05 9>&-
     done
+    # DIAG: explain why the recorded core did not exit.
+    local dpid=${token%%:*}
+    printf 'DIAG token=%s\n' "$token" >&2
+    grep -E 'State|SigIgn|SigBlk|SigCgt|PPid' "/proc/$dpid/status" 2>/dev/null |
+        sed 's/^/DIAG status /' >&2
+    ps -o pid,ppid,pgid,stat,args -p "$dpid" 2>/dev/null | sed 's/^/DIAG ps /' >&2
+    cat "$FAKE_STATE/signals" 2>/dev/null | sed 's/^/DIAG signals /' >&2
+    ls "$FAKE_STATE" 2>/dev/null | sed 's/^/DIAG files /' >&2
     printf '%s\n' "recorded core has not exited" >&2
     return 75
 }
