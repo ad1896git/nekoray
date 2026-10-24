@@ -23,4 +23,5 @@ fi
 popd
 
 #### prepare deployment ####
+cp -r $DEPLOYMENT/public_res/* $DEST
 cp $BUILD/*.pdb $DEPLOYMENT
