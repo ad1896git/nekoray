@@ -263,6 +263,7 @@ bool AutoRun_IsEnabled() {
 #endif
 
 #ifdef Q_OS_LINUX
+#include "main/pure/DesktopExec.hpp"
 
 #include <QStandardPaths>
 #include <QProcessEnvironment>
@@ -328,7 +329,7 @@ void AutoRun_SetEnabled(bool enable) {
 #endif
         ts << QLatin1String("[Desktop Entry]") << NEWLINE
            << QLatin1String("Name=") << appName << NEWLINE
-           << QLatin1String("Exec=") << appCmdList.join(" ") << NEWLINE
+           << QLatin1String("Exec=") << NkrInput::desktopExec(appCmdList) << NEWLINE
            << QLatin1String("Terminal=") << "false" << NEWLINE
            << QLatin1String("Categories=") << "Network" << NEWLINE
            << QLatin1String("Type=") << "Application" << NEWLINE
