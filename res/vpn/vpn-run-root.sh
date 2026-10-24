@@ -111,6 +111,20 @@ delete_rules() {
     done
 }
 
+# DIAG: dump lock holders and processes on failure.
+diag_dump() {
+    local p
+    for p in /proc/[0-9]*; do
+        if [[ -e "$p/fd/9" ]]; then
+            printf 'DIAG fd9 %s %s\n' "${p#/proc/}" "$(readlink "$p/fd/9" 2>/dev/null)" >&2
+        fi
+    done
+    ps -eo pid,ppid,pgid,sid,stat,args 2>/dev/null |
+        grep -E 'bash -c|sleep|nekoray|vpn|core' |
+        sed 's/^/DIAG ps /' >&2
+    cat /proc/locks 2>/dev/null | sed 's/^/DIAG locks /' >&2
+}
+
 stop_token() {
     local token=$1 i
     [[ -n "$token" ]] || return 0
@@ -123,6 +137,7 @@ stop_token() {
         same_process "$token" || return 0
         sleep 0.05 9>&-
     done
+    diag_dump
     printf '%s\n' "recorded core has not exited" >&2
     return 75
 }
@@ -157,7 +172,7 @@ case "${1:-}" in
         allowed || die 77 "denied: instance belongs to uid $REC_UID"
         same_process "$REC_SUP" || die 75 "supervisor is changing; retry"
         kill -INT "${REC_SUP%%:*}" || die 75 "cannot signal supervisor"
-        flock -w 5 9 || die 75 "supervisor has not exited"
+        flock -w 5 9 || { diag_dump; die 75 "supervisor has not exited"; }
         cleanup_dead
         exit $?
         ;;
