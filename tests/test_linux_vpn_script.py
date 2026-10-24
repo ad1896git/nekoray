@@ -470,7 +470,8 @@ def run_tests():
     owner = case.spawn()
     case.ready()
     case.run(parameters=["--terminate"], PKEXEC_UID="0")
-    assert owner.wait(timeout=8) == 0
+    rc = owner.wait(timeout=8)
+    assert rc == 0, (rc, (case.root / "output").read_text())
     case.clean()
 
     owner = case.spawn()
