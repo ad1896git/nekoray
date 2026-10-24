@@ -140,6 +140,12 @@ def until(predicate, timeout=8):
     raise AssertionError("timed out waiting for sandbox condition")
 
 
+def read_when_ready(path):
+    # The fake mv writes these files without renaming, so wait for content.
+    until(lambda: path.exists() and path.read_text().strip() != "")
+    return path.read_text().strip()
+
+
 class Case:
     def __init__(self, mode="run", **extra):
         self.root = Path(tempfile.mkdtemp(dir=BASE, prefix="case-"))
@@ -327,10 +333,9 @@ def run_tests():
     # Killing the supervisor during child-record publication cannot launch core.
     case = Case(HOLD_CORE_RECORD="1")
     owner = case.spawn()
-    until(lambda: (case.root / "blocked-core").exists())
-    identity = (case.root / "blocked-core").read_text().strip()
+    identity = read_when_ready(case.root / "blocked-core")
     remember(identity)
-    mover = int((case.root / "blocked-mv").read_text())
+    mover = int(read_when_ready(case.root / "blocked-mv"))
     mover_identity = token(mover)
     remember(mover_identity)
     owner.kill()
