@@ -288,7 +288,7 @@ fi
 
 wait "$CHILD"
 rc=$?
-while same_process "$CORE_TOKEN"; do
+while kill -0 "$CHILD" 2>/dev/null; do
     wait "$CHILD"
     rc=$?
 done
