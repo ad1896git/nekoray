@@ -1,6 +1,7 @@
 #include "main/pure/VpnAuth.hpp"
 #include "main/UiOwnership.hpp"
 #include "db/ConfigBuilder.hpp"
+#include "sys/LinuxVpnLaunch.hpp"
 #include "db/Database.hpp"
 #include "fmt/includes.h"
 #include "fmt/Preset.hpp"
@@ -745,7 +746,8 @@ namespace NekoGui {
         if (!experimentalObj.isEmpty()) status->result->coreConfig.insert("experimental", experimentalObj);
     }
 
-    QString WriteVPNSingBoxConfig() {
+    QString WriteVPNSingBoxConfig(
+        std::shared_ptr<NekoGui_sys::ExternalTempFiles> files) {
         // tun user rule
         auto match_out = dataStore->vpn_rule_white ? "neko-socks" : "direct";
         auto no_match_out = dataStore->vpn_rule_white ? "direct" : "neko-socks";
@@ -789,20 +791,36 @@ namespace NekoGui {
             dataStore->inbound_auth->username,
             dataStore->inbound_auth->password);
         // write config
+#ifdef Q_OS_LINUX
+        if (!files) {
+            qWarning("Linux VPN configuration has no temporary-file owner.");
+            return {};
+        }
+
+        QString error;
+        const QString path = NekoGui_sys::WriteLinuxVpnConfig(
+            *files, config.toUtf8(), error);
+        if (path.isEmpty())
+            qWarning("%s", qPrintable(error));
+        return path;
+#else
+        Q_UNUSED(files)
         QFile file;
         file.setFileName(QFileInfo(configFn).fileName());
         file.open(QIODevice::ReadWrite | QIODevice::Truncate);
         file.write(config.toUtf8());
         file.close();
         return QFileInfo(file).absoluteFilePath();
+#endif
     }
 
     QString WriteVPNLinuxScript(const QString &configPath) {
-#ifdef Q_OS_WIN
+#if defined(Q_OS_WIN) || defined(Q_OS_LINUX)
+        Q_UNUSED(configPath)
         return {};
-#endif
+#else
         // gen script
-        auto scriptFn = ":/neko/vpn/vpn-run-root.sh";
+        auto scriptFn = ":/neko/vpn/vpn-run-root-macos-legacy.sh";
         if (QFile::exists("vpn/vpn-run-root.sh")) scriptFn = "vpn/vpn-run-root.sh";
         auto script = ReadFileText(scriptFn)
                           .replace("./nekobox_core", QApplication::applicationDirPath() + "/nekobox_core")
@@ -814,6 +832,7 @@ namespace NekoGui {
         file2.write(script.toUtf8());
         file2.close();
         return QFileInfo(file2).absoluteFilePath();
+#endif
     }
 
 } // namespace NekoGui
