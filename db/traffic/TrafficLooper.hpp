@@ -1,6 +1,7 @@
 #pragma once
 #include "TrafficData.hpp"
 #include "TrafficBatch.hpp"
+#include "TrafficSampleClock.hpp"
 #include <QJsonArray>
 #include <QList>
 #include <QMutex>
@@ -48,7 +49,7 @@ private:
         TrafficDeltas deltas;
         QJsonArray connections;
         std::vector<unsigned long long> generations;
-        long long intervalMs = 1;
+        std::optional<long long> intervalMs;
         bool showConnections = false;
         bool final = false;
         bool save = false;
@@ -57,7 +58,7 @@ private:
     void Apply(const Packet &packet);
     QMutex mutex_;
     std::shared_ptr<const TrafficSession> session_;
-    std::chrono::steady_clock::time_point lastSample_;
+    TrafficSampleClock sampleClock_;
     std::atomic<bool> shutdown_{false};
     // Accessed exclusively on the UI thread.
     std::shared_ptr<const TrafficSession> uiSession_;
