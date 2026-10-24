@@ -151,6 +151,7 @@ private:
     qint64 vpn_pid = 0;
 #ifdef Q_OS_LINUX
     QPointer<QProcess> linux_vpn_process;
+    bool linux_vpn_stopping = false;
 #endif
 #ifdef Q_OS_LINUX
     NekoGui_sys::TimedProcess *tun_capability_job = nullptr;
