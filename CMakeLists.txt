@@ -321,21 +321,6 @@ target_link_libraries(nkr_link_parser PUBLIC
     Qt${QT_VERSION_MAJOR}::Network
 )
 
-add_library(nkr_data STATIC
-    db/Database.cpp
-)
-set_target_properties(nkr_data PROPERTIES
-    CXX_STANDARD 17
-    CXX_STANDARD_REQUIRED ON
-    CXX_EXTENSIONS OFF
-    POSITION_INDEPENDENT_CODE ON
-)
-target_include_directories(nkr_data PUBLIC "${PROJECT_SOURCE_DIR}")
-target_link_libraries(nkr_data PUBLIC
-    Qt${QT_VERSION_MAJOR}::Widgets
-    Qt${QT_VERSION_MAJOR}::Network
-)
-
 add_library(nkr_timed_process STATIC
     sys/TimedProcess.cpp
     sys/TimedProcess.hpp
@@ -370,7 +355,6 @@ set(NKR_APPLICATION_SOURCES ${PROJECT_SOURCES})
 list(REMOVE_ITEM NKR_APPLICATION_SOURCES
     db/ProfileFilter.cpp
     fmt/Link2Bean.cpp
-    db/Database.cpp
 )
 
 set(NKR_AUTORUN_TARGET)
@@ -413,7 +397,7 @@ set_target_properties(nkr_runtime PROPERTIES
     AUTOMOC ON AUTOUIC ON AUTORCC ON POSITION_INDEPENDENT_CODE ON
     CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
 target_include_directories(nkr_runtime PUBLIC "${PROJECT_SOURCE_DIR}")
-target_link_libraries(nkr_runtime PUBLIC nkr_data nkr_timed_process nkr_grpc_frame nkr_subscription nkr_linux_vpn nkr_vpn_process nkr_input_escaping nkr_link_parser
+target_link_libraries(nkr_runtime PUBLIC nkr_timed_process nkr_grpc_frame nkr_subscription nkr_linux_vpn nkr_vpn_process nkr_input_escaping nkr_link_parser
     ${NKR_AUTORUN_TARGET}
     Qt${QT_VERSION_MAJOR}::Widgets Qt${QT_VERSION_MAJOR}::Network Qt${QT_VERSION_MAJOR}::Svg
     Threads::Threads ${NKR_EXTERNAL_TARGETS} ${PLATFORM_LIBRARIES})
