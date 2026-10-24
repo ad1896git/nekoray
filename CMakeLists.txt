@@ -352,6 +352,19 @@ target_link_libraries(nkr_timed_process PUBLIC
     Qt${QT_VERSION_MAJOR}::Core
 )
 
+add_library(nkr_linux_vpn STATIC
+    sys/LinuxVpnLaunch.cpp
+    sys/LinuxVpnLaunch.hpp
+)
+set_target_properties(nkr_linux_vpn PROPERTIES
+    CXX_STANDARD 17
+    CXX_STANDARD_REQUIRED ON
+    CXX_EXTENSIONS OFF
+    POSITION_INDEPENDENT_CODE ON
+)
+target_include_directories(nkr_linux_vpn PUBLIC "${PROJECT_SOURCE_DIR}")
+target_link_libraries(nkr_linux_vpn PUBLIC Qt${QT_VERSION_MAJOR}::Core)
+
 # Keep PROJECT_SOURCES intact for the Qt 5 translation scan.
 set(NKR_APPLICATION_SOURCES ${PROJECT_SOURCES})
 list(REMOVE_ITEM NKR_APPLICATION_SOURCES
@@ -400,7 +413,7 @@ set_target_properties(nkr_runtime PROPERTIES
     AUTOMOC ON AUTOUIC ON AUTORCC ON POSITION_INDEPENDENT_CODE ON
     CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
 target_include_directories(nkr_runtime PUBLIC "${PROJECT_SOURCE_DIR}")
-target_link_libraries(nkr_runtime PUBLIC nkr_data nkr_timed_process nkr_grpc_frame nkr_subscription nkr_vpn_process nkr_input_escaping nkr_link_parser
+target_link_libraries(nkr_runtime PUBLIC nkr_data nkr_timed_process nkr_grpc_frame nkr_subscription nkr_linux_vpn nkr_vpn_process nkr_input_escaping nkr_link_parser
     ${NKR_AUTORUN_TARGET}
     Qt${QT_VERSION_MAJOR}::Widgets Qt${QT_VERSION_MAJOR}::Network Qt${QT_VERSION_MAJOR}::Svg
     Threads::Threads ${NKR_EXTERNAL_TARGETS} ${PLATFORM_LIBRARIES})

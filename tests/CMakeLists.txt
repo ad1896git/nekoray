@@ -249,3 +249,47 @@ if (TARGET myproto)
     add_test(NAME w22 COMMAND tst_w22)
     set_tests_properties(w22 PROPERTIES TIMEOUT 15 LABELS "W22")
 endif()
+
+add_executable(tst_linux_vpn_launch
+    tst_linux_vpn_launch.cpp
+    "${PROJECT_SOURCE_DIR}/res/neko.qrc"
+)
+set_target_properties(tst_linux_vpn_launch PROPERTIES
+    AUTOMOC ON
+    AUTORCC ON
+    CXX_STANDARD 17
+    CXX_STANDARD_REQUIRED ON
+    CXX_EXTENSIONS OFF
+)
+target_link_libraries(tst_linux_vpn_launch PRIVATE
+    nkr_linux_vpn
+    Qt${QT_VERSION_MAJOR}::Test
+)
+add_test(NAME w07_launch COMMAND tst_linux_vpn_launch)
+set_tests_properties(w07_launch PROPERTIES
+    TIMEOUT 30
+    LABELS "W07"
+)
+
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    find_package(Python3 REQUIRED COMPONENTS Interpreter)
+    find_program(NKR_W07_BASH bash)
+    find_program(NKR_W07_FLOCK flock)
+    if(NOT NKR_W07_BASH OR NOT NKR_W07_FLOCK)
+        message(FATAL_ERROR "W07 sandbox tests require bash and util-linux flock")
+    endif()
+
+    add_test(
+        NAME w07_vpn_sandbox
+        COMMAND "${Python3_EXECUTABLE}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/test_linux_vpn_script.py"
+            "${PROJECT_SOURCE_DIR}/res/vpn/vpn-run-root.sh"
+    )
+    set_tests_properties(w07_vpn_sandbox PROPERTIES
+        TIMEOUT 300
+        LABELS "W07;Linux;sandbox"
+        RUN_SERIAL TRUE
+    )
+else()
+    message(STATUS "W07 Linux sandbox is not registered on this platform")
+endif()
