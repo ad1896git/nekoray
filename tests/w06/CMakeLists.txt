@@ -25,7 +25,6 @@ target_include_directories(tst_w06_tls_allow_insecure PRIVATE
 )
 
 target_link_libraries(tst_w06_tls_allow_insecure PRIVATE
-    nkr_link_parser
     Qt${QT_VERSION_MAJOR}::Core
     Qt${QT_VERSION_MAJOR}::Network
     Qt${QT_VERSION_MAJOR}::Widgets

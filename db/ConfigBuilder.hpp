@@ -2,6 +2,7 @@
 
 #include "ProxyEntity.hpp"
 #include "sys/ExternalProcess.hpp"
+#include "sys/ExternalTempFiles.hpp"
 
 namespace NekoGui {
     class BuildConfigResult {
@@ -53,7 +54,8 @@ namespace NekoGui {
     QString BuildChainInternal(int chainId, const QList<std::shared_ptr<ProxyEntity>> &ents,
                                const std::shared_ptr<BuildConfigStatus> &status);
 
-    QString WriteVPNSingBoxConfig();
+    QString WriteVPNSingBoxConfig(
+        std::shared_ptr<NekoGui_sys::ExternalTempFiles> files = {});
 
     QString WriteVPNLinuxScript(const QString &configPath);
 } // namespace NekoGui

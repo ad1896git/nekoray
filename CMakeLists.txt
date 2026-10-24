@@ -289,53 +289,6 @@ set_target_properties(nkr_input_escaping PROPERTIES
 target_include_directories(nkr_input_escaping PUBLIC "${PROJECT_SOURCE_DIR}")
 target_link_libraries(nkr_input_escaping PUBLIC Qt${QT_VERSION_MAJOR}::Core)
 
-# Shared subscription protocol. Compile these implementations once.
-add_library(nkr_subscription STATIC
-    db/ProfileFilter.cpp
-    sub/SubscriptionCommit.cpp
-    sub/SubscriptionCommit.hpp
-)
-set_target_properties(nkr_subscription PROPERTIES
-    CXX_STANDARD 17
-    CXX_STANDARD_REQUIRED ON
-    CXX_EXTENSIONS OFF
-    POSITION_INDEPENDENT_CODE ON
-)
-target_include_directories(nkr_subscription PUBLIC "${PROJECT_SOURCE_DIR}")
-target_link_libraries(nkr_subscription PUBLIC
-    Qt${QT_VERSION_MAJOR}::Widgets
-    Qt${QT_VERSION_MAJOR}::Network
-)
-
-# Share the production link parser with regression tests.
-add_library(nkr_link_parser STATIC fmt/Link2Bean.cpp)
-set_target_properties(nkr_link_parser PROPERTIES
-    CXX_STANDARD 17
-    CXX_STANDARD_REQUIRED ON
-    CXX_EXTENSIONS OFF
-    POSITION_INDEPENDENT_CODE ON
-)
-target_include_directories(nkr_link_parser PUBLIC "${PROJECT_SOURCE_DIR}")
-target_link_libraries(nkr_link_parser PUBLIC
-    Qt${QT_VERSION_MAJOR}::Widgets
-    Qt${QT_VERSION_MAJOR}::Network
-)
-
-add_library(nkr_data STATIC
-    db/Database.cpp
-)
-set_target_properties(nkr_data PROPERTIES
-    CXX_STANDARD 17
-    CXX_STANDARD_REQUIRED ON
-    CXX_EXTENSIONS OFF
-    POSITION_INDEPENDENT_CODE ON
-)
-target_include_directories(nkr_data PUBLIC "${PROJECT_SOURCE_DIR}")
-target_link_libraries(nkr_data PUBLIC
-    Qt${QT_VERSION_MAJOR}::Widgets
-    Qt${QT_VERSION_MAJOR}::Network
-)
-
 add_library(nkr_timed_process STATIC
     sys/TimedProcess.cpp
     sys/TimedProcess.hpp
@@ -352,13 +305,21 @@ target_link_libraries(nkr_timed_process PUBLIC
     Qt${QT_VERSION_MAJOR}::Core
 )
 
+add_library(nkr_linux_vpn STATIC
+    sys/LinuxVpnLaunch.cpp
+    sys/LinuxVpnLaunch.hpp
+)
+set_target_properties(nkr_linux_vpn PROPERTIES
+    CXX_STANDARD 17
+    CXX_STANDARD_REQUIRED ON
+    CXX_EXTENSIONS OFF
+    POSITION_INDEPENDENT_CODE ON
+)
+target_include_directories(nkr_linux_vpn PUBLIC "${PROJECT_SOURCE_DIR}")
+target_link_libraries(nkr_linux_vpn PUBLIC Qt${QT_VERSION_MAJOR}::Core)
+
 # Keep PROJECT_SOURCES intact for the Qt 5 translation scan.
 set(NKR_APPLICATION_SOURCES ${PROJECT_SOURCES})
-list(REMOVE_ITEM NKR_APPLICATION_SOURCES
-    db/ProfileFilter.cpp
-    fmt/Link2Bean.cpp
-    db/Database.cpp
-)
 
 set(NKR_AUTORUN_TARGET)
 if (APPLE)
@@ -393,14 +354,17 @@ if (APPLE)
 endif ()
 
 set(NKR_ENTRY_SOURCES main/main.cpp res/neko.qrc res/theme/feiyangqingyun/qss.qrc ${QV2RAY_RC})
-set(NKR_RUNTIME_SOURCES ${NKR_APPLICATION_SOURCES})
+set(NKR_RUNTIME_SOURCES ${NKR_APPLICATION_SOURCES}
+    sub/SubscriptionCommit.cpp
+    sub/SubscriptionCommit.hpp
+)
 list(REMOVE_ITEM NKR_RUNTIME_SOURCES ${NKR_ENTRY_SOURCES})
 add_library(nkr_runtime STATIC ${NKR_RUNTIME_SOURCES})
 set_target_properties(nkr_runtime PROPERTIES
     AUTOMOC ON AUTOUIC ON AUTORCC ON POSITION_INDEPENDENT_CODE ON
     CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
 target_include_directories(nkr_runtime PUBLIC "${PROJECT_SOURCE_DIR}")
-target_link_libraries(nkr_runtime PUBLIC nkr_data nkr_timed_process nkr_grpc_frame nkr_subscription nkr_vpn_process nkr_input_escaping nkr_link_parser
+target_link_libraries(nkr_runtime PUBLIC nkr_timed_process nkr_grpc_frame nkr_linux_vpn nkr_vpn_process nkr_input_escaping
     ${NKR_AUTORUN_TARGET}
     Qt${QT_VERSION_MAJOR}::Widgets Qt${QT_VERSION_MAJOR}::Network Qt${QT_VERSION_MAJOR}::Svg
     Threads::Threads ${NKR_EXTERNAL_TARGETS} ${PLATFORM_LIBRARIES})
