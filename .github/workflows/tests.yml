@@ -313,13 +313,6 @@ jobs:
           ./libs/build_public_res.sh
           ./libs/deploy_windows64.sh
 
-      - name: Upload portable package
-        uses: actions/upload-artifact@v4
-        with:
-          name: nekoray-windows-x64-qt6.7
-          path: deployment
-          if-no-files-found: error
-
       # deploy_windows64.sh wipes the package directory, so Go binaries must be
       # added after it. Same flags and tags as libs/build_go.sh.
       - name: Add Go binaries to the package (windows/amd64)
@@ -335,3 +328,10 @@ jobs:
           go build -v -o $DEST -trimpath -ldflags "-w -s -X github.com/matsuridayo/libneko/neko_common.Version_neko=$version_standalone" -tags "with_clash_api,with_gvisor,with_quic,with_wireguard,with_utls,with_ech"
           popd
           ls -la $DEST/nekobox_core.exe $DEST/updater.exe
+
+      - name: Upload portable package
+        uses: actions/upload-artifact@v4
+        with:
+          name: nekoray-windows-x64-qt6.7
+          path: deployment
+          if-no-files-found: error
