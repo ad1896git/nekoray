@@ -363,7 +363,16 @@ def run_tests():
     identity = case.ready()
     owner.kill()
     owner.wait(timeout=5)
-    case.run(parameters=["--stop"])
+    # DIAG: dump process table and state, then trace the --stop process.
+    print("DIAG ps", flush=True)
+    print(subprocess.run(
+        ["ps", "-eo", "pid,ppid,pgid,sid,stat,args"],
+        capture_output=True, text=True).stdout, flush=True)
+    print("DIAG state", (case.root / "nekoray-vpn.state").read_text(),
+          flush=True)
+    trace = case.root / "trace.sh"
+    trace.write_text("set -x\n")
+    case.run(parameters=["--stop"], BASH_ENV=str(trace))
     until(lambda: not alive(identity))
     assert case.rules("iptables") == foreign
     assert not case.rules("ip6tables")
