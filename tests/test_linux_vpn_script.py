@@ -61,28 +61,55 @@ with (root / "firewall.lock").open("a") as lock:
     storage.write_text(json.dumps(rules))
 '''
 
-FAKE_CORE = r'''#!/bin/bash
+FAKE_CORE = r'''#!/usr/bin/env python3
 # A core must never execute before its identity has been published.
-grep -q "^CORE=$$:" "$NKR_RUN_DIR/nekoray-vpn.state" || {
-    if [[ "${FAKE_MODE:-run}" != decoy ]]; then exit 99; fi
-}
-printf '%s\n' "$$" >>"$FAKE_STATE/cores"
-printf '%s\0' "$@" >"$FAKE_STATE/args"
-printf '%s' "$PWD" >"$FAKE_STATE/cwd"
-case "${FAKE_MODE:-run}" in
-    quick) exit 0 ;;
-    crash) exit 3 ;;
-    run|decoy)
-        trap 'printf "signal\n" >>"$FAKE_STATE/signals"; exit 0' INT TERM HUP
-        while :; do sleep 0.05 & wait $!; done
-        ;;
-    stubborn)
-        trap '' INT
-        trap 'exit 0' TERM
-        while :; do sleep 0.05; done
-        ;;
-    *) exit 64 ;;
-esac
+# Python handles signals directly: bash's trap/wait can leave an orphaned
+# loop deaf to INT on some runners, which is not what this test covers.
+import os
+import signal
+import sys
+import time
+
+state = os.environ["FAKE_STATE"]
+mode = os.environ.get("FAKE_MODE", "run")
+
+
+def record(name, text, append=True):
+    with open(os.path.join(state, name), "a" if append else "w") as f:
+        f.write(text)
+
+
+published = False
+try:
+    with open(os.path.join(os.environ["NKR_RUN_DIR"], "nekoray-vpn.state")) as f:
+        published = any(line.startswith("CORE=%d:" % os.getpid()) for line in f)
+except OSError:
+    pass
+if not published and mode != "decoy":
+    sys.exit(99)
+
+record("cores", "%d\n" % os.getpid())
+record("args", "".join(arg + "\0" for arg in sys.argv[1:]), append=False)
+record("cwd", os.getcwd(), append=False)
+
+if mode == "quick":
+    sys.exit(0)
+if mode == "crash":
+    sys.exit(3)
+if mode in ("run", "decoy"):
+    def stop(signum, frame):
+        record("signals", "signal\n")
+        os._exit(0)
+    for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+        signal.signal(sig, stop)
+    while True:
+        time.sleep(0.05)
+if mode == "stubborn":
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
+    signal.signal(signal.SIGTERM, lambda signum, frame: os._exit(0))
+    while True:
+        time.sleep(0.05)
+sys.exit(64)
 '''
 
 FAKE_MV = r'''#!/bin/bash
@@ -154,13 +181,6 @@ def default_signals():
     for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
         signal.signal(sig, signal.SIG_DFL)
     signal.pthread_sigmask(signal.SIG_SETMASK, set())
-
-
-def report_inherited_signals():
-    # Diagnostic: show what this test process inherited from its runner.
-    for line in open("/proc/self/status"):
-        if line.startswith(("SigBlk", "SigIgn")):
-            print("INHERITED", line.strip(), flush=True)
 
 
 class Case:
@@ -239,7 +259,6 @@ class Case:
 
 
 def run_tests():
-    report_inherited_signals()
     # Normal completion, exact arguments/cwd, and status propagation.
     case = Case("quick")
     case.run()
