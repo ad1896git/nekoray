@@ -406,6 +406,31 @@ endif ()
 if (NKR_BUILD_TESTS)
     find_package(Qt${QT_VERSION_MAJOR} REQUIRED COMPONENTS Test)
 
+    if (NOT NKR_NO_GRPC)
+        # Reuse the production runtime library, excluding the process entry point.
+        add_executable(tst_rpc_timeouts
+            tests/tst_rpc_timeouts.cpp
+        )
+        set_target_properties(tst_rpc_timeouts PROPERTIES
+            AUTOMOC ON
+            CXX_STANDARD 17
+            CXX_STANDARD_REQUIRED ON
+            CXX_EXTENSIONS OFF
+            RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests"
+        )
+        target_link_libraries(tst_rpc_timeouts PRIVATE
+            nkr_runtime
+            Qt${QT_VERSION_MAJOR}::Test
+        )
+        add_test(NAME rpc_timeouts COMMAND tst_rpc_timeouts)
+        # Allow the real five-minute download deadline to finish before QtTest's watchdog.
+        set_tests_properties(rpc_timeouts PROPERTIES
+            ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QTEST_FUNCTION_TIMEOUT=330000"
+            TIMEOUT 330
+            LABELS "W11"
+        )
+    endif ()
+
     foreach(_name IN ITEMS persistence subscription_commit renumber)
         add_executable(tst_${_name} tests/tst_${_name}.cpp
             res/neko.qrc res/theme/feiyangqingyun/qss.qrc)

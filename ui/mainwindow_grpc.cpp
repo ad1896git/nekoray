@@ -354,9 +354,16 @@ void MainWindow::speedtest_current() {
     req.set_timeout(10 * 1000);
     req.set_url(NekoGui::dataStore->test_latency_url.toStdString());
     runOnNewThread([=] {
-        bool rpcOK;
+        bool rpcOK = false;
         auto result = defaultClient->Test(&rpcOK, req);
-        if (!rpcOK) return;
+        if (!rpcOK) {
+            runOnUiThread([this] {
+                last_test_time = QTime::currentTime();
+                ui->label_running->setText(
+                    tr("Test Result") + ": " + tr("Unavailable"));
+            });
+            return;
+        }
 
         auto latency = result.ms();
 
@@ -482,15 +489,29 @@ void MainWindow::neko_start(int _id) {
     auto restartMsgboxTimer = new MessageBoxTimer(this, restartMsgbox, 5000);
 
     runOnNewThread([=] {
-        // stop current running
+        bool canStart = true;
         if (stopPrevious) {
             runOnUiThread([=] { neko_stop(false, true); });
             sem_stopped.acquire();
+
+            const auto stopped = NekoGui_concurrency::ReadUi<bool>([] {
+                return NekoGui::dataStore->started_id < 0;
+            });
+            canStart = stopped.value_or(false);
         }
-        // do start
-        MW_show_log(">>>>>>>> " + tr("Starting profile %1").arg(startingName));
-        if (!neko_start_stage2()) {
-            MW_show_log("<<<<<<<< " + tr("Failed to start profile %1").arg(startingName));
+
+        if (!canStart) {
+            MW_show_log(
+                tr("Profile switch cancelled because the previous "
+                   "profile did not stop. Restart the core before retrying."));
+        } else {
+            MW_show_log(
+                ">>>>>>>> " + tr("Starting profile %1").arg(startingName));
+            if (!neko_start_stage2()) {
+                MW_show_log(
+                    "<<<<<<<< " +
+                    tr("Failed to start profile %1").arg(startingName));
+            }
         }
         // cancel timeout
         NekoGui_concurrency::PostUi([=] {
@@ -625,10 +646,12 @@ void MainWindow::CheckUpdate() {
         if (btn1 == box.clickedButton() && allow_updater) {
             // Download Update
             runOnNewThread([=] {
-                bool ok2;
+                bool ok2 = false;
                 libcore::UpdateReq request2;
                 request2.set_action(libcore::UpdateAction::Download);
-                auto response2 = NekoGui_rpc::defaultClient->Update(&ok2, request2);
+                auto response2 =
+                    NekoGui_rpc::defaultClient->Update(&ok2, request2);
+                if (!ok2) return;
                 runOnUiThread([=] {
                     if (response2.error().empty()) {
                         auto q = QMessageBox::question(nullptr, QObject::tr("Update"),
