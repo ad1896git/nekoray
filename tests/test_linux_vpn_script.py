@@ -74,7 +74,7 @@ case "${FAKE_MODE:-run}" in
     crash) exit 3 ;;
     run|decoy)
         trap 'printf "signal\n" >>"$FAKE_STATE/signals"; exit 0' INT TERM HUP
-        while :; do sleep 0.05; done
+        while :; do sleep 0.05 & wait $!; done
         ;;
     stubborn)
         trap '' INT
