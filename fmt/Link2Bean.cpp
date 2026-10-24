@@ -1,7 +1,10 @@
 #include "db/ProxyEntity.hpp"
 #include "fmt/includes.h"
 
+#include <QJsonValue>
 #include <QUrlQuery>
+
+#include <cmath>
 
 namespace NekoGui_fmt {
     namespace {
@@ -9,6 +12,41 @@ namespace NekoGui_fmt {
             const QString normalized = value.trimmed().toLower();
             return normalized == QStringLiteral("1") ||
                    normalized == QStringLiteral("true");
+        }
+
+        bool ParseVMessPort(const QJsonValue &value, int &out) {
+            int parsed = 0;
+
+            if (value.isDouble()) {
+                const double number = value.toDouble();
+                if (!std::isfinite(number) ||
+                    number < 1.0 ||
+                    number > 65535.0 ||
+                    std::floor(number) != number) {
+                    return false;
+                }
+                parsed = static_cast<int>(number);
+            } else if (value.isString()) {
+                const QString text = value.toString().trimmed();
+                if (text.isEmpty()) return false;
+
+                for (const QChar ch : text) {
+                    if (ch.unicode() < '0' || ch.unicode() > '9') {
+                        return false;
+                    }
+                }
+
+                bool ok = false;
+                parsed = text.toInt(&ok, 10);
+                if (!ok || parsed < 1 || parsed > 65535) {
+                    return false;
+                }
+            } else {
+                return false;
+            }
+
+            out = parsed;
+            return true;
         }
     } // namespace
 
@@ -160,9 +198,24 @@ namespace NekoGui_fmt {
             auto objN = QString2QJsonObject(linkN);
             if (objN.isEmpty()) return false;
             // REQUIRED
-            uuid = objN["id"].toString();
-            serverAddress = objN["add"].toString();
-            serverPort = objN["port"].toVariant().toInt();
+            const QJsonValue idValue = objN.value(QStringLiteral("id"));
+            const QJsonValue addressValue = objN.value(QStringLiteral("add"));
+            if (!idValue.isString() || !addressValue.isString()) {
+                return false;
+            }
+
+            const QString parsedUuid = idValue.toString();
+            const QString parsedAddress = addressValue.toString();
+            int parsedPort = 0;
+            if (parsedUuid.trimmed().isEmpty() ||
+                parsedAddress.trimmed().isEmpty() ||
+                !ParseVMessPort(objN.value(QStringLiteral("port")), parsedPort)) {
+                return false;
+            }
+
+            uuid = parsedUuid;
+            serverAddress = parsedAddress;
+            serverPort = parsedPort;
             // OPTIONAL
             name = objN["ps"].toString();
             aid = objN["aid"].toVariant().toInt();
@@ -238,7 +291,10 @@ namespace NekoGui_fmt {
                     stream->host = GetQueryValue(query, "host", "");
                 }
             }
-            return !(uuid.isEmpty() || serverAddress.isEmpty());
+            return !uuid.trimmed().isEmpty() &&
+                   !serverAddress.trimmed().isEmpty() &&
+                   serverPort >= 1 &&
+                   serverPort <= 65535;
         }
 
         return false;

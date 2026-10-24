@@ -7,7 +7,6 @@ add_executable(tst_w06_tls_allow_insecure
     "${PROJECT_SOURCE_DIR}/fmt/Bean2CoreObj_box.cpp"
     "${PROJECT_SOURCE_DIR}/fmt/Bean2External.cpp"
     "${PROJECT_SOURCE_DIR}/fmt/Bean2Link.cpp"
-    "${PROJECT_SOURCE_DIR}/fmt/Link2Bean.cpp"
     "${PROJECT_SOURCE_DIR}/main/NekoGui.cpp"
     "${PROJECT_SOURCE_DIR}/main/NekoGui_Utils.cpp"
     "${PROJECT_SOURCE_DIR}/3rdparty/base64.cpp"
@@ -26,6 +25,7 @@ target_include_directories(tst_w06_tls_allow_insecure PRIVATE
 )
 
 target_link_libraries(tst_w06_tls_allow_insecure PRIVATE
+    nkr_link_parser
     Qt${QT_VERSION_MAJOR}::Core
     Qt${QT_VERSION_MAJOR}::Network
     Qt${QT_VERSION_MAJOR}::Widgets
