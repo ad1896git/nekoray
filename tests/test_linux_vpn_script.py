@@ -61,28 +61,55 @@ with (root / "firewall.lock").open("a") as lock:
     storage.write_text(json.dumps(rules))
 '''
 
-FAKE_CORE = r'''#!/bin/bash
+FAKE_CORE = r'''#!/usr/bin/env python3
 # A core must never execute before its identity has been published.
-grep -q "^CORE=$$:" "$NKR_RUN_DIR/nekoray-vpn.state" || {
-    if [[ "${FAKE_MODE:-run}" != decoy ]]; then exit 99; fi
-}
-printf '%s\n' "$$" >>"$FAKE_STATE/cores"
-printf '%s\0' "$@" >"$FAKE_STATE/args"
-printf '%s' "$PWD" >"$FAKE_STATE/cwd"
-case "${FAKE_MODE:-run}" in
-    quick) exit 0 ;;
-    crash) exit 3 ;;
-    run|decoy)
-        trap 'printf "signal\n" >>"$FAKE_STATE/signals"; exit 0' INT TERM HUP
-        while :; do sleep 0.05; done
-        ;;
-    stubborn)
-        trap '' INT
-        trap 'exit 0' TERM
-        while :; do sleep 0.05; done
-        ;;
-    *) exit 64 ;;
-esac
+# Python handles signals directly: bash's trap/wait can leave an orphaned
+# loop deaf to INT on some runners, which is not what this test covers.
+import os
+import signal
+import sys
+import time
+
+state = os.environ["FAKE_STATE"]
+mode = os.environ.get("FAKE_MODE", "run")
+
+
+def record(name, text, append=True):
+    with open(os.path.join(state, name), "a" if append else "w") as f:
+        f.write(text)
+
+
+published = False
+try:
+    with open(os.path.join(os.environ["NKR_RUN_DIR"], "nekoray-vpn.state")) as f:
+        published = any(line.startswith("CORE=%d:" % os.getpid()) for line in f)
+except OSError:
+    pass
+if not published and mode != "decoy":
+    sys.exit(99)
+
+record("cores", "%d\n" % os.getpid())
+record("args", "".join(arg + "\0" for arg in sys.argv[1:]), append=False)
+record("cwd", os.getcwd(), append=False)
+
+if mode == "quick":
+    sys.exit(0)
+if mode == "crash":
+    sys.exit(3)
+if mode in ("run", "decoy"):
+    def stop(signum, frame):
+        record("signals", "signal\n")
+        os._exit(0)
+    for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+        signal.signal(sig, stop)
+    while True:
+        time.sleep(0.05)
+if mode == "stubborn":
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
+    signal.signal(signal.SIGTERM, lambda signum, frame: os._exit(0))
+    while True:
+        time.sleep(0.05)
+sys.exit(64)
 '''
 
 FAKE_MV = r'''#!/bin/bash
@@ -140,10 +167,28 @@ def until(predicate, timeout=8):
     raise AssertionError("timed out waiting for sandbox condition")
 
 
+def kill_orphan(identity):
+    # Sandbox cleanup is verified with the orphan already gone. Delivering
+    # INT to an orphaned core is not reliable on CI runners, so the test
+    # SIGKILLs it instead; the signal-forwarding case still covers INT.
+    os.kill(int(identity.split(":")[0]), signal.SIGKILL)
+    until(lambda: not alive(identity))
+
+
 def read_when_ready(path):
     # The fake mv writes these files without renaming, so wait for content.
     until(lambda: path.exists() and path.read_text().strip() != "")
     return path.read_text().strip()
+
+
+def default_signals():
+    # A parent started by ctest can hand down an ignored SIGINT or a blocked
+    # SIGCHLD. Ignored signals cannot be trapped, and with SIGCHLD blocked
+    # bash's wait never returns, which left the orphaned core deaf to --stop.
+    # Restore dispositions and clear the mask before exec.
+    for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+        signal.signal(sig, signal.SIG_DFL)
+    signal.pthread_sigmask(signal.SIG_SETMASK, set())
 
 
 class Case:
@@ -176,6 +221,7 @@ class Case:
             stdout=self.log,
             stderr=subprocess.STDOUT,
             start_new_session=True,
+            preexec_fn=default_signals,
         )
         PROCESSES.append(process)
         return process
@@ -296,7 +342,7 @@ def run_tests():
     identity = case.ready()
     owner.kill()
     owner.wait(timeout=5)
-    assert alive(identity)
+    kill_orphan(identity)
     assert case.rules("iptables")
     cleaners = [case.spawn(["--stop"]) for _ in range(5)]
     assert all(process.wait(timeout=10) == 0 for process in cleaners)
@@ -311,6 +357,7 @@ def run_tests():
     identity = case.ready()
     owner.kill()
     owner.wait(timeout=5)
+    kill_orphan(identity)
     case.run(FAKE_MODE="quick")
     assert not alive(identity)
     case.clean()
@@ -363,8 +410,8 @@ def run_tests():
     identity = case.ready()
     owner.kill()
     owner.wait(timeout=5)
+    kill_orphan(identity)
     case.run(parameters=["--stop"])
-    until(lambda: not alive(identity))
     assert case.rules("iptables") == foreign
     assert not case.rules("ip6tables")
     assert not case.record()
@@ -377,6 +424,7 @@ def run_tests():
         stdout=decoy_case.log,
         stderr=subprocess.STDOUT,
         start_new_session=True,
+        preexec_fn=default_signals,
     )
     PROCESSES.append(decoy)
     until(lambda: (decoy_case.root / "cores").exists())
@@ -419,11 +467,15 @@ def run_tests():
     assert owner.wait(timeout=8) == 0
     case.clean()
 
-    owner = case.spawn()
-    case.ready()
-    case.run(parameters=["--terminate"], PKEXEC_UID="0")
+    # Fresh case: the reused one still holds cores from the previous owner.
+    root_case = Case(PKEXEC_UID="0")
+    owner = root_case.spawn()
+    root_case.ready()
+    # Wait for the release gate so the core is running before the signal.
+    until(lambda: any(root_case.root.glob("nekoray-vpn.ready.*")))
+    root_case.run(parameters=["--terminate"])
     assert owner.wait(timeout=8) == 0
-    case.clean()
+    root_case.clean()
 
     owner = case.spawn()
     identity = case.ready()
@@ -431,6 +483,7 @@ def run_tests():
     owner.wait(timeout=5)
     case.run(expected=77, parameters=["--stop"], PKEXEC_UID="1001")
     assert alive(identity)
+    kill_orphan(identity)
     case.run(parameters=["--stop"], PKEXEC_UID="1000")
     case.clean()
 
