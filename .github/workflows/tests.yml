@@ -294,13 +294,6 @@ jobs:
         shell: bash
         run: ./libs/get_source.sh
 
-      - name: Build Go core (windows/amd64)
-        shell: bash
-        env:
-          GOOS: windows
-          GOARCH: amd64
-        run: ./libs/build_go.sh
-
       - name: Build third-party dependencies
         shell: bash
         run: ./libs/build_deps_all.sh
@@ -326,3 +319,19 @@ jobs:
           name: nekoray-windows-x64-qt6.7
           path: deployment
           if-no-files-found: error
+
+      # deploy_windows64.sh wipes the package directory, so Go binaries must be
+      # added after it. Same flags and tags as libs/build_go.sh.
+      - name: Add Go binaries to the package (windows/amd64)
+        shell: bash
+        run: |
+          source libs/env_deploy.sh
+          export CGO_ENABLED=0 GOOS=windows GOARCH=amd64
+          DEST=$DEPLOYMENT/windows64
+          pushd go/cmd/updater
+          go build -o $DEST -trimpath -ldflags "-w -s"
+          popd
+          pushd go/cmd/nekobox_core
+          go build -v -o $DEST -trimpath -ldflags "-w -s -X github.com/matsuridayo/libneko/neko_common.Version_neko=$version_standalone" -tags "with_clash_api,with_gvisor,with_quic,with_wireguard,with_utls,with_ech"
+          popd
+          ls -la $DEST/nekobox_core.exe $DEST/updater.exe
