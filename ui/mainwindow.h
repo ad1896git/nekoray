@@ -25,6 +25,7 @@
 
 namespace NekoGui_sys {
     class CoreProcess;
+    class TimedProcess;
 }
 
 namespace NekoGui_runtime {
@@ -147,6 +148,9 @@ private:
     //
     NekoGui_sys::CoreProcess *core_process;
     qint64 vpn_pid = 0;
+#ifdef Q_OS_LINUX
+    NekoGui_sys::TimedProcess *tun_capability_job = nullptr;
+#endif
 #ifndef Q_OS_WIN
     NekoGui_runtime::VpnProcess *vpnProcess_ = nullptr;
 #endif
