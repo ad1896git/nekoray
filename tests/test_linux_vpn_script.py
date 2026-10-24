@@ -147,11 +147,20 @@ def read_when_ready(path):
 
 
 def default_signals():
-    # bash cannot install a trap for a signal inherited as ignored, so a
-    # parent that ignores SIGINT (as ctest may) would make the supervisor
-    # and core deaf to --stop and --terminate. Restore the defaults first.
+    # A parent started by ctest can hand down an ignored SIGINT or a blocked
+    # SIGCHLD. Ignored signals cannot be trapped, and with SIGCHLD blocked
+    # bash's wait never returns, which left the orphaned core deaf to --stop.
+    # Restore dispositions and clear the mask before exec.
     for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
         signal.signal(sig, signal.SIG_DFL)
+    signal.pthread_sigmask(signal.SIG_SETMASK, set())
+
+
+def report_inherited_signals():
+    # Diagnostic: show what this test process inherited from its runner.
+    for line in open("/proc/self/status"):
+        if line.startswith(("SigBlk", "SigIgn")):
+            print("INHERITED", line.strip(), flush=True)
 
 
 class Case:
@@ -230,6 +239,7 @@ class Case:
 
 
 def run_tests():
+    report_inherited_signals()
     # Normal completion, exact arguments/cwd, and status propagation.
     case = Case("quick")
     case.run()
