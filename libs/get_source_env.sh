@@ -1,5 +1,5 @@
 export COMMIT_SING_BOX="1e4ad6deefe6d01381dcdfd0999655b40208981c"
-export COMMIT_SING_QUIC="4c42b77fb3683d87c505e0fd094bbb863700e82d"
+export COMMIT_SING_QUIC="529f47c12610976caa89d47fe673668581c19d61"
 export COMMIT_LIBNEKO="1c47a3af71990a7b2192e03292b4d246c308ef0b"
 
 # sing-box and sing-quic pins are commits on the ad1896git forks; libneko is upstream.
