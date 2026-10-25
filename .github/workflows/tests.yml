@@ -298,4 +298,6 @@ jobs:
 
       - name: Test external interoperability
         working-directory: go/cmd/nekobox_core
-        run: go test -count=1 -v -timeout=600s -run '^TestNK04External' .
+        run: |
+          go test -mod=readonly -tags "$NKR_GO_TAGS" \
+            -count=1 -timeout=600s -v -run '^TestNK04External' .
