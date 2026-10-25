@@ -403,7 +403,21 @@ func TestNK04Hysteria2Reconnect(t *testing.T) {
 	if _, err := conn.Read(make([]byte, 1)); err == nil {
 		t.Fatal("closed QUIC connection remained readable")
 	}
-	nk04OK(t, nk04TCP(f.ctx, c))
+	// The stream can observe the close before the client drops its cached connection.
+	ticker := time.NewTicker(25 * time.Millisecond)
+	defer ticker.Stop()
+	for attempts := 1; ; attempts++ {
+		err = nk04TCP(f.ctx, c)
+		t.Logf("reconnect attempt %d: %v", attempts, err)
+		if err == nil {
+			break
+		}
+		select {
+		case <-f.ctx.Done():
+			t.Fatalf("reconnect failed after %d attempts: %v", attempts, err)
+		case <-ticker.C:
+		}
+	}
 	select {
 	case next := <-f.accepted:
 		if next == first {
