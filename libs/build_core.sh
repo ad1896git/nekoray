@@ -98,9 +98,9 @@ go build -mod=readonly -modfile="$work_dir/go.mod" -o "$out_dir/$binary" -trimpa
     -tags 'with_clash_api,with_gvisor,with_quic,with_wireguard,with_utls,with_ech'
 
 if command -v shasum >/dev/null 2>&1; then
-    checksum=$(shasum -a 256 "$out_dir/$binary")
+    checksum=$(cd -- "$out_dir" && shasum -a 256 "$binary")
 elif command -v sha256sum >/dev/null 2>&1; then
-    checksum=$(sha256sum "$out_dir/$binary")
+    checksum=$(cd -- "$out_dir" && sha256sum "$binary")
 else
     die 'SHA-256 requires shasum or sha256sum'
 fi
