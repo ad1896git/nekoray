@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Build nekobox_core from the pinned MatsuriDayo sources by default.
-# NKR_SRC_BASE overrides https://github.com/MatsuriDayo (forks/mirrors supported).
+# Build nekobox_core from the pinned sources by default: sing-box and sing-quic
+# from the ad1896git forks, libneko from MatsuriDayo.
+# NKR_SRC_BASE overrides the fork base for sing-box and sing-quic (mirrors supported).
 # NKR_SRC_DIR holds sing-box, sing-quic and libneko; default: repository parent.
 # GOOS/GOARCH default to the host. VERSION defaults to git describe, or dev.
 # NKR_CORE_OUT_DIR overrides <repository>/build-core/<GOOS>-<GOARCH>.
@@ -26,7 +27,7 @@ fi
 
 repo_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
 source "$repo_dir/libs/get_source_env.sh"
-src_base=${NKR_SRC_BASE:-https://github.com/MatsuriDayo}
+src_base=${NKR_SRC_BASE:-$NKR_SRC_FORK}
 src_dir=${NKR_SRC_DIR:-$repo_dir/..}
 mkdir -p -- "$src_dir"
 src_dir=$(cd -- "$src_dir" && pwd -P)
@@ -43,9 +44,9 @@ verify_source() {
 }
 
 prepare_source() {
-    local name=$1 expected=$2 actual status
+    local name=$1 expected=$2 base=$3 actual status
     if [[ ! -e $src_dir/$name ]]; then
-        git clone --no-checkout "${src_base%/}/$name.git" "$src_dir/$name"
+        git clone --no-checkout "${base%/}/$name.git" "$src_dir/$name"
     else
         git -C "$src_dir/$name" rev-parse --git-dir >/dev/null 2>&1 || die "not a Git checkout: $src_dir/$name"
         status=$(git -C "$src_dir/$name" status --porcelain)
@@ -57,7 +58,7 @@ prepare_source() {
     actual=$(git -C "$src_dir/$name" rev-parse HEAD 2>/dev/null) || actual=unavailable
     # A clean, already pinned checkout needs no network or Git metadata writes.
     if [[ $actual != "$expected" ]]; then
-        if ! git -C "$src_dir/$name" fetch "${src_base%/}/$name.git" "$expected"; then
+        if ! git -C "$src_dir/$name" fetch "${base%/}/$name.git" "$expected"; then
             # Fetch failure is fatal; report the checkout mismatch before exiting.
             printf 'build_core: failed to fetch %s at %s\n' "$name" "$expected" >&2
             verify_source "$name" "$expected"
@@ -68,9 +69,9 @@ prepare_source() {
     verify_source "$name" "$expected"
 }
 
-prepare_source sing-box "$COMMIT_SING_BOX"
-prepare_source sing-quic "$COMMIT_SING_QUIC"
-prepare_source libneko "$COMMIT_LIBNEKO"
+prepare_source sing-box "$COMMIT_SING_BOX" "$src_base"
+prepare_source sing-quic "$COMMIT_SING_QUIC" "$src_base"
+prepare_source libneko "$COMMIT_LIBNEKO" "$NKR_SRC_UPSTREAM"
 
 GOOS=${GOOS:-$(go env GOHOSTOS)}
 GOARCH=${GOARCH:-$(go env GOHOSTARCH)}
