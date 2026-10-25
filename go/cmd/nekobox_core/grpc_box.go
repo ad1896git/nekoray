@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"errors"
 	"fmt"
 
 	"grpc_server"
@@ -25,6 +24,10 @@ type server struct {
 }
 
 func (s *server) Start(ctx context.Context, in *gen.LoadConfigReq) (out *gen.ErrorResp, _ error) {
+	if instance != nil {
+		return &gen.ErrorResp{Error: "instance already started"}, nil
+	}
+
 	var err error
 
 	defer func() {
@@ -37,11 +40,6 @@ func (s *server) Start(ctx context.Context, in *gen.LoadConfigReq) (out *gen.Err
 
 	if neko_common.Debug {
 		log.Println("Start:", in.CoreConfig)
-	}
-
-	if instance != nil {
-		err = errors.New("instance already started")
-		return
 	}
 
 	instance, instance_cancel, err = boxmain.Create([]byte(in.CoreConfig))
@@ -76,7 +74,7 @@ func (s *server) Stop(ctx context.Context, in *gen.EmptyReq) (out *gen.ErrorResp
 	}
 
 	instance_cancel()
-	instance.Close()
+	err = instance.Close()
 
 	instance = nil
 
