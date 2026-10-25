@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"log"
 	"net"
 	"net/http"
 	"sync"
@@ -36,7 +37,12 @@ var configureInstanceLog = func(i *box.Box) {
 func setupCore() {
 	boxmain.SetDisableColor(true)
 	//
-	neko_log.SetupLog(50*1024, "./neko.log")
+	if err := prepareLogFile("./neko.log"); err != nil {
+		log.Printf("prepare core log file: %v", err)
+	}
+	if err := neko_log.SetupLog(50*1024, "./neko.log"); err != nil {
+		log.Printf("set up core log: %v", err)
+	}
 	//
 	neko_common.GetCurrentInstance = func() interface{} {
 		return currentInstance()
