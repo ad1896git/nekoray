@@ -4,6 +4,8 @@
 
 #include "go/grpc_server/gen/libcore.pb.h"
 #include <QString>
+#include <functional>
+#include <memory>
 
 namespace QtGrpc {
     class Http2GrpcChannelPrivate;
@@ -13,6 +15,8 @@ namespace NekoGui_rpc {
     class Client {
     public:
         explicit Client(std::function<void(const QString &)> onError, const QString &target, const QString &token);
+
+        ~Client();
 
         void Exit();
 
