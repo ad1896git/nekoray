@@ -40,6 +40,7 @@ namespace NekoGui_ConfigItem {
         std::function<void()> callback_before_save = nullptr;
 
         QString fn;
+        QString isolated_path;
         bool load_control_must = false; // must load from file
         bool save_control_compact = false;
         bool save_control_no_save = false;
@@ -75,6 +76,8 @@ namespace NekoGui_ConfigItem {
         bool Save();
 
         bool Load();
+
+        QString IsolatedPath() const { return isolated_path; }
 
         // Startup/default creation only. Does not overwrite a failed read
         // or a file whose isolation failed.

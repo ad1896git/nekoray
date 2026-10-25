@@ -424,6 +424,8 @@ private slots:
         DataStore settings;
         settings.fn = "groups/nekobox.json";
         QVERIFY(settings.LoadOrCreate());
+        QVERIFY(!settings.IsolatedPath().isEmpty());
+        QVERIFY(QFileInfo::exists(settings.IsolatedPath()));
 
         const auto isolated = IsolatedFiles("groups");
         QCOMPARE(isolated.size(), 1);
