@@ -1,6 +1,8 @@
 #pragma once
 
 #include <QMainWindow>
+#include <QPointer>
+#include <QProcess>
 
 #include "main/NekoGui.hpp"
 
@@ -10,7 +12,6 @@
 #include <QTableWidgetItem>
 #include <QKeyEvent>
 #include <QSystemTrayIcon>
-#include <QProcess>
 #include <QTextDocument>
 #include <QShortcut>
 #include <QSemaphore>
@@ -148,6 +149,10 @@ private:
     //
     NekoGui_sys::CoreProcess *core_process;
     qint64 vpn_pid = 0;
+#ifdef Q_OS_LINUX
+    QPointer<QProcess> linux_vpn_process;
+    bool linux_vpn_stopping = false;
+#endif
 #ifdef Q_OS_LINUX
     NekoGui_sys::TimedProcess *tun_capability_job = nullptr;
 #endif

@@ -10,6 +10,8 @@
 #include "db/ConfigBuilder.hpp"
 #include "sub/GroupUpdater.hpp"
 #include "sys/ExternalProcess.hpp"
+#include "sys/LinuxVpnLaunch.hpp"
+#include "sys/ExternalTempFiles.hpp"
 #include "sys/VpnProcess.hpp"
 #include "sys/AutoRun.hpp"
 
@@ -37,7 +39,9 @@
 #ifdef Q_OS_LINUX
 #include "sys/linux/LinuxCap.h"
 #include "sys/TimedProcess.hpp"
+#include <QEventLoop>
 #include <QProgressDialog>
+#include <QScopedValueRollback>
 #endif
 #include <unistd.h>
 #endif
@@ -1898,6 +1902,83 @@ void MainWindow::HotkeyEvent(const QString &key) {}
 // VPN Launcher
 
 bool MainWindow::StartVPNProcess() {
+#ifdef Q_OS_LINUX
+    if (linux_vpn_stopping) {
+        MessageBoxWarning(tr("Error"), tr("Tun is still stopping; try again."));
+        return false;
+    }
+    if (linux_vpn_process) {
+        if (linux_vpn_process->state() != QProcess::NotRunning)
+            return true;
+        linux_vpn_process->deleteLater();
+        linux_vpn_process = nullptr;
+        vpn_pid = 0;
+    }
+
+    QString error;
+    const QString script = NekoGui_sys::ReadLinuxVpnScript(error);
+    if (script.isEmpty()) {
+        MessageBoxWarning(tr("Error"), error);
+        return false;
+    }
+
+    auto files = std::make_shared<NekoGui_sys::ExternalTempFiles>();
+    const QString configPath = NekoGui::WriteVPNSingBoxConfig(files);
+    if (configPath.isEmpty()) {
+        MessageBoxWarning(
+            tr("Error"), tr("Failed to write private Tun configuration"));
+        return false;
+    }
+
+    auto process = new QProcess(this);
+    linux_vpn_process = process;
+    NekoGui_sys::AttachExternalTempFiles(*process, files);
+    process->setProcessChannelMode(QProcess::ForwardedChannels);
+
+    connect(
+        process,
+        static_cast<void (QProcess::*)(int, QProcess::ExitStatus)>(
+            &QProcess::finished),
+        process,
+        [this, process](int code, QProcess::ExitStatus status) {
+            if (linux_vpn_process == process) {
+                linux_vpn_process = nullptr;
+                vpn_pid = 0;
+                // A queued finish can arrive after StopVPNProcess returns.
+                const bool stopping = linux_vpn_stopping ||
+                    process->property("linuxVpnStopRequested").toBool();
+                if (!stopping)
+                    neko_set_spmode_vpn(false);
+                if (!stopping && (status != QProcess::NormalExit || code != 0)) {
+                    MessageBoxWarning(
+                        tr("Error"),
+                        tr("Tun process exited with code %1. "
+                           "See the process output for details.")
+                            .arg(code));
+                }
+            }
+            process->deleteLater();
+        },
+        Qt::QueuedConnection);
+
+    const QString workdir = QApplication::applicationDirPath();
+    const QString core = QDir(workdir).filePath("nekobox_core");
+    process->start(
+        QStringLiteral("/usr/bin/pkexec"),
+        NekoGui_sys::LinuxVpnArguments(
+            script, QStringList{core, configPath, workdir}));
+
+    if (!process->waitForStarted(5000)) {
+        linux_vpn_process = nullptr;
+        vpn_pid = 0;
+        process->deleteLater();
+        MessageBoxWarning(tr("Error"), tr("Failed to start Tun authorization"));
+        return false;
+    }
+
+    vpn_pid = process->processId();
+    return true;
+#else
 #ifndef Q_OS_WIN
     if (vpnProcess_) {
         if (vpnProcess_->stopRequested()) {
@@ -1995,9 +2076,84 @@ bool MainWindow::StartVPNProcess() {
     vpn_pid = process->processId();
 #endif
     return true;
+#endif
 }
 
 bool MainWindow::StopVPNProcess(bool unconditional) {
+#ifdef Q_OS_LINUX
+    if (linux_vpn_stopping) {
+        MessageBoxWarning(tr("Error"), tr("Failed to stop Tun process"));
+        return false;
+    }
+    if (!unconditional && !linux_vpn_process)
+        return true;
+
+    QScopedValueRollback<bool> stopping(linux_vpn_stopping, true);
+    if (linux_vpn_process &&
+        linux_vpn_process->state() != QProcess::NotRunning) {
+        linux_vpn_process->setProperty("linuxVpnStopRequested", true);
+        linux_vpn_process->kill();
+    }
+
+    QString error;
+    const QString script = NekoGui_sys::ReadLinuxVpnScript(error);
+    if (script.isEmpty()) {
+        MessageBoxWarning(tr("Error"), error);
+        return false;
+    }
+
+    const auto control = [&script](const QString &mode) {
+        QProcess process;
+        QEventLoop loop;
+        QTimer timer;
+        timer.setSingleShot(true);
+        bool done = false;
+        bool ok = false;
+        connect(
+            &process,
+            static_cast<void (QProcess::*)(int, QProcess::ExitStatus)>(
+                &QProcess::finished),
+            &loop, [&](int code, QProcess::ExitStatus status) {
+                done = true;
+                ok = status == QProcess::NormalExit && code == 0;
+                loop.quit();
+            });
+        connect(&process, &QProcess::errorOccurred, &loop,
+                [&](QProcess::ProcessError error) {
+                    if (error == QProcess::FailedToStart) {
+                        done = true;
+                        loop.quit();
+                    }
+                });
+        connect(&timer, &QTimer::timeout, &loop, [&] {
+            done = true;
+            process.kill();
+            loop.quit();
+        });
+        process.setProcessChannelMode(QProcess::ForwardedChannels);
+        timer.start(30000);
+        process.start(
+            QStringLiteral("/usr/bin/pkexec"),
+            NekoGui_sys::LinuxVpnArguments(
+                script, QStringList{mode}));
+
+        if (!done)
+            loop.exec();
+        return ok;
+    };
+
+    bool ok = control(QStringLiteral("--terminate"));
+    if (ok && unconditional)
+        ok = control(QStringLiteral("--stop"));
+
+    if (!ok) {
+        MessageBoxWarning(tr("Error"), tr("Failed to stop Tun process"));
+        return false;
+    }
+
+    vpn_pid = 0;
+    return true;
+#else
 #ifndef Q_OS_WIN
     auto *stoppingProcess = vpnProcess_;
     const bool alreadyStopping =
@@ -2038,4 +2194,5 @@ bool MainWindow::StopVPNProcess(bool unconditional) {
         return ok;
     }
     return true;
+#endif
 }
