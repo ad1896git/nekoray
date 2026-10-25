@@ -203,6 +203,12 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
+    if (!NekoGui::dataStore->IsolatedPath().isEmpty()) {
+        MessageBoxWarning("Warning", "groups/nekobox.json was reset to defaults. "
+                          "The damaged file was kept in the corrupt folder:\n" +
+                          NekoGui::dataStore->IsolatedPath());
+    }
+
     // Datastore & Flags
     if (NekoGui::dataStore->start_minimal) NekoGui::dataStore->flag_tray = true;
 
@@ -213,6 +219,12 @@ int main(int argc, char* argv[]) {
         MessageBoxWarning("Error", "Cannot load or initialize the active routing configuration. "
                           "Check the log and directory permissions.");
         return 1;
+    }
+
+    if (!NekoGui::dataStore->routing->IsolatedPath().isEmpty()) {
+        MessageBoxWarning("Warning", "The active routing configuration was reset to defaults. "
+                          "The damaged file was kept in the corrupt folder:\n" +
+                          NekoGui::dataStore->routing->IsolatedPath());
     }
 
     // Translate

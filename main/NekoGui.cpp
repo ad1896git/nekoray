@@ -328,6 +328,7 @@ namespace NekoGui_ConfigItem {
     }
 
     bool JsonStore::Load() {
+        isolated_path.clear();
         load_can_create = false;
         if (Renumber::Pending()) {
             qWarning() << "Configuration load blocked by unfinished renumbering";
@@ -364,7 +365,17 @@ namespace NekoGui_ConfigItem {
             return false;
         }
         if (!FromJsonBytes(content)) {
+            QDir corruptDirectory(info.absolutePath() + "/corrupt");
+            const auto existingFiles = corruptDirectory.entryList(QDir::Files);
             if (IsolateCorruptFile(fn)) {
+                corruptDirectory.refresh();
+                for (const auto &name : corruptDirectory.entryList(QDir::Files)) {
+                    if (!existingFiles.contains(name) &&
+                        name.startsWith(info.fileName() + ".") && name.endsWith(".corrupt")) {
+                        isolated_path = corruptDirectory.absoluteFilePath(name);
+                        break;
+                    }
+                }
                 blocked_save_path.clear();
                 load_can_create = true;
             }
