@@ -2,14 +2,19 @@
 
 #include <QApplication>
 #include <QDir>
+#include <QFileInfo>
 
 #include "3rdparty/fix_old_qt.h"
-#include "main/NekoGui.hpp"
 
-// macOS headers (possibly OBJ-c)
-#if defined(Q_OS_MACOS)
-#include <CoreFoundation/CoreFoundation.h>
-#include <CoreServices/CoreServices.h>
+#ifdef Q_OS_LINUX
+#include "main/NekoGui.hpp"
+#endif
+
+#ifdef Q_OS_MACOS
+#include "AutoRunMac_p.hpp"
+
+#include <QDebug>
+#include <QFile>
 #endif
 
 #ifdef Q_OS_WIN
@@ -55,90 +60,204 @@ bool AutoRun_IsEnabled() {
 
 #ifdef Q_OS_MACOS
 
-void AutoRun_SetEnabled(bool enable) {
-    // From
-    // https://github.com/nextcloud/desktop/blob/master/src/common/utility_mac.cpp
-    QString filePath = QDir(QCoreApplication::applicationDirPath() + QLatin1String("/../..")).absolutePath();
-    CFStringRef folderCFStr = CFStringCreateWithCString(0, filePath.toUtf8().data(), kCFStringEncodingUTF8);
-    CFURLRef urlRef = CFURLCreateWithFileSystemPath(0, folderCFStr, kCFURLPOSIXPathStyle, true);
-    LSSharedFileListRef loginItems = LSSharedFileListCreate(0, kLSSharedFileListSessionLoginItems, 0);
+namespace NkrAutoRunMac {
+namespace {
 
-    if (loginItems && enable) {
-        // Insert an item to the list.
-        LSSharedFileListItemRef item =
-            LSSharedFileListInsertItemURL(loginItems, kLSSharedFileListItemLast, 0, 0, urlRef, 0, 0);
+template<typename T>
+class OwnedCF {
+public:
+    OwnedCF(T value, const Api &api) : value_(value), api_(api) {}
 
-        if (item) CFRelease(item);
-
-        CFRelease(loginItems);
-    } else if (loginItems && !enable) {
-        // We need to iterate over the items and check which one is "ours".
-        UInt32 seedValue;
-        CFArrayRef itemsArray = LSSharedFileListCopySnapshot(loginItems, &seedValue);
-        CFStringRef appUrlRefString = CFURLGetString(urlRef);
-
-        for (int i = 0; i < CFArrayGetCount(itemsArray); i++) {
-            LSSharedFileListItemRef item = (LSSharedFileListItemRef) CFArrayGetValueAtIndex(itemsArray, i);
-            CFURLRef itemUrlRef = NULL;
-
-            if (LSSharedFileListItemResolve(item, 0, &itemUrlRef, NULL) == noErr && itemUrlRef) {
-                CFStringRef itemUrlString = CFURLGetString(itemUrlRef);
-
-                if (CFStringCompare(itemUrlString, appUrlRefString, 0) == kCFCompareEqualTo) {
-                    LSSharedFileListItemRemove(loginItems, item); // remove it!
-                }
-
-                CFRelease(itemUrlRef);
-            }
+    ~OwnedCF() {
+        if (value_) {
+            api_.release(value_);
         }
-
-        CFRelease(itemsArray);
-        CFRelease(loginItems);
     }
 
-    CFRelease(folderCFStr);
-    CFRelease(urlRef);
+    OwnedCF(const OwnedCF &) = delete;
+    OwnedCF &operator=(const OwnedCF &) = delete;
+
+    T get() const {
+        return value_;
+    }
+
+private:
+    T value_;
+    const Api &api_;
+};
+
+} // namespace
+
+QString bundlePath(const QString &applicationDirectory) {
+    if (!QDir::isAbsolutePath(applicationDirectory)) {
+        return {};
+    }
+
+    QString path = QDir::cleanPath(applicationDirectory);
+    const QString suffix = QStringLiteral("/Contents/MacOS");
+    if (!path.endsWith(suffix)) {
+        return {};
+    }
+
+    path.chop(suffix.size());
+    if (!path.endsWith(QStringLiteral(".app"))) {
+        return {};
+    }
+
+    return path;
+}
+
+Api nativeApi() {
+    Api api;
+
+    api.createUrl = [](const QByteArray &path) {
+        return CFURLCreateFromFileSystemRepresentation(
+            kCFAllocatorDefault,
+            reinterpret_cast<const UInt8 *>(path.constData()),
+            static_cast<CFIndex>(path.size()),
+            true);
+    };
+
+    // W23a retains the legacy login-item backend. Its deprecation warnings
+    // remain visible; adopting SMAppService requires a separate bundle design.
+    api.createList = [] {
+        return LSSharedFileListCreate(
+            kCFAllocatorDefault, kLSSharedFileListSessionLoginItems, nullptr);
+    };
+
+    api.copySnapshot = [](LSSharedFileListRef list) {
+        return LSSharedFileListCopySnapshot(list, nullptr);
+    };
+
+    api.resolve = [](LSSharedFileListItemRef item) {
+        return LSSharedFileListItemCopyResolvedURL(
+            item,
+            kLSSharedFileListNoUserInteraction |
+                kLSSharedFileListDoNotMountVolumes,
+            nullptr);
+    };
+
+    api.insert = [](LSSharedFileListRef list, CFURLRef url) {
+        return LSSharedFileListInsertItemURL(
+            list, kLSSharedFileListItemLast, nullptr, nullptr,
+            url, nullptr, nullptr);
+    };
+
+    api.remove = [](LSSharedFileListRef list, LSSharedFileListItemRef item) {
+        return LSSharedFileListItemRemove(list, item) == noErr;
+    };
+
+    api.release = [](CFTypeRef value) {
+        CFRelease(value);
+    };
+
+    return api;
+}
+
+bool execute(const QString &applicationDirectory,
+             Operation operation,
+             const Api &api) {
+    const QString path = bundlePath(applicationDirectory);
+    if (path.isEmpty()) {
+        qWarning("macOS autorun: unsupported executable layout; "
+                 "expected .app/Contents/MacOS");
+        return false;
+    }
+
+    OwnedCF<CFURLRef> target(api.createUrl(QFile::encodeName(path)), api);
+    if (!target.get()) {
+        qWarning("macOS autorun: cannot create application URL");
+        return false;
+    }
+
+    OwnedCF<LSSharedFileListRef> list(api.createList(), api);
+    if (!list.get()) {
+        qWarning("macOS autorun: cannot open login-item list");
+        return false;
+    }
+
+    OwnedCF<CFArrayRef> snapshot(api.copySnapshot(list.get()), api);
+    if (!snapshot.get()) {
+        qWarning("macOS autorun: cannot read login-item snapshot");
+        return false;
+    }
+
+    bool found = false;
+    bool complete = true;
+
+    const CFIndex count = CFArrayGetCount(snapshot.get());
+    for (CFIndex i = 0; i < count; ++i) {
+        const void *value = CFArrayGetValueAtIndex(snapshot.get(), i);
+        if (!value) {
+            qWarning("macOS autorun: null login item");
+            complete = false;
+            continue;
+        }
+
+        auto item = static_cast<LSSharedFileListItemRef>(
+            const_cast<void *>(value));
+        OwnedCF<CFURLRef> itemUrl(api.resolve(item), api);
+        if (!itemUrl.get()) {
+            qWarning("macOS autorun: cannot resolve login item");
+            complete = false;
+            continue;
+        }
+
+        if (!CFEqual(itemUrl.get(), target.get())) {
+            continue;
+        }
+
+        found = true;
+        if (operation == Operation::Disable && !api.remove(list.get(), item)) {
+            qWarning("macOS autorun: cannot remove login item");
+            complete = false;
+        }
+    }
+
+    if (operation == Operation::Query) {
+        return found;
+    }
+
+    if (operation == Operation::Disable) {
+        return complete;
+    }
+
+    if (found) {
+        return true;
+    }
+
+    if (!complete) {
+        qWarning("macOS autorun: cannot establish absence; enable aborted");
+        return false;
+    }
+
+    OwnedCF<LSSharedFileListItemRef> inserted(
+        api.insert(list.get(), target.get()), api);
+    if (!inserted.get()) {
+        qWarning("macOS autorun: cannot insert login item");
+        return false;
+    }
+
+    return true;
+}
+
+} // namespace NkrAutoRunMac
+
+void AutoRun_SetEnabled(bool enable) {
+    const auto api = NkrAutoRunMac::nativeApi();
+    NkrAutoRunMac::execute(
+        QCoreApplication::applicationDirPath(),
+        enable ? NkrAutoRunMac::Operation::Enable
+               : NkrAutoRunMac::Operation::Disable,
+        api);
 }
 
 bool AutoRun_IsEnabled() {
-    // From
-    // https://github.com/nextcloud/desktop/blob/master/src/common/utility_mac.cpp
-    // this is quite some duplicate code with setLaunchOnStartup, at some
-    // point we should fix this FIXME.
-    bool returnValue = false;
-    QString filePath = QDir(QCoreApplication::applicationDirPath() + QLatin1String("/../..")).absolutePath();
-    CFStringRef folderCFStr = CFStringCreateWithCString(0, filePath.toUtf8().data(), kCFStringEncodingUTF8);
-    CFURLRef urlRef = CFURLCreateWithFileSystemPath(0, folderCFStr, kCFURLPOSIXPathStyle, true);
-    LSSharedFileListRef loginItems = LSSharedFileListCreate(0, kLSSharedFileListSessionLoginItems, 0);
-
-    if (loginItems) {
-        // We need to iterate over the items and check which one is "ours".
-        UInt32 seedValue;
-        CFArrayRef itemsArray = LSSharedFileListCopySnapshot(loginItems, &seedValue);
-        CFStringRef appUrlRefString = CFURLGetString(urlRef); // no need for release
-
-        for (int i = 0; i < CFArrayGetCount(itemsArray); i++) {
-            LSSharedFileListItemRef item = (LSSharedFileListItemRef) CFArrayGetValueAtIndex(itemsArray, i);
-            CFURLRef itemUrlRef = NULL;
-
-            if (LSSharedFileListItemResolve(item, 0, &itemUrlRef, NULL) == noErr && itemUrlRef) {
-                CFStringRef itemUrlString = CFURLGetString(itemUrlRef);
-
-                if (CFStringCompare(itemUrlString, appUrlRefString, 0) == kCFCompareEqualTo) {
-                    returnValue = true;
-                }
-
-                CFRelease(itemUrlRef);
-            }
-        }
-
-        CFRelease(itemsArray);
-    }
-
-    CFRelease(loginItems);
-    CFRelease(folderCFStr);
-    CFRelease(urlRef);
-    return returnValue;
+    const auto api = NkrAutoRunMac::nativeApi();
+    return NkrAutoRunMac::execute(
+        QCoreApplication::applicationDirPath(),
+        NkrAutoRunMac::Operation::Query,
+        api);
 }
 
 #endif

@@ -266,6 +266,39 @@ target_link_libraries(nkr_subscription PUBLIC
 # Keep PROJECT_SOURCES intact for the Qt 5 translation scan.
 set(NKR_APPLICATION_SOURCES ${PROJECT_SOURCES})
 list(REMOVE_ITEM NKR_APPLICATION_SOURCES db/ProfileFilter.cpp)
+
+set(NKR_AUTORUN_TARGET)
+if (APPLE)
+    find_library(NKR_AUTORUN_COREFOUNDATION NAMES CoreFoundation)
+    find_library(NKR_AUTORUN_CORESERVICES NAMES CoreServices)
+    if (NOT NKR_AUTORUN_COREFOUNDATION OR NOT NKR_AUTORUN_CORESERVICES)
+        message(FATAL_ERROR "macOS autorun requires CoreFoundation and CoreServices")
+    endif ()
+
+    add_library(nkr_autorun_mac STATIC
+        sys/AutoRun.cpp
+        sys/AutoRun.hpp
+        sys/AutoRunMac_p.hpp
+    )
+    set_target_properties(nkr_autorun_mac PROPERTIES
+        CXX_STANDARD 17
+        CXX_STANDARD_REQUIRED ON
+        CXX_EXTENSIONS OFF
+        POSITION_INDEPENDENT_CODE ON
+    )
+    target_include_directories(nkr_autorun_mac PUBLIC
+        "${PROJECT_SOURCE_DIR}"
+    )
+    target_link_libraries(nkr_autorun_mac PUBLIC
+        Qt${QT_VERSION_MAJOR}::Widgets
+        "${NKR_AUTORUN_COREFOUNDATION}"
+        "${NKR_AUTORUN_CORESERVICES}"
+    )
+
+    list(REMOVE_ITEM NKR_APPLICATION_SOURCES sys/AutoRun.cpp)
+    set(NKR_AUTORUN_TARGET nkr_autorun_mac)
+endif ()
+
 set(NKR_ENTRY_SOURCES main/main.cpp res/neko.qrc res/theme/feiyangqingyun/qss.qrc ${QV2RAY_RC})
 set(NKR_RUNTIME_SOURCES ${NKR_APPLICATION_SOURCES})
 list(REMOVE_ITEM NKR_RUNTIME_SOURCES ${NKR_ENTRY_SOURCES})
@@ -275,6 +308,7 @@ set_target_properties(nkr_runtime PROPERTIES
     CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
 target_include_directories(nkr_runtime PUBLIC "${PROJECT_SOURCE_DIR}")
 target_link_libraries(nkr_runtime PUBLIC nkr_subscription
+    ${NKR_AUTORUN_TARGET}
     Qt${QT_VERSION_MAJOR}::Widgets Qt${QT_VERSION_MAJOR}::Network Qt${QT_VERSION_MAJOR}::Svg
     Threads::Threads ${NKR_EXTERNAL_TARGETS} ${PLATFORM_LIBRARIES})
 
