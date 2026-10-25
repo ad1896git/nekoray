@@ -47,7 +47,7 @@ void TrafficLooper::ResetTraffic(const std::shared_ptr<TrafficData> &traffic) {
 void TrafficLooper::Start(std::shared_ptr<const TrafficSession> session) {
     QMutexLocker lock(&mutex_);
     session_ = std::move(session);
-    lastSample_ = std::chrono::steady_clock::now();
+    sampleClock_.Reset();
     const auto published = session_;
     NekoGui_concurrency::PostUi([this, published] { uiSession_ = published; });
     looping.store(false);
@@ -63,9 +63,10 @@ void TrafficLooper::CollectLocked(bool connections, bool final, bool sample) {
     // Snapshot all targets before any query, including targets sharing a tag.
     for (const auto &target : session_->targets)
         packet.generations.push_back(target.generation->Snapshot());
-    const auto now = std::chrono::steady_clock::now();
-    packet.intervalMs = std::chrono::duration_cast<std::chrono::milliseconds>(now - lastSample_).count();
-    lastSample_ = now;
+    if (sample) {
+        packet.intervalMs =
+            sampleClock_.Sample(std::chrono::steady_clock::now());
+    }
 #ifndef NKR_NO_GRPC
     if (sample) {
         packet.deltas = QueryUniqueTags(session_->tags,

@@ -199,3 +199,22 @@ set_tests_properties(grpc_frame PROPERTIES
     TIMEOUT 30
     LABELS "W10"
 )
+
+add_executable(tst_runtime_fixes
+    tst_runtime_fixes.cpp
+)
+set_target_properties(tst_runtime_fixes PROPERTIES
+    AUTOMOC ON
+    CXX_STANDARD 17
+    CXX_STANDARD_REQUIRED ON
+    CXX_EXTENSIONS OFF
+)
+target_link_libraries(tst_runtime_fixes PRIVATE
+    nkr_vpn_process
+    Qt${QT_VERSION_MAJOR}::Test
+)
+add_test(NAME runtime_fixes COMMAND tst_runtime_fixes)
+set_tests_properties(runtime_fixes PROPERTIES
+    TIMEOUT 60
+    LABELS "W12;W15;W18"
+)

@@ -3,6 +3,7 @@
 #include <atomic>
 #include <functional>
 #include <map>
+#include <optional>
 #include <string>
 #include <vector>
 namespace NekoGui_traffic {
@@ -21,10 +22,15 @@ inline TrafficDeltas QueryUniqueTags(const std::vector<std::string> &tags, const
     return result;
 }
 template<class Traffic>
-void ApplyTrafficDelta(Traffic &traffic, const TrafficDelta &delta, long long intervalMs) {
-    const auto interval = std::max(1LL, intervalMs);
+void ApplyTrafficDelta(Traffic &traffic, const TrafficDelta &delta, std::optional<long long> intervalMs) {
     traffic.uplink += delta.uplink;
     traffic.downlink += delta.downlink;
+    if (!intervalMs) {
+        traffic.uplink_rate = 0;
+        traffic.downlink_rate = 0;
+        return;
+    }
+    const auto interval = std::max(1LL, *intervalMs);
     traffic.uplink_rate = delta.uplink * 1000 / interval;
     traffic.downlink_rate = delta.downlink * 1000 / interval;
 }

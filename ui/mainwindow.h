@@ -27,6 +27,10 @@ namespace NekoGui_sys {
     class CoreProcess;
 }
 
+namespace NekoGui_runtime {
+    class VpnProcess;
+}
+
 QT_BEGIN_NAMESPACE
 namespace Ui {
     class MainWindow;
@@ -143,6 +147,9 @@ private:
     //
     NekoGui_sys::CoreProcess *core_process;
     qint64 vpn_pid = 0;
+#ifndef Q_OS_WIN
+    NekoGui_runtime::VpnProcess *vpnProcess_ = nullptr;
+#endif
     //
     bool qvLogAutoScoll = true;
     QTextDocument *qvLogDocument = new QTextDocument(this);
