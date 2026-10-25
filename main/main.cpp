@@ -1,3 +1,4 @@
+#include "db/Database.hpp"
 #include <csignal>
 
 #include <QApplication>
@@ -184,9 +185,10 @@ int main(int argc, char* argv[]) {
             MessageBoxWarning("Error", "Unknown coreType.");
             return 0;
     }
-    auto isLoaded = NekoGui::dataStore->Load();
-    if (!isLoaded) {
-        NekoGui::dataStore->Save();
+    if (!NekoGui::dataStore->LoadOrCreate()) {
+        MessageBoxWarning("Error", "Cannot load or initialize groups/nekobox.json. "
+                          "Check the log and directory permissions.");
+        return 1;
     }
 
     // Datastore & Flags
@@ -195,9 +197,10 @@ int main(int argc, char* argv[]) {
     // load routing
     NekoGui::dataStore->routing = std::make_unique<NekoGui::Routing>();
     NekoGui::dataStore->routing->fn = ROUTES_PREFIX + NekoGui::dataStore->active_routing;
-    isLoaded = NekoGui::dataStore->routing->Load();
-    if (!isLoaded) {
-        NekoGui::dataStore->routing->Save();
+    if (!NekoGui::dataStore->routing->LoadOrCreate()) {
+        MessageBoxWarning("Error", "Cannot load or initialize the active routing configuration. "
+                          "Check the log and directory permissions.");
+        return 1;
     }
 
     // Translate
@@ -219,6 +222,12 @@ int main(int argc, char* argv[]) {
     }
     QGuiApplication::tr("QT_LAYOUT_DIRECTION");
     loadTranslate(locale);
+
+    if (!NekoGui::profileManager->LoadManager()) {
+        MessageBoxWarning("Error", "Cannot load or initialize profiles and groups. "
+                          "Check the log and directory permissions.");
+        return 1;
+    }
 
     // Signals
     signal(SIGTERM, signal_handler);

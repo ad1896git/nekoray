@@ -7,6 +7,8 @@ set(CMAKE_INCLUDE_CURRENT_DIR ON)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+option(NKR_BUILD_TESTS "Build Nekoray unit tests" OFF)
+
 # WINDOWS PDB FILE
 if (WIN32)
     if (MSVC)
@@ -20,6 +22,11 @@ if (NOT QT_VERSION_MAJOR)
     set(QT_VERSION_MAJOR 5)
 endif ()
 find_package(Qt${QT_VERSION_MAJOR} REQUIRED COMPONENTS Widgets Network Svg LinguistTools)
+
+if (NKR_BUILD_TESTS)
+    enable_testing()
+    find_package(Qt${QT_VERSION_MAJOR} REQUIRED COMPONENTS Test)
+endif ()
 
 if (NKR_CROSS)
     set_property(TARGET Qt5::moc PROPERTY IMPORTED_LOCATION /usr/bin/moc)
@@ -125,6 +132,7 @@ set(PROJECT_SOURCES
         main/main.cpp
         main/NekoGui.cpp
         main/NekoGui_Utils.cpp
+        main/NekoGui_UiThread.cpp
         main/HTTPRequestHelper.cpp
 
         3rdparty/base64.cpp
@@ -235,11 +243,33 @@ set(PROJECT_SOURCES
         ${QV2RAY_RC}
 )
 
+# Shared subscription protocol. Compile these implementations once.
+add_library(nkr_subscription STATIC
+    db/ProfileFilter.cpp
+    sub/SubscriptionCommit.cpp
+    sub/SubscriptionCommit.hpp
+)
+set_target_properties(nkr_subscription PROPERTIES
+    CXX_STANDARD 17
+    CXX_STANDARD_REQUIRED ON
+    CXX_EXTENSIONS OFF
+    POSITION_INDEPENDENT_CODE ON
+)
+target_include_directories(nkr_subscription PUBLIC "${PROJECT_SOURCE_DIR}")
+target_link_libraries(nkr_subscription PUBLIC
+    Qt${QT_VERSION_MAJOR}::Widgets
+    Qt${QT_VERSION_MAJOR}::Network
+)
+
+# Keep PROJECT_SOURCES intact for the Qt 5 translation scan.
+set(NKR_APPLICATION_SOURCES ${PROJECT_SOURCES})
+list(REMOVE_ITEM NKR_APPLICATION_SOURCES db/ProfileFilter.cpp)
+
 # Qt exe
 if (${QT_VERSION_MAJOR} GREATER_EQUAL 6)
     qt_add_executable(nekobox
             MANUAL_FINALIZATION
-            ${PROJECT_SOURCES}
+            ${NKR_APPLICATION_SOURCES}
     )
     # Define target properties for Android with Qt 6 as:
     #    set_property(TARGET nekobox APPEND PROPERTY QT_ANDROID_PACKAGE_SOURCE_DIR
@@ -248,13 +278,13 @@ if (${QT_VERSION_MAJOR} GREATER_EQUAL 6)
 else ()
     if (ANDROID)
         add_library(nekobox SHARED
-                ${PROJECT_SOURCES}
+                ${NKR_APPLICATION_SOURCES}
         )
         # Define properties for Android with Qt 5 after find_package() calls as:
         #    set(ANDROID_PACKAGE_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/android")
     else ()
         add_executable(nekobox
-                ${PROJECT_SOURCES}
+                ${NKR_APPLICATION_SOURCES}
         )
     endif ()
 endif ()
@@ -291,6 +321,7 @@ target_sources(nekobox PRIVATE ${CMAKE_BINARY_DIR}/translations.qrc)
 # Target Link
 
 target_link_libraries(nekobox PRIVATE
+        nkr_subscription
         Qt${QT_VERSION_MAJOR}::Widgets Qt${QT_VERSION_MAJOR}::Network Qt${QT_VERSION_MAJOR}::Svg
         Threads::Threads
         ${NKR_EXTERNAL_TARGETS}
@@ -299,4 +330,58 @@ target_link_libraries(nekobox PRIVATE
 
 if (QT_VERSION_MAJOR EQUAL 6)
     qt_finalize_executable(nekobox)
+endif ()
+
+if (NKR_BUILD_TESTS)
+    add_subdirectory(tests)
+endif ()
+
+if (NKR_BUILD_TESTS)
+    find_package(Qt${QT_VERSION_MAJOR} REQUIRED COMPONENTS Test)
+
+    # Real application implementations, without its process entry point.
+    set(NKR_INTEGRATION_TEST_SOURCES ${NKR_APPLICATION_SOURCES})
+    list(REMOVE_ITEM NKR_INTEGRATION_TEST_SOURCES main/main.cpp)
+
+    add_executable(tst_persistence
+        ${NKR_INTEGRATION_TEST_SOURCES}
+        tests/tst_persistence.cpp
+    )
+    add_executable(tst_subscription_commit
+        ${NKR_INTEGRATION_TEST_SOURCES}
+        tests/tst_subscription_commit.cpp
+    )
+    foreach(_target IN ITEMS tst_persistence tst_subscription_commit)
+        set_target_properties(${_target} PROPERTIES
+            AUTOMOC ON
+            AUTOUIC ON
+            AUTORCC ON
+            CXX_STANDARD 17
+            CXX_STANDARD_REQUIRED ON
+            CXX_EXTENSIONS OFF
+            RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests"
+        )
+        target_include_directories(${_target} PRIVATE "${PROJECT_SOURCE_DIR}")
+        target_link_libraries(${_target} PRIVATE
+            nkr_subscription
+            Qt${QT_VERSION_MAJOR}::Test
+            Qt${QT_VERSION_MAJOR}::Widgets
+            Qt${QT_VERSION_MAJOR}::Network
+            Qt${QT_VERSION_MAJOR}::Svg
+            Threads::Threads
+            ${NKR_EXTERNAL_TARGETS}
+            ${PLATFORM_LIBRARIES}
+        )
+    endforeach()
+    add_test(NAME persistence COMMAND tst_persistence)
+    set_tests_properties(persistence PROPERTIES
+        ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+        TIMEOUT 90
+    )
+    add_test(NAME subscription_commit COMMAND tst_subscription_commit)
+    set_tests_properties(subscription_commit PROPERTIES
+        ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+        TIMEOUT 180
+        LABELS "W01;W08"
+    )
 endif ()

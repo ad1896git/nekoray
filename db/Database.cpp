@@ -1,12 +1,50 @@
+#include "main/UiOwnership.hpp"
 #include "Database.hpp"
+#include <QSet>
 
 #include "fmt/includes.h"
 
 #include <QFile>
 #include <QDir>
 #include <QColor>
+#include <QFileInfo>
+#include <QJsonObject>
+
+#include <limits>
 
 namespace NekoGui {
+
+    namespace {
+        bool PathOccupied(const QString &path) {
+            const QFileInfo info(path);
+            return info.exists() || info.isSymLink();
+        }
+
+        bool StoredId(const QJsonObject &object, const QString &key) {
+            const auto value = object.value(key);
+            if (!value.isDouble()) return false;
+            const int id = value.toInt(-1);
+            return id >= 0 && value.toDouble() == double(id);
+        }
+
+        bool IdMatchesFile(const QJsonObject &object, const QString &path) {
+            if (path.isEmpty()) return true;
+            bool ok = false;
+            const int fileId = QFileInfo(path).completeBaseName().toInt(&ok);
+            return ok && fileId >= 0 && object.value("id").toInt(-1) == fileId;
+        }
+
+        int AvailableId(int first, const QString &directory) {
+            if (first < 0) return -1;
+            for (int id = first; ; ++id) {
+                if (!PathOccupied(QStringLiteral("%1/%2.json").arg(directory).arg(id))) {
+                    return id;
+                }
+                if (id == std::numeric_limits<int>::max()) return -1;
+            }
+        }
+    } // namespace
+
 
     ProfileManager *profileManager = new ProfileManager();
 
@@ -32,54 +70,60 @@ namespace NekoGui {
         return result;
     }
 
-    void ProfileManager::LoadManager() {
-        JsonStore::Load();
-        //
-        profiles = {};
-        groups = {};
-        profilesIdOrder = filterIntJsonFile("profiles");
-        groupsIdOrder = filterIntJsonFile("groups");
-        // Load Proxys
-        QList<int> delProfile;
-        for (auto id: profilesIdOrder) {
+    bool ProfileManager::LoadManager() {
+        NekoGui_concurrency::RequireUiThread();
+        const auto previousProfiles = profiles;
+        const auto previousGroups = groups;
+        const auto previousProfileIds = profilesIdOrder;
+        const auto previousGroupIds = groupsIdOrder;
+        const auto previousTabs = groupsTabOrder;
+        const auto previousCache = last_save_content;
+        const auto restore = [&] {
+            profiles = previousProfiles;
+            groups = previousGroups;
+            profilesIdOrder = previousProfileIds;
+            groupsIdOrder = previousGroupIds;
+            groupsTabOrder = previousTabs;
+            last_save_content = previousCache;
+        };
+        groupsTabOrder.clear();
+        const bool managerLoaded = JsonStore::Load();
+        if (!managerLoaded && PathOccupied(fn)) {
+            restore();
+            return false;
+        }
+        const auto profileFiles = filterIntJsonFile("profiles");
+        const auto groupFiles = filterIntJsonFile("groups");
+        profiles.clear();
+        groups.clear();
+        profilesIdOrder.clear();
+        groupsIdOrder.clear();
+        for (const int id : profileFiles) {
             auto ent = LoadProxyEntity(QStringLiteral("profiles/%1.json").arg(id));
-            // Corrupted profile?
-            if (ent == nullptr || ent->bean == nullptr || ent->bean->version == -114514) {
-                delProfile << id;
-                continue;
-            }
-            profiles[id] = ent;
+            if (!ent) continue;
+            profiles.emplace(id, ent);
+            profilesIdOrder.append(id);
         }
-        // Clear Corrupted profile
-        for (auto id: delProfile) {
-            DeleteProfile(id);
-        }
-        // Load Groups
         auto loadedOrder = groupsTabOrder;
-        groupsTabOrder = {};
-        for (auto id: groupsIdOrder) {
+        groupsTabOrder.clear();
+        for (const int id : groupFiles) {
             auto ent = LoadGroup(QStringLiteral("groups/%1.json").arg(id));
-            // Corrupted group?
-            if (ent->id != id) {
-                continue;
-            }
-            // Ensure order contains every group
-            if (!loadedOrder.contains(id)) {
-                loadedOrder << id;
-            }
-            groups[id] = ent;
+            if (!ent) continue;
+            groups.emplace(id, ent);
+            groupsIdOrder.append(id);
+            if (!loadedOrder.contains(id)) loadedOrder.append(id);
         }
-        // Ensure groups contains order
-        for (auto id: loadedOrder) {
-            if (groups.count(id)) {
-                groupsTabOrder << id;
-            }
+        for (const int id : loadedOrder) {
+            if (groups.count(id) && !groupsTabOrder.contains(id)) groupsTabOrder.append(id);
         }
-        // First setup
         if (groups.empty()) {
-            auto defaultGroup = NekoGui::ProfileManager::NewGroup();
+            auto defaultGroup = NewGroup();
             defaultGroup->name = QObject::tr("Default");
-            NekoGui::profileManager->AddGroup(defaultGroup);
+            if (!AddGroup(defaultGroup)) {
+                qWarning() << "Cannot persist the default group";
+                restore();
+                return false;
+            }
         }
         //
         if (dataStore->flag_reorder) {
@@ -98,7 +142,7 @@ namespace NekoGui {
                 for (auto gid: groupsTabOrder) {
                     auto group = GetGroup(gid);
                     gidOld2New[gid] = ii++;
-                    for (auto const &profile: group->ProfilesWithOrder()) {
+                    for (auto const &profile: group->Profiles()) {
                         auto oldId = profile->id;
                         auto newId = i++;
                         profile->id = newId;
@@ -108,7 +152,9 @@ namespace NekoGui {
                         newProfiles[newId] = profile;
                         newProfilesIdOrder << newId;
                     }
-                    group->order = {};
+                    group->order.clear();
+                    group->order_explicit = false;
+                    group->recoveryRequired = false;
                     group->Save();
                 }
                 profiles = newProfiles;
@@ -133,33 +179,25 @@ namespace NekoGui {
             }
             MessageBoxInfo(software_name, "Profiles and groups reorder complete.");
         }
+        return true;
     }
 
     void ProfileManager::SaveManager() {
+        NekoGui_concurrency::RequireUiThread();
         JsonStore::Save();
     }
 
     std::shared_ptr<ProxyEntity> ProfileManager::LoadProxyEntity(const QString &jsonPath) {
-        // Load type
-        ProxyEntity ent0(nullptr, nullptr);
-        ent0.fn = jsonPath;
-        auto validJson = ent0.Load();
-        auto type = ent0.type;
-
-        // Load content
-        std::shared_ptr<ProxyEntity> ent;
-        bool validType = validJson;
-
-        if (validType) {
-            ent = NewProxyEntity(type);
-            validType = ent->bean->version != -114514;
-        }
-
-        if (validType) {
-            ent->load_control_must = true;
-            ent->fn = jsonPath;
-            ent->Load();
-        }
+        ProxyEntity metadata(nullptr, QString());
+        metadata.fn = jsonPath;
+        // Validate metadata and the selected bean before applying anything.
+        if (!metadata.Load()) return nullptr;
+        auto ent = NewProxyEntity(metadata.type);
+        ent->fn = jsonPath;
+        ent->load_control_must = true;
+        // Apply the exact validated bytes without a second filesystem read.
+        if (!ent->FromJsonBytes(metadata.last_save_content)) return nullptr;
+        ent->last_save_content = metadata.last_save_content;
         return ent;
     }
 
@@ -223,6 +261,23 @@ namespace NekoGui {
         }
     };
 
+    bool ProxyEntity::Validate(const QJsonObject &object) const {
+        if (!StoredId(object, "id") || !StoredId(object, "gid") ||
+            !IdMatchesFile(object, fn) || !object.value("type").isString() ||
+            !object.value("bean").isObject()) return false;
+        const QString storedType = object.value("type").toString();
+        const auto prototype = ProfileManager::NewProxyEntity(storedType);
+        if (!prototype || !prototype->bean || prototype->bean->version == -114514) {
+            return false;
+        }
+        if (bean && storedType != type) return false;
+        const auto beanObject = object.value("bean").toObject();
+        if (!beanObject.value("_v").isDouble() ||
+            beanObject.value("_v").toInt(-114514) == -114514) return false;
+        // Qualified call validates the selected bean without recursive dispatch here.
+        return prototype->JsonStore::Validate(object);
+    }
+
     QString ProxyEntity::DisplayLatency() const {
         if (latency < 0) {
             return QObject::tr("Unavailable");
@@ -251,46 +306,68 @@ namespace NekoGui {
     // Profile
 
     int ProfileManager::NewProfileID() const {
-        if (profiles.empty()) {
-            return 0;
-        } else {
-            return profilesIdOrder.last() + 1;
+        NekoGui_concurrency::RequireUiThread();
+        int first = 0;
+        if (!profiles.empty()) {
+            const int highest = profiles.rbegin()->first;
+            if (highest == std::numeric_limits<int>::max()) return -1;
+            first = highest + 1;
         }
+        return AvailableId(first, "profiles");
     }
 
     bool ProfileManager::AddProfile(const std::shared_ptr<ProxyEntity> &ent, int gid) {
-        if (ent->id >= 0) {
+        NekoGui_concurrency::RequireUiThread();
+        if (!ent || ent->id >= 0 || !ent->bean) return false;
+        const int newId = NewProfileID();
+        if (newId < 0) return false;
+        const int previousId = ent->id;
+        const int previousGid = ent->gid;
+        const QString previousPath = ent->fn;
+        ent->gid = gid < 0 ? dataStore->current_group : gid;
+        ent->id = newId;
+        ent->fn = QStringLiteral("profiles/%1.json").arg(newId);
+        if (!ent->SaveChecked().ok) {
+            ent->id = previousId;
+            ent->gid = previousGid;
+            ent->fn = previousPath;
             return false;
         }
-
-        ent->gid = gid < 0 ? dataStore->current_group : gid;
-        ent->id = NewProfileID();
-        profiles[ent->id] = ent;
-        profilesIdOrder.push_back(ent->id);
-
-        ent->fn = QStringLiteral("profiles/%1.json").arg(ent->id);
-        ent->Save();
+        profiles.emplace(newId, ent);
+        profilesIdOrder.append(newId);
         return true;
     }
 
-    void ProfileManager::DeleteProfile(int id) {
-        if (id < 0) return;
-        if (dataStore->started_id == id) return;
-        profiles.erase(id);
+    bool ProfileManager::DeleteProfile(int id) {
+        NekoGui_concurrency::RequireUiThread();
+        if (id < 0 || dataStore->started_id == id) return false;
+        const auto found = profiles.find(id);
+        if (found == profiles.end()) return false;
+        QFile file(found->second->fn);
+        if (!file.remove()) {
+            qWarning() << "Cannot delete profile"
+                       << id << file.fileName() << file.errorString();
+            return false;
+        }
+        profiles.erase(found);
         profilesIdOrder.removeAll(id);
-        QFile(QStringLiteral("profiles/%1.json").arg(id)).remove();
+        return true;
     }
 
-    void ProfileManager::MoveProfile(const std::shared_ptr<ProxyEntity> &ent, int gid) {
+    void ProfileManager::MoveProfile(
+        const std::shared_ptr<ProxyEntity> &ent, int gid) {
+        NekoGui_concurrency::RequireUiThread();
         if (gid == ent->gid || gid < 0) return;
-        auto oldGroup = GetGroup(ent->gid);
-        if (oldGroup != nullptr && !oldGroup->order.isEmpty()) {
+        const auto oldGroup = GetGroup(ent->gid);
+        if (oldGroup && oldGroup->HasExplicitOrder()) {
+            oldGroup->order_explicit = true;
             oldGroup->order.removeAll(ent->id);
             oldGroup->Save();
         }
-        auto newGroup = GetGroup(gid);
-        if (newGroup != nullptr && !newGroup->order.isEmpty()) {
-            newGroup->order.push_back(ent->id);
+        const auto newGroup = GetGroup(gid);
+        if (newGroup && newGroup->HasExplicitOrder()) {
+            newGroup->order_explicit = true;
+            if (!newGroup->order.contains(ent->id)) newGroup->order.append(ent->id);
             newGroup->Save();
         }
         ent->gid = gid;
@@ -298,6 +375,7 @@ namespace NekoGui {
     }
 
     std::shared_ptr<ProxyEntity> ProfileManager::GetProfile(int id) {
+        NekoGui_concurrency::RequireUiThread();
         return profiles.count(id) ? profiles[id] : nullptr;
     }
 
@@ -310,6 +388,8 @@ namespace NekoGui {
         _add(new configItem("skip_auto_update", &skip_auto_update, itemType::boolean));
         _add(new configItem("name", &name, itemType::string));
         _add(new configItem("order", &order, itemType::integerList));
+        _add(new configItem("order_explicit", &order_explicit, itemType::boolean));
+        _add(new configItem("recovery_required", &recoveryRequired, itemType::boolean));
         _add(new configItem("url", &url, itemType::string));
         _add(new configItem("info", &info, itemType::string));
         _add(new configItem("lastup", &sub_last_update, itemType::integer64));
@@ -317,44 +397,69 @@ namespace NekoGui {
         _add(new configItem("column_width", &column_width, itemType::integerList));
     }
 
+    QJsonObject Group::ToJson(const QStringList &without) {
+        auto object = JsonStore::ToJson(without);
+        if (!without.contains("name")) object.insert("name", name);
+        return object;
+    }
+
+    bool Group::Validate(const QJsonObject &object) const {
+        return JsonStore::Validate(object) && StoredId(object, "id") &&
+               IdMatchesFile(object, fn) && object.value("name").isString();
+    }
+
     std::shared_ptr<Group> ProfileManager::LoadGroup(const QString &jsonPath) {
         auto ent = std::make_shared<Group>();
         ent->fn = jsonPath;
-        ent->Load();
+        if (!ent->Load()) return nullptr;
         return ent;
     }
 
     int ProfileManager::NewGroupID() const {
-        if (groups.empty()) {
-            return 0;
-        } else {
-            return groupsIdOrder.last() + 1;
+        NekoGui_concurrency::RequireUiThread();
+        int first = 0;
+        if (!groups.empty()) {
+            const int highest = groups.rbegin()->first;
+            if (highest == std::numeric_limits<int>::max()) return -1;
+            first = highest + 1;
         }
+        return AvailableId(first, "groups");
     }
 
     bool ProfileManager::AddGroup(const std::shared_ptr<Group> &ent) {
-        if (ent->id >= 0) {
+        NekoGui_concurrency::RequireUiThread();
+        if (!ent || ent->id >= 0) return false;
+        const int newId = NewGroupID();
+        if (newId < 0) return false;
+        const int previousId = ent->id;
+        const QString previousPath = ent->fn;
+        ent->id = newId;
+        ent->fn = QStringLiteral("groups/%1.json").arg(newId);
+        if (!ent->SaveChecked().ok) {
+            ent->id = previousId;
+            ent->fn = previousPath;
             return false;
         }
-
-        ent->id = NewGroupID();
-        groups[ent->id] = ent;
-        groupsIdOrder.push_back(ent->id);
-        groupsTabOrder.push_back(ent->id);
-
-        ent->fn = QStringLiteral("groups/%1.json").arg(ent->id);
-        ent->Save();
+        groups.emplace(newId, ent);
+        groupsIdOrder.append(newId);
+        groupsTabOrder.append(newId);
         return true;
     }
 
     void ProfileManager::DeleteGroup(int gid) {
+        NekoGui_concurrency::RequireUiThread();
         if (groups.size() <= 1) return;
         QList<int> toDelete;
         for (const auto &[id, profile]: profiles) {
             if (profile->gid == gid) toDelete += id; // map访问中，不能操作
         }
-        for (const auto &id: toDelete) {
-            DeleteProfile(id);
+        bool childrenDeleted = true;
+        for (const auto &id : toDelete) {
+            if (!DeleteProfile(id)) childrenDeleted = false;
+        }
+        if (!childrenDeleted) {
+            qWarning() << "Keeping group because a profile could not be deleted" << gid;
+            return;
         }
         groups.erase(gid);
         groupsIdOrder.removeAll(gid);
@@ -363,14 +468,17 @@ namespace NekoGui {
     }
 
     std::shared_ptr<Group> ProfileManager::GetGroup(int id) {
+        NekoGui_concurrency::RequireUiThread();
         return groups.count(id) ? groups[id] : nullptr;
     }
 
     std::shared_ptr<Group> ProfileManager::CurrentGroup() {
+        NekoGui_concurrency::RequireUiThread();
         return GetGroup(dataStore->current_group);
     }
 
     QList<std::shared_ptr<ProxyEntity>> Group::Profiles() const {
+        NekoGui_concurrency::RequireUiThread();
         QList<std::shared_ptr<ProxyEntity>> ret;
         for (const auto &[_, profile]: profileManager->profiles) {
             if (id == profile->gid) ret += profile;
@@ -379,16 +487,17 @@ namespace NekoGui {
     }
 
     QList<std::shared_ptr<ProxyEntity>> Group::ProfilesWithOrder() const {
-        if (order.isEmpty()) {
-            return Profiles();
-        } else {
-            QList<std::shared_ptr<ProxyEntity>> ret;
-            for (auto _id: order) {
-                auto ent = profileManager->GetProfile(_id);
-                if (ent != nullptr) ret += ent;
-            }
-            return ret;
+        NekoGui_concurrency::RequireUiThread();
+        if (!HasExplicitOrder()) return Profiles();
+        QList<std::shared_ptr<ProxyEntity>> result;
+        QSet<int> seen;
+        for (const int profileId : order) {
+            const auto ent = profileManager->GetProfile(profileId);
+            if (!ent || ent->gid != id || seen.contains(profileId)) continue;
+            seen.insert(profileId);
+            result.append(ent);
         }
+        return result;
     }
 
 } // namespace NekoGui

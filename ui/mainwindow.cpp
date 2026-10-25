@@ -1,3 +1,5 @@
+#include "main/UiOwnership.hpp"
+#include "db/traffic/TrafficLooper.hpp"
 #include "./ui_mainwindow.h"
 #include "mainwindow.h"
 
@@ -48,18 +50,19 @@
 #include <QDir>
 #include <QFileInfo>
 
+#include <atomic>
+
 void UI_InitMainWindow() {
     mainwindow = new MainWindow;
 }
 
 MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWindow) {
     mainwindow = this;
+    initializeUiThreadDispatcher(this);
     MW_dialog_message = [=](const QString &a, const QString &b) {
         runOnUiThread([=] { dialog_message_impl(a, b); });
     };
 
-    // Load Manager
-    NekoGui::profileManager->LoadManager();
 
     // Setup misc UI
     themeManager->ApplyTheme(NekoGui::dataStore->theme);
@@ -139,10 +142,21 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
         runOnUiThread([=] { show_log_impl(cleanVT100String(log)); });
     };
 
+    connect(
+        NekoGui_sub::groupUpdater,
+        &NekoGui_sub::GroupUpdater::updateNotice,
+        this,
+        [this](const QString &message) {
+            show_log_impl(message);
+        },
+        Qt::QueuedConnection);
+
     // table UI
     ui->proxyListTable->callback_save_order = [=] {
-        auto group = NekoGui::profileManager->CurrentGroup();
+        const auto group = NekoGui::profileManager->CurrentGroup();
+        if (!group) return;
         group->order = ui->proxyListTable->order;
+        group->order_explicit = true;
         group->Save();
     };
     ui->proxyListTable->refresh_data = [=](int id) { refresh_proxy_list_impl_refresh_data(id); };
@@ -449,6 +463,7 @@ void MainWindow::closeEvent(QCloseEvent *event) {
 }
 
 MainWindow::~MainWindow() {
+    shutdownUiThreadDispatcher();
     delete ui;
 }
 
@@ -522,7 +537,12 @@ void MainWindow::dialog_message_impl(const QString &sender, const QString &info)
         refresh_status();
     }
     if (info.contains("UpdateDataStore")) {
-        auto suggestRestartProxy = NekoGui::dataStore->Save();
+        const auto saveResult = NekoGui::dataStore->SaveChecked();
+        if (!saveResult.ok) {
+            MessageBoxWarning(tr("Error"), tr("Could not save settings. Check the log and directory permissions."));
+            return;
+        }
+        auto suggestRestartProxy = saveResult.changed;
         if (info.contains("RouteChanged")) {
             suggestRestartProxy = true;
         }
@@ -657,6 +677,8 @@ void MainWindow::on_menu_exit_triggered() {
             mu_exit.unlock(); // retry
             return;
         }
+        NekoGui_traffic::trafficLooper->RequestShutdown();
+        shutdownUiThreadDispatcher();
         RegisterHotkey(true);
         //
         on_commitDataRequest();
@@ -943,12 +965,13 @@ void MainWindow::refresh_proxy_list_impl(const int &id, GroupSortAction groupSor
         ui->proxyListTable->row2Id.clear();
         ui->proxyListTable->setRowCount(0);
         // 添加行
+        const auto group = NekoGui::profileManager->CurrentGroup();
+        if (!group) return;
         int row = -1;
-        for (const auto &[id, profile]: NekoGui::profileManager->profiles) {
-            if (NekoGui::dataStore->current_group != profile->gid) continue;
-            row++;
+        for (const auto &profile : group->ProfilesWithOrder()) {
+            ++row;
             ui->proxyListTable->insertRow(row);
-            ui->proxyListTable->row2Id += id;
+            ui->proxyListTable->row2Id.append(profile->id);
         }
     }
 
@@ -962,8 +985,10 @@ void MainWindow::refresh_proxy_list_impl(const int &id, GroupSortAction groupSor
                 break;
             }
             case GroupSortMethod::ById: {
-                // Clear Order
-                ui->proxyListTable->order.clear();
+                ui->proxyListTable->order = ui->proxyListTable->row2Id;
+                std::sort(
+                    ui->proxyListTable->order.begin(),
+                    ui->proxyListTable->order.end());
                 ui->proxyListTable->callback_save_order();
                 break;
             }
@@ -1146,7 +1171,10 @@ void MainWindow::on_menu_delete_triggered() {
     if (QMessageBox::question(this, tr("Confirmation"), QString(tr("Remove %1 item(s) ?")).arg(ents.count())) ==
         QMessageBox::StandardButton::Yes) {
         for (const auto &ent: ents) {
-            NekoGui::profileManager->DeleteProfile(ent->id);
+            if (!NekoGui::profileManager->DeleteProfile(ent->id) &&
+                NekoGui::dataStore->started_id != ent->id) {
+                MessageBoxWarning(tr("Error"), tr("Could not delete profile %1. It has been kept.").arg(ent->id));
+            }
         }
         refresh_proxy_list();
     }
@@ -1156,7 +1184,7 @@ void MainWindow::on_menu_reset_traffic_triggered() {
     auto ents = get_now_selected_list();
     if (ents.count() == 0) return;
     for (const auto &ent: ents) {
-        ent->traffic_data->Reset();
+        NekoGui_traffic::trafficLooper->ResetTraffic(ent->traffic_data);
         ent->Save();
         refresh_proxy_list(ent->id);
     }
@@ -1169,8 +1197,14 @@ void MainWindow::on_menu_profile_debug_info_triggered() {
     if (btn == 1) {
         QDesktopServices::openUrl(QUrl::fromLocalFile(QFileInfo(QStringLiteral("profiles/%1.json").arg(ents.first()->id)).absoluteFilePath()));
     } else if (btn == 2) {
-        NekoGui::dataStore->Load();
-        NekoGui::profileManager->LoadManager();
+        if (!NekoGui::dataStore->Load()) {
+            MessageBoxWarning(tr("Error"), tr("Could not reload settings. Check the log; invalid files are preserved in corrupt/."));
+            return;
+        }
+        if (!NekoGui::profileManager->LoadManager()) {
+            MessageBoxWarning(tr("Error"), tr("Could not reload profiles and groups. Check the log."));
+            return;
+        }
         refresh_proxy_list();
     }
 }
@@ -1363,8 +1397,8 @@ void MainWindow::on_menu_delete_repeat_triggered() {
     QList<std::shared_ptr<NekoGui::ProxyEntity>> out;
     QList<std::shared_ptr<NekoGui::ProxyEntity>> out_del;
 
-    NekoGui::ProfileFilter::Uniq(NekoGui::profileManager->CurrentGroup()->Profiles(), out, true, false);
-    NekoGui::ProfileFilter::OnlyInSrc_ByPointer(NekoGui::profileManager->CurrentGroup()->Profiles(), out, out_del);
+    NekoGui::ProfileFilter::Uniq(NekoGui::profileManager->CurrentGroup()->ProfilesWithOrder(), out, true, false);
+    NekoGui::ProfileFilter::OnlyInSrc_ByPointer(NekoGui::profileManager->CurrentGroup()->ProfilesWithOrder(), out, out_del);
 
     int remove_display_count = 0;
     QString remove_display;
@@ -1379,28 +1413,32 @@ void MainWindow::on_menu_delete_repeat_triggered() {
     if (out_del.length() > 0 &&
         QMessageBox::question(this, tr("Confirmation"), tr("Remove %1 item(s) ?").arg(out_del.length()) + "\n" + remove_display) == QMessageBox::StandardButton::Yes) {
         for (const auto &ent: out_del) {
-            NekoGui::profileManager->DeleteProfile(ent->id);
+            if (!NekoGui::profileManager->DeleteProfile(ent->id) &&
+                NekoGui::dataStore->started_id != ent->id) {
+                MessageBoxWarning(tr("Error"), tr("Could not delete profile %1. It has been kept.").arg(ent->id));
+            }
         }
         refresh_proxy_list();
     }
 }
 
-bool mw_sub_updating = false;
+std::atomic<bool> mw_sub_updating{false};
 
 void MainWindow::on_menu_update_subscription_triggered() {
     auto group = NekoGui::profileManager->CurrentGroup();
     if (group->url.isEmpty()) return;
-    if (mw_sub_updating) return;
-    mw_sub_updating = true;
-    NekoGui_sub::groupUpdater->AsyncUpdate(group->url, group->id, [&] { mw_sub_updating = false; });
+    if (mw_sub_updating.exchange(true)) return;
+    NekoGui_sub::groupUpdater->AsyncUpdate(
+        group->url, group->id,
+        [] { mw_sub_updating.store(false); });
 }
 
 void MainWindow::on_menu_remove_unavailable_triggered() {
     QList<std::shared_ptr<NekoGui::ProxyEntity>> out_del;
 
-    for (const auto &[_, profile]: NekoGui::profileManager->profiles) {
-        if (NekoGui::dataStore->current_group != profile->gid) continue;
-        if (profile->latency < 0) out_del += profile;
+    for (const auto &profile :
+         NekoGui::profileManager->CurrentGroup()->ProfilesWithOrder()) {
+        if (profile->latency < 0) out_del.append(profile);
     }
 
     int remove_display_count = 0;
@@ -1416,7 +1454,10 @@ void MainWindow::on_menu_remove_unavailable_triggered() {
     if (out_del.length() > 0 &&
         QMessageBox::question(this, tr("Confirmation"), tr("Remove %1 item(s) ?").arg(out_del.length()) + "\n" + remove_display) == QMessageBox::StandardButton::Yes) {
         for (const auto &ent: out_del) {
-            NekoGui::profileManager->DeleteProfile(ent->id);
+            if (!NekoGui::profileManager->DeleteProfile(ent->id) &&
+                NekoGui::dataStore->started_id != ent->id) {
+                MessageBoxWarning(tr("Error"), tr("Could not delete profile %1. It has been kept.").arg(ent->id));
+            }
         }
         refresh_proxy_list();
     }
@@ -1431,16 +1472,17 @@ void MainWindow::on_menu_resolve_domain_triggered() {
                               tr("Resolving domain to IP, if support.")) != QMessageBox::StandardButton::Yes) {
         return;
     }
-    if (mw_sub_updating) return;
-    mw_sub_updating = true;
+    if (mw_sub_updating.exchange(true)) return;
     NekoGui::dataStore->resolve_count = profiles.count();
 
     for (const auto &profile: profiles) {
         profile->bean->ResolveDomainToIP([=] {
-            profile->Save();
+            if (NekoGui::profileManager->GetProfile(profile->id) == profile) {
+                profile->Save();
+            }
             if (--NekoGui::dataStore->resolve_count != 0) return;
             refresh_proxy_list();
-            mw_sub_updating = false;
+            mw_sub_updating.store(false);
         });
     }
 }

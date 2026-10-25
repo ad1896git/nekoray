@@ -155,8 +155,8 @@ private:
     //
     int proxy_last_order = -1;
     bool select_mode = false;
-    QMutex mu_starting;
-    QMutex mu_stopping;
+    QSemaphore mu_starting{1};
+    QSemaphore mu_stopping{1};
     QMutex mu_exit;
     QSemaphore sem_stopped;
     int exit_reason = 0;

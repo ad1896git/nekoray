@@ -9,6 +9,8 @@ namespace NekoGui {
     public:
         // JsonStore
 
+        // Application-thread-owned: groupsTabOrder, profiles, groups, and every
+        // registered Group/ProxyEntity. Workers may construct detached objects.
         // order -> id
         QList<int> groupsTabOrder;
 
@@ -20,7 +22,7 @@ namespace NekoGui {
         ProfileManager();
 
         // LoadManager Reset and loads profiles & groups
-        void LoadManager();
+        bool LoadManager();
 
         void SaveManager();
 
@@ -30,7 +32,7 @@ namespace NekoGui {
 
         bool AddProfile(const std::shared_ptr<ProxyEntity> &ent, int gid = -1);
 
-        void DeleteProfile(int id);
+        bool DeleteProfile(int id);
 
         void MoveProfile(const std::shared_ptr<ProxyEntity> &ent, int gid);
 
