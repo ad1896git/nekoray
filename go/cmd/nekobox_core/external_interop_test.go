@@ -2,10 +2,11 @@ package main
 
 import (
 	"context"
-	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/rsa"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/json"
 	"encoding/pem"
 	"errors"
 	"fmt"
@@ -26,6 +27,7 @@ import (
 	"github.com/sagernet/sing-quic/tuic"
 	"github.com/sagernet/sing/common/logger"
 	M "github.com/sagernet/sing/common/metadata"
+	N "github.com/sagernet/sing/common/network"
 	"golang.org/x/net/proxy"
 )
 
@@ -142,27 +144,38 @@ func nk04ExternalPort(t *testing.T) int {
 
 func nk04ExternalCertificate(t *testing.T) (string, tls.Certificate, *x509.CertPool) {
 	t.Helper()
-	pub, key, err := ed25519.GenerateKey(rand.Reader)
+	// Match sing-box/test/mkcert.go:29-70: RSA CA (3072 bits) signing a
+	// separate RSA server certificate (2048 bits), with example.org as its SAN.
+	caKey, err := rsa.GenerateKey(rand.Reader, 3072)
 	nk04OK(t, err)
-	cert := &x509.Certificate{SerialNumber: big.NewInt(1), DNSNames: []string{"example.org"},
-		NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour),
-		IsCA: true, BasicConstraintsValid: true, KeyUsage: x509.KeyUsageCertSign | x509.KeyUsageDigitalSignature,
+	ca := &x509.Certificate{SerialNumber: big.NewInt(1),
+		NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().AddDate(10, 0, 0),
+		IsCA: true, BasicConstraintsValid: true, MaxPathLenZero: true,
+		KeyUsage: x509.KeyUsageCertSign}
+	caDER, err := x509.CreateCertificate(rand.Reader, ca, ca, &caKey.PublicKey, caKey)
+	nk04OK(t, err)
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	nk04OK(t, err)
+	cert := &x509.Certificate{SerialNumber: big.NewInt(2), DNSNames: []string{"example.org"},
+		NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().AddDate(0, 0, 30),
+		KeyUsage:    x509.KeyUsageKeyEncipherment | x509.KeyUsageDigitalSignature,
 		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}}
-	der, err := x509.CreateCertificate(rand.Reader, cert, cert, pub, key)
+	der, err := x509.CreateCertificate(rand.Reader, cert, ca, &key.PublicKey, caKey)
 	nk04OK(t, err)
 	keyDER, err := x509.MarshalPKCS8PrivateKey(key)
 	nk04OK(t, err)
+	caPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: caDER})
 	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
 	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER})
 	dir := t.TempDir()
 	nk04OK(t, os.WriteFile(filepath.Join(dir, "cert.pem"), certPEM, 0644))
 	// Containers may run as a non-root user. This is an ephemeral test-only key.
 	nk04OK(t, os.WriteFile(filepath.Join(dir, "key.pem"), keyPEM, 0644))
-	nk04OK(t, os.WriteFile(filepath.Join(dir, "ca.pem"), certPEM, 0644))
+	nk04OK(t, os.WriteFile(filepath.Join(dir, "ca.pem"), caPEM, 0644))
 	pair, err := tls.X509KeyPair(certPEM, keyPEM)
 	nk04OK(t, err)
 	roots := x509.NewCertPool()
-	if !roots.AppendCertsFromPEM(certPEM) {
+	if !roots.AppendCertsFromPEM(caPEM) {
 		t.Fatal("invalid generated CA")
 	}
 	return dir, pair, roots
@@ -290,6 +303,11 @@ func (nk04ExternalRelay) NewConnection(ctx context.Context, c net.Conn, metadata
 		return err
 	}
 	defer upstream.Close()
+	// Match sing-box/outbound/default.go:72: acknowledge the upstream dial
+	// before copying. Hysteria1 peers wait for this before sending payload.
+	if err := N.ReportHandshakeSuccess(c); err != nil {
+		return err
+	}
 	stop := context.AfterFunc(ctx, func() { _ = c.Close(); _ = upstream.Close() })
 	defer stop()
 	go func() { _, _ = io.Copy(upstream, c); _ = upstream.Close() }()
@@ -301,7 +319,10 @@ func nk04ExternalServer(t *testing.T, protocol string, pair tls.Certificate) int
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
-	config := &nk04TLS{config: &tls.Config{Certificates: []tls.Certificate{pair}}, accepted: make(chan quic.Connection, 8)}
+	// TLS follows hysteria_test.go:107-111, hysteria2_test.go:126-130,
+	// and tuic_test.go:120-124. ALPN is left unset as in those options:
+	// Hysteria services supply their defaults; TUIC peers configure no ALPN.
+	config := &nk04TLS{config: &tls.Config{ServerName: "example.org", Certificates: []tls.Certificate{pair}}, accepted: make(chan quic.Connection, 8)}
 	var service nk04Service
 	var err error
 	switch protocol {
@@ -336,6 +357,8 @@ func nk04ExternalServer(t *testing.T, protocol string, pair tls.Certificate) int
 
 func nk04ExternalClient(t *testing.T, ctx context.Context, protocol string, port int, roots *x509.CertPool, password string) nk04Client {
 	t.Helper()
+	// SNI and CA verification match hysteria_test.go:167-170,
+	// hysteria2_test.go:187-190 and tuic_test.go:176-179 (no insecure flag).
 	config := &nk04TLS{config: &tls.Config{RootCAs: roots, ServerName: "example.org"}}
 	address := M.ParseSocksaddr(fmt.Sprintf("127.0.0.1:%d", port))
 	var c nk04Client
@@ -378,18 +401,39 @@ func nk04ExternalRun(t *testing.T, protocol, direction string) {
 		server = nk04ExternalPort(t)
 		nk04ExternalContainer(t, protocol, "server", dir, server, client)
 	}
-	// QUIC servers expose UDP only. Poll the companion peer client's TCP SOCKS
-	// port, then require an authenticated round trip to prove server readiness.
-	nk04ExternalContainer(t, protocol, "client", dir, server, client)
-	address := fmt.Sprintf("127.0.0.1:%d", client)
-	nk04ExternalReady(t, address)
+	password := "password"
+	if protocol == "tuic" {
+		password = "tuic"
+	}
 	ready, cancelReady := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancelReady()
+	var roundTrip func(context.Context) error
+	if direction == "inbound" {
+		nk04ExternalContainer(t, protocol, "client", dir, server, client)
+		address := fmt.Sprintf("127.0.0.1:%d", client)
+		nk04ExternalReady(t, address)
+		roundTrip = func(ctx context.Context) error {
+			return nk04ExternalSOCKS(ctx, address, target)
+		}
+	} else {
+		// Like the sing-box outbound tests, use our client against the peer server.
+		// QUIC has no TCP readiness port; an authenticated round trip proves UDP
+		// readiness without an extra peer client that may exit during server startup.
+		good := nk04ExternalClient(t, ready, protocol, server, roots, password)
+		roundTrip = func(ctx context.Context) error {
+			conn, err := good.DialConn(ctx, M.ParseSocksaddr(target))
+			if err != nil {
+				return err
+			}
+			defer conn.Close()
+			return nk04Stream(ctx, conn)
+		}
+	}
 	ticker := time.NewTicker(50 * time.Millisecond)
 	defer ticker.Stop()
 	for {
 		attempt, cancel := context.WithTimeout(ready, 2*time.Second)
-		err := nk04ExternalSOCKS(attempt, address, target)
+		err := roundTrip(attempt)
 		cancel()
 		if err == nil {
 			break
@@ -400,21 +444,6 @@ func nk04ExternalRun(t *testing.T, protocol, direction string) {
 		case <-ticker.C:
 		}
 	}
-	if direction == "inbound" {
-		return
-	}
-	password := "password"
-	if protocol == "tuic" {
-		password = "tuic"
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
-	defer cancel()
-	good := nk04ExternalClient(t, ctx, protocol, server, roots, password)
-	conn, err := good.DialConn(ctx, M.ParseSocksaddr(target))
-	nk04OK(t, err)
-	defer conn.Close()
-	nk04OK(t, nk04Stream(ctx, conn))
-	_ = conn.Close()
 	if direction != "wrong-password" {
 		return
 	}
@@ -432,8 +461,32 @@ func nk04ExternalRun(t *testing.T, protocol, direction string) {
 	}()
 	select {
 	case err := <-result:
+		if protocol == "hysteria1" {
+			// hysteria_test.go:130-141 loads config/hysteria-server.json:1-9.
+			// Its top-level auth_str is ignored by the v1 server (CI logs show
+			// Auth:{Mode: Config:[]}); authentication is disabled. Preserve that
+			// upstream config and document acceptance, rather than claim rejection.
+			nk04OK(t, err)
+			t.Log("expected success: pinned Hysteria1 server accepts wrong passwords (authentication disabled)")
+			return
+		}
 		if err == nil {
 			t.Fatal("wrong password completed TCP round trip")
+		}
+		// Additional coverage: the pinned sing-box tests have no negative-auth
+		// cases. Require an HTTP authentication response for Hysteria2, or a
+		// remote QUIC application close after the TUIC credential exchange.
+		// TLS failures, EOF, local closes and transport errors are not rejection.
+		switch protocol {
+		case "hysteria2":
+			if err.Error() != "authentication failed, status code: 404" {
+				t.Fatalf("want Hysteria2 authentication HTTP 404, got: %v", err)
+			}
+		case "tuic":
+			var applicationError *quic.ApplicationError
+			if !errors.As(err, &applicationError) || !applicationError.Remote {
+				t.Fatalf("want remote TUIC application close after wrong credentials, got: %v", err)
+			}
 		}
 		var timeout net.Error
 		if reject.Err() != nil || errors.Is(err, context.DeadlineExceeded) || (errors.As(err, &timeout) && timeout.Timeout()) {
@@ -449,7 +502,21 @@ func TestNK04ExternalHysteria1Outbound(t *testing.T) { nk04ExternalRun(t, "hyste
 
 func TestNK04ExternalHysteria1Inbound(t *testing.T) { nk04ExternalRun(t, "hysteria1", "inbound") }
 
-func TestNK04ExternalHysteria1WrongPassword(t *testing.T) {
+// Documents acceptance, not rejection: hysteria_test.go:130-141 loads
+// config/hysteria-server.json:1-9, which has legacy auth_str but no server auth
+// block. The pinned peer logs Auth:{Mode: Config:[]} and accepts wrong passwords.
+func TestNK04ExternalHysteria1WrongPasswordAccepted(t *testing.T) {
+	nk04ExternalGate(t)
+	var peerConfig map[string]json.RawMessage
+	nk04OK(t, json.Unmarshal([]byte(nk04ExternalHysteriaServer), &peerConfig))
+	if _, enabled := peerConfig["auth"]; enabled {
+		t.Fatal("documentation case requires the upstream server config without an auth block")
+	}
+	var legacyAuth string
+	nk04OK(t, json.Unmarshal(peerConfig["auth_str"], &legacyAuth))
+	if legacyAuth != "password" {
+		t.Fatalf("upstream legacy auth_str = %q, want password", legacyAuth)
+	}
 	nk04ExternalRun(t, "hysteria1", "wrong-password")
 }
 
