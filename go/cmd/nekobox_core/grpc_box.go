@@ -8,7 +8,6 @@ import (
 	"grpc_server/gen"
 
 	"github.com/matsuridayo/libneko/neko_common"
-	"github.com/matsuridayo/libneko/neko_log"
 	"github.com/matsuridayo/libneko/speedtest"
 	box "github.com/sagernet/sing-box"
 	"github.com/sagernet/sing-box/boxapi"
@@ -24,7 +23,10 @@ type server struct {
 }
 
 func (s *server) Start(ctx context.Context, in *gen.LoadConfigReq) (out *gen.ErrorResp, _ error) {
-	if instance != nil {
+	startStopMu.Lock()
+	defer startStopMu.Unlock()
+
+	if currentInstance() != nil {
 		return &gen.ErrorResp{Error: "instance already started"}, nil
 	}
 
@@ -34,7 +36,6 @@ func (s *server) Start(ctx context.Context, in *gen.LoadConfigReq) (out *gen.Err
 		out = &gen.ErrorResp{}
 		if err != nil {
 			out.Error = err.Error()
-			instance = nil
 		}
 	}()
 
@@ -42,24 +43,36 @@ func (s *server) Start(ctx context.Context, in *gen.LoadConfigReq) (out *gen.Err
 		log.Println("Start:", in.CoreConfig)
 	}
 
-	instance, instance_cancel, err = boxmain.Create([]byte(in.CoreConfig))
+	var i *box.Box
+	var cancel context.CancelFunc
+	i, cancel, err = boxmain.Create([]byte(in.CoreConfig))
+	if err != nil {
+		return
+	}
 
-	if instance != nil {
+	if i != nil {
 		// Logger
-		instance.SetLogWritter(neko_log.LogWriter)
+		configureInstanceLog(i)
 		// V2ray Service
 		if in.StatsOutbounds != nil {
-			instance.Router().SetV2RayServer(boxapi.NewSbV2rayServer(option.V2RayStatsServiceOptions{
+			i.Router().SetV2RayServer(boxapi.NewSbV2rayServer(option.V2RayStatsServiceOptions{
 				Enabled:   true,
 				Outbounds: in.StatsOutbounds,
 			}))
 		}
 	}
 
+	stateMu.Lock()
+	instance, instance_cancel = i, cancel
+	stateMu.Unlock()
+
 	return
 }
 
 func (s *server) Stop(ctx context.Context, in *gen.EmptyReq) (out *gen.ErrorResp, _ error) {
+	startStopMu.Lock()
+	defer startStopMu.Unlock()
+
 	var err error
 
 	defer func() {
@@ -69,14 +82,16 @@ func (s *server) Stop(ctx context.Context, in *gen.EmptyReq) (out *gen.ErrorResp
 		}
 	}()
 
-	if instance == nil {
+	stateMu.Lock()
+	i, cancel := instance, instance_cancel
+	instance, instance_cancel = nil, nil
+	stateMu.Unlock()
+	if i == nil {
 		return
 	}
 
-	instance_cancel()
-	err = instance.Close()
-
-	instance = nil
+	cancel()
+	err = i.Close()
 
 	return
 }
@@ -106,7 +121,7 @@ func (s *server) Test(ctx context.Context, in *gen.TestReq) (out *gen.TestResp, 
 			}
 		} else {
 			// Test running instance
-			i = instance
+			i = currentInstance()
 			if i == nil {
 				return
 			}
@@ -116,7 +131,9 @@ func (s *server) Test(ctx context.Context, in *gen.TestReq) (out *gen.TestResp, 
 	} else if in.Mode == gen.TestMode_TcpPing {
 		out.Ms, err = speedtest.TcpPing(in.Address, in.Timeout)
 	} else if in.Mode == gen.TestMode_FullTest {
-		i, cancel, err := boxmain.Create([]byte(in.Config.CoreConfig))
+		var i *box.Box
+		var cancel context.CancelFunc
+		i, cancel, err = boxmain.Create([]byte(in.Config.CoreConfig))
 		if i != nil {
 			defer i.Close()
 			defer cancel()
@@ -133,8 +150,8 @@ func (s *server) Test(ctx context.Context, in *gen.TestReq) (out *gen.TestResp, 
 func (s *server) QueryStats(ctx context.Context, in *gen.QueryStatsReq) (out *gen.QueryStatsResp, _ error) {
 	out = &gen.QueryStatsResp{}
 
-	if instance != nil {
-		if ss, ok := instance.Router().V2RayServer().(*boxapi.SbV2rayServer); ok {
+	if i := currentInstance(); i != nil {
+		if ss, ok := i.Router().V2RayServer().(*boxapi.SbV2rayServer); ok {
 			out.Traffic = ss.QueryStats(fmt.Sprintf("outbound>>>%s>>>traffic>>>%s", in.Tag, in.Direct))
 		}
 	}
