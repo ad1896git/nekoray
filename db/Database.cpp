@@ -1,5 +1,6 @@
 #include "main/UiOwnership.hpp"
 #include "Database.hpp"
+#include "Renumber.hpp"
 #include <QSet>
 
 #include "fmt/includes.h"
@@ -72,6 +73,10 @@ namespace NekoGui {
 
     bool ProfileManager::LoadManager() {
         NekoGui_concurrency::RequireUiThread();
+        if (Renumber::Pending() || dataStore->flag_reorder) {
+            qWarning() << "Profile loading requires completed startup renumbering";
+            return false;
+        }
         const auto previousProfiles = profiles;
         const auto previousGroups = groups;
         const auto previousProfileIds = profilesIdOrder;
@@ -125,60 +130,6 @@ namespace NekoGui {
                 return false;
             }
         }
-        //
-        if (dataStore->flag_reorder) {
-            {
-                // remove all (contains orphan)
-                for (const auto &profile: profiles) {
-                    QFile::remove(profile.second->fn);
-                }
-            }
-            std::map<int, int> gidOld2New;
-            {
-                int i = 0;
-                int ii = 0;
-                QList<int> newProfilesIdOrder;
-                std::map<int, std::shared_ptr<ProxyEntity>> newProfiles;
-                for (auto gid: groupsTabOrder) {
-                    auto group = GetGroup(gid);
-                    gidOld2New[gid] = ii++;
-                    for (auto const &profile: group->Profiles()) {
-                        auto oldId = profile->id;
-                        auto newId = i++;
-                        profile->id = newId;
-                        profile->gid = gidOld2New[gid];
-                        profile->fn = QStringLiteral("profiles/%1.json").arg(newId);
-                        profile->Save();
-                        newProfiles[newId] = profile;
-                        newProfilesIdOrder << newId;
-                    }
-                    group->order.clear();
-                    group->order_explicit = false;
-                    group->recoveryRequired = false;
-                    group->Save();
-                }
-                profiles = newProfiles;
-                profilesIdOrder = newProfilesIdOrder;
-            }
-            {
-                QList<int> newGroupsIdOrder;
-                std::map<int, std::shared_ptr<Group>> newGroups;
-                for (auto oldGid: groupsTabOrder) {
-                    auto newId = gidOld2New[oldGid];
-                    auto group = groups[oldGid];
-                    QFile::remove(group->fn);
-                    group->id = newId;
-                    group->fn = QStringLiteral("groups/%1.json").arg(newId);
-                    group->Save();
-                    newGroups[newId] = group;
-                    newGroupsIdOrder << newId;
-                }
-                groups = newGroups;
-                groupsIdOrder = newGroupsIdOrder;
-                groupsTabOrder = newGroupsIdOrder;
-            }
-            MessageBoxInfo(software_name, "Profiles and groups reorder complete.");
-        }
         return true;
     }
 
@@ -198,6 +149,7 @@ namespace NekoGui {
         // Apply the exact validated bytes without a second filesystem read.
         if (!ent->FromJsonBytes(metadata.last_save_content)) return nullptr;
         ent->last_save_content = metadata.last_save_content;
+        ent->traffic_data->id = ent->id;
         return ent;
     }
 

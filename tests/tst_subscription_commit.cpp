@@ -21,6 +21,7 @@
 #include <utility>
 
 #include "db/Database.hpp"
+#include "db/Renumber.hpp"
 #include "db/ProfileFilter.hpp"
 #include "main/NekoGui_UiThread_p.hpp"
 #include "sub/SubscriptionCommit.hpp"
@@ -582,28 +583,26 @@ private slots:
         manager->SaveManager();
         manager.reset(new ProfileManager);
         profileManager = manager.get();
-        dataStore->flag_reorder = true;
-        // Reorder reports completion with a modal dialog. Dismiss that real UI
-        // notification from its nested event loop so this regression is unattended.
-        bool dismissed = false;
-        QTimer::singleShot(0, [&dismissed] {
-            auto *dialog = qobject_cast<QMessageBox *>(QApplication::activeModalWidget());
-            if (!dialog) return;
-            dismissed = true;
-            dialog->accept();
-        });
+        // Exercise startup's transaction before allowing either loader.
+        dataStore->fn = "groups/nekobox.json";
+        QVERIFY(dataStore->SaveChecked().ok);
+        Renumber::Lease lease;
+        NekoGui::PrepareConfiguration(true, lease);
+        QVERIFY(!Renumber::Pending());
+        QVERIFY(dataStore->Load());
         QVERIFY(manager->LoadManager());
-        QVERIFY(dismissed);
         group = manager->GetGroup(0);
         QVERIFY(bool(group));
         QCOMPARE(Names(group->Profiles()), QStringList({"visible", "hidden"}));
-        QCOMPARE(Names(group->ProfilesWithOrder()), QStringList({"visible", "hidden"}));
+        QCOMPARE(Names(group->ProfilesWithOrder()), QStringList({"visible"}));
         QCOMPARE(int(manager->profiles.size()), 2);
-        QVERIFY(!group->order_explicit);
-        QVERIFY(!group->recoveryRequired);
+        QVERIFY(group->order_explicit);
+        QVERIFY(group->recoveryRequired);
         for (const auto &ent : group->Profiles()) QVERIFY(QFile::exists(ent->fn));
         reload();
         QCOMPARE(Names(group->Profiles()), QStringList({"visible", "hidden"}));
+        QCOMPARE(Names(group->ProfilesWithOrder()), QStringList({"visible"}));
+        QCOMPARE(int(manager->profiles.size()), 2);
     }
 };
 
