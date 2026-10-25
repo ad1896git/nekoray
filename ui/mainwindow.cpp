@@ -36,6 +36,8 @@
 #else
 #ifdef Q_OS_LINUX
 #include "sys/linux/LinuxCap.h"
+#include "sys/TimedProcess.hpp"
+#include <QProgressDialog>
 #endif
 #include <unistd.h>
 #endif
@@ -763,26 +765,88 @@ void MainWindow::neko_set_spmode_system_proxy(bool enable, bool save) {
 }
 
 void MainWindow::neko_set_spmode_vpn(bool enable, bool save) {
+#ifdef Q_OS_LINUX
+    if (tun_capability_job) {
+        if (!enable) tun_capability_job->cancel();
+        refresh_status();
+        return;
+    }
+#endif
     if (enable != NekoGui::dataStore->spmode_vpn) {
         if (enable) {
             if (NekoGui::dataStore->vpn_internal_tun) {
                 bool requestPermission = !NekoGui::IsAdmin();
                 if (requestPermission) {
 #ifdef Q_OS_LINUX
-                    if (!Linux_HavePkexec()) {
-                        MessageBoxWarning(software_name, "Please install \"pkexec\" first.");
-                        neko_set_spmode_FAILED
-                    }
-                    auto ret = Linux_Pkexec_SetCapString(NekoGui::FindNekoBoxCoreRealPath(), "cap_net_admin=ep");
-                    if (ret == 0) {
-                        this->exit_reason = 3;
-                        on_menu_exit_triggered();
-                    } else {
-                        MessageBoxWarning(software_name, "Setcap for Tun mode failed.\n\n1. You may canceled the dialog.\n2. You may be using an incompatible environment like AppImage.");
-                        if (QProcessEnvironment::systemEnvironment().contains("APPIMAGE")) {
-                            MW_show_log("If you are using AppImage, it's impossible to start a Tun. Please use other package instead.");
+                    using NekoGui_sys::TimedProcess;
+
+                    auto *job = new TimedProcess(this);
+                    tun_capability_job = job;
+
+                    auto *progress = new QProgressDialog(
+                        tr("Waiting for permission to enable Tun mode "
+                           "(up to 120 seconds)."),
+                        tr("Cancel"), 0, 0, this);
+                    progress->setWindowModality(Qt::NonModal);
+                    progress->setMinimumDuration(0);
+                    progress->setAutoClose(false);
+                    progress->setAutoReset(false);
+
+                    ui->checkBox_VPN->setEnabled(false);
+                    connect(progress, &QProgressDialog::canceled,
+                            job, &TimedProcess::cancel);
+
+                    connect(job, &TimedProcess::finished, this,
+                            [this, job, progress](int outcome, int exitCode) {
+                        tun_capability_job = nullptr;
+                        ui->checkBox_VPN->setEnabled(true);
+                        progress->hide();
+                        progress->deleteLater();
+                        job->deleteLater();
+
+                        if (NekoGui::dataStore->prepare_exit) return;
+
+                        refresh_status();
+                        if (outcome == TimedProcess::Succeeded) {
+                            exit_reason = 3;
+                            on_menu_exit_triggered();
+                            return;
                         }
-                    }
+                        if (outcome == TimedProcess::Cancelled) return;
+
+                        QString message;
+                        if (outcome == TimedProcess::TimedOut) {
+                            message = tr("Permission request timed out after "
+                                         "120 seconds. Tun mode remains off.");
+                        } else if (outcome == TimedProcess::FailedToStart) {
+                            message = tr("Could not start pkexec. Please check "
+                                         "that it is installed and executable.");
+                        } else {
+                            message = tr("Setcap for Tun mode failed "
+                                         "(exit code %1). Authorization may "
+                                         "have been denied, or this environment "
+                                         "may not support file capabilities.")
+                                          .arg(exitCode);
+                        }
+
+                        MessageBoxWarning(software_name, message);
+                        if (QProcessEnvironment::systemEnvironment()
+                                .contains("APPIMAGE")) {
+                            MW_show_log(
+                                "If you are using AppImage, it's impossible "
+                                "to start a Tun. Please use other package "
+                                "instead.");
+                        }
+                    });
+
+                    progress->show();
+                    job->start(
+                        QStringLiteral("pkexec"),
+                        QStringList{
+                            Linux_FindCapProgsExec(QStringLiteral("setcap")),
+                            QStringLiteral("cap_net_admin=ep"),
+                            NekoGui::FindNekoBoxCoreRealPath()},
+                        120000);
 #endif
 #ifdef Q_OS_WIN
                     auto n = QMessageBox::warning(GetMessageBoxParent(), software_name, tr("Please run NekoBox as admin"), QMessageBox::Yes | QMessageBox::No);
