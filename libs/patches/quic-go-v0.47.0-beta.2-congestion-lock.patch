@@ -1,0 +1,22 @@
+diff --git a/internal/ackhandler/sent_packet_handler.go b/internal/ackhandler/sent_packet_handler.go
+index 028d92d5..0ac42042 100644
+--- a/internal/ackhandler/sent_packet_handler.go
++++ b/internal/ackhandler/sent_packet_handler.go
+@@ -386,7 +386,7 @@ func (h *sentPacketHandler) ReceivedAck(ack *wire.AckFrame, encLevel protocol.En
+ 		putPacket(p)
+ 	}
+ 
+-	if cex, ok := h.congestion.(congestion.SendAlgorithmEx); ok &&
++	if cex, ok := h.getCongestionControl().(congestion.SendAlgorithmEx); ok &&
+ 		(len(h.ackedPacketsInfo) != 0 || len(h.lostPacketsInfo) != 0) {
+ 		cex.OnCongestionEventEx(priorInFlight, rcvTime, h.ackedPacketsInfo, h.lostPacketsInfo)
+ 	}
+@@ -714,7 +714,7 @@ func (h *sentPacketHandler) OnLossDetectionTimeout() error {
+ 		// Early retransmit or time loss detection
+ 		err := h.detectLostPackets(time.Now(), encLevel)
+ 
+-		if cex, ok := h.congestion.(congestion.SendAlgorithmEx); ok &&
++		if cex, ok := h.getCongestionControl().(congestion.SendAlgorithmEx); ok &&
+ 			len(h.lostPacketsInfo) != 0 {
+ 			cex.OnCongestionEventEx(priorInFlight, time.Now(), nil, h.lostPacketsInfo)
+ 		}

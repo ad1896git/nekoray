@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Build nekobox_core from the pinned sources by default: sing-box and sing-quic
-# from the ad1896git forks, libneko from MatsuriDayo.
+# from the ad1896git forks, libneko from MatsuriDayo, and patched quic-go from sagernet.
 # NKR_SRC_BASE overrides the fork base for sing-box and sing-quic (mirrors supported).
-# NKR_SRC_DIR holds sing-box, sing-quic and libneko; default: repository parent.
+# NKR_SRC_DIR holds sing-box, sing-quic, quic-go and libneko; default: repository parent.
 # GOOS/GOARCH default to the host. VERSION defaults to git describe, or dev.
 # NKR_CORE_OUT_DIR overrides <repository>/build-core/<GOOS>-<GOARCH>.
 # Go 1.22+ is required; CI uses 1.22.12. The pinned dependencies may be
@@ -27,15 +27,20 @@ fi
 
 repo_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
 source "$repo_dir/libs/get_source_env.sh"
+source "$repo_dir/libs/apply_source_patch.sh"
 src_base=${NKR_SRC_BASE:-$NKR_SRC_FORK}
 src_dir=${NKR_SRC_DIR:-$repo_dir/..}
 mkdir -p -- "$src_dir"
 src_dir=$(cd -- "$src_dir" && pwd -P)
 
 verify_source() {
-    local name=$1 expected=$2 actual status
+    local name=$1 expected=$2 patch=${3:-} actual status
     actual=$(git -C "$src_dir/$name" rev-parse HEAD 2>/dev/null) || actual=unavailable
     status=$(git -C "$src_dir/$name" status --porcelain) || die "cannot read working tree: $name"
+    if [[ $actual == "$expected" && -n $status && -n $patch ]] &&
+        source_patch_matches "$src_dir/$name" "$patch"; then
+        status=
+    fi
     if [[ $actual != "$expected" || -n $status ]]; then
         printf 'build_core: source mismatch: %s\nexpected HEAD: %s\nactual HEAD: %s\nexpected working tree: clean\nactual working tree: %s\n' \
             "$name" "$expected" "$actual" "${status:-clean}" >&2
@@ -44,7 +49,7 @@ verify_source() {
 }
 
 prepare_source() {
-    local name=$1 expected=$2 base=$3 actual status
+    local name=$1 expected=$2 base=$3 patch=${4:-} actual status
     if [[ ! -e $src_dir/$name ]]; then
         git clone --no-checkout "${base%/}/$name.git" "$src_dir/$name"
     else
@@ -52,7 +57,7 @@ prepare_source() {
         status=$(git -C "$src_dir/$name" status --porcelain)
         # Never let checkout hide pre-existing changes, including untracked files.
         if [[ -n $status ]]; then
-            verify_source "$name" "$expected"
+            verify_source "$name" "$expected" "$patch"
         fi
     fi
     actual=$(git -C "$src_dir/$name" rev-parse HEAD 2>/dev/null) || actual=unavailable
@@ -61,16 +66,22 @@ prepare_source() {
         if ! git -C "$src_dir/$name" fetch "${base%/}/$name.git" "$expected"; then
             # Fetch failure is fatal; report the checkout mismatch before exiting.
             printf 'build_core: failed to fetch %s at %s\n' "$name" "$expected" >&2
-            verify_source "$name" "$expected"
+            verify_source "$name" "$expected" "$patch"
             die "failed to fetch $name at $expected"
         fi
         git -C "$src_dir/$name" checkout --detach "$expected"
     fi
-    verify_source "$name" "$expected"
+    verify_source "$name" "$expected" "$patch"
+    if [[ -n $patch ]]; then
+        apply_source_patch "$src_dir/$name" "$patch"
+        verify_source "$name" "$expected" "$patch"
+    fi
 }
 
 prepare_source sing-box "$COMMIT_SING_BOX" "$src_base"
 prepare_source sing-quic "$COMMIT_SING_QUIC" "$src_base"
+prepare_source quic-go "$COMMIT_QUIC_GO" "$NKR_SRC_QUIC_GO" \
+    "$repo_dir/libs/patches/quic-go-v0.47.0-beta.2-congestion-lock.patch"
 prepare_source libneko "$COMMIT_LIBNEKO" "$NKR_SRC_UPSTREAM"
 
 GOOS=${GOOS:-$(go env GOHOSTOS)}
@@ -93,7 +104,8 @@ go mod edit -modfile="$work_dir/go.mod" \
     "-replace=grpc_server=$repo_dir/go/grpc_server" \
     "-replace=github.com/matsuridayo/libneko=$src_dir/libneko" \
     "-replace=github.com/sagernet/sing-box=$src_dir/sing-box" \
-    "-replace=github.com/sagernet/sing-quic=$src_dir/sing-quic"
+    "-replace=github.com/sagernet/sing-quic=$src_dir/sing-quic" \
+    "-replace=github.com/sagernet/quic-go=$src_dir/quic-go"
 go build -mod=readonly -modfile="$work_dir/go.mod" -o "$out_dir/$binary" -trimpath \
     -ldflags "-w -s -X github.com/matsuridayo/libneko/neko_common.Version_neko=$VERSION" \
     -tags 'with_clash_api,with_gvisor,with_quic,with_wireguard,with_utls,with_ech'
