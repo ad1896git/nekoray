@@ -1,3 +1,4 @@
+# Re-index for Actions: keep this workflow registered on main.
 name: Nekoray build matrix - cmake
 
 on:
