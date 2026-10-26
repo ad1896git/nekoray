@@ -5,6 +5,8 @@
 # NKR_SRC_DIR holds sing-box, sing-quic, quic-go and libneko; default: repository parent.
 # GOOS/GOARCH default to the host. VERSION defaults to git describe, or dev.
 # NKR_CORE_OUT_DIR overrides <repository>/build-core/<GOOS>-<GOARCH>.
+# NKR_CHECKLINKNAME_OFF=1 links with -checklinkname=0 so Go 1.23+ can build the
+# pinned dependencies (local use only: it disables Go's linkname restriction).
 # Go 1.22+ is required; CI uses 1.22.12. The pinned dependencies may be
 # incompatible with newer Go releases (including Go 1.27); use 1.22.12 then.
 set -euo pipefail
@@ -92,6 +94,11 @@ out_dir=${NKR_CORE_OUT_DIR:-$repo_dir/build-core/$GOOS-$GOARCH}
 mkdir -p -- "$out_dir"
 out_dir=$(cd -- "$out_dir" && pwd -P)
 binary=nekobox_core
+checklinkname_flag=
+if [[ ${NKR_CHECKLINKNAME_OFF:-0} == 1 ]]; then
+    checklinkname_flag=-checklinkname=0
+    printf 'build_core: linking with -checklinkname=0 (NKR_CHECKLINKNAME_OFF=1)\n' >&2
+fi
 if [[ $GOOS == windows ]]; then binary+=.exe; fi
 
 # Use an alternate module file so custom source paths never edit tracked files.
@@ -107,7 +114,7 @@ go mod edit -modfile="$work_dir/go.mod" \
     "-replace=github.com/sagernet/sing-quic=$src_dir/sing-quic" \
     "-replace=github.com/sagernet/quic-go=$src_dir/quic-go"
 go build -mod=readonly -modfile="$work_dir/go.mod" -o "$out_dir/$binary" -trimpath \
-    -ldflags "-w -s -X github.com/matsuridayo/libneko/neko_common.Version_neko=$VERSION" \
+    -ldflags "-w -s $checklinkname_flag -X github.com/matsuridayo/libneko/neko_common.Version_neko=$VERSION" \
     -tags 'with_clash_api,with_gvisor,with_quic,with_wireguard,with_utls,with_ech'
 
 if command -v shasum >/dev/null 2>&1; then
