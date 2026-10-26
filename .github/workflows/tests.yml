@@ -255,3 +255,49 @@ jobs:
             go/cmd/nekobox_core/go.sum \
             go/grpc_server/go.mod \
             go/grpc_server/go.sum
+
+  external-interop:
+    name: external-interop
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    env:
+      NK04_EXTERNAL: '1'
+      GOTOOLCHAIN: local
+      CGO_ENABLED: '0'
+      GOWORK: 'off'
+      GOFLAGS: ''
+      NKR_GO_TAGS: with_clash_api,with_gvisor,with_quic,with_wireguard,with_utls,with_ech
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Go 1.22.12
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22.12'
+          check-latest: false
+          cache: false
+
+      - name: Fetch pinned Go dependencies
+        run: bash ./libs/get_source.sh
+
+      - name: Verify dependency revisions
+        run: |
+          source libs/get_source_env.sh
+          test "$(git -C ../sing-box rev-parse HEAD)" = "$COMMIT_SING_BOX"
+          test "$(git -C ../sing-quic rev-parse HEAD)" = "$COMMIT_SING_QUIC"
+          test "$(git -C ../libneko rev-parse HEAD)" = "$COMMIT_LIBNEKO"
+
+      - name: Pull pinned external peers
+        run: |
+          docker pull tobyxdd/hysteria@sha256:4c8c92ba4b9b405c9473d8776b613e4d776141a3fa26ae5084a19c44b49f1e35
+          docker pull tobyxdd/hysteria@sha256:92b06917b2abb940e90ea6dc9215c1b1ceea69fa7edc1374daf3cde36e422740
+          docker pull kilvn/tuic-server@sha256:15c73b7b8d0f6947fde6cf3c4ce14b3735236c306e27c00412530a710f783c61
+          docker pull kilvn/tuic-client@sha256:4c469c277548170c48c9100554f3efa56df9bf9599a78ea5e28acc5fa6988abc
+
+      - name: Test external interoperability
+        working-directory: go/cmd/nekobox_core
+        run: |
+          go test -mod=readonly -tags "$NKR_GO_TAGS" \
+            -count=1 -timeout=600s -v -run '^TestNK04External' .
