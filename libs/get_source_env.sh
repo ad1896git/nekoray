@@ -5,3 +5,6 @@ export COMMIT_LIBNEKO="1c47a3af71990a7b2192e03292b4d246c308ef0b"
 # sing-box and sing-quic pins are commits on the ad1896git forks; libneko is upstream.
 export NKR_SRC_FORK="https://github.com/ad1896git"
 export NKR_SRC_UPSTREAM="https://github.com/MatsuriDayo"
+
+export COMMIT_QUIC_GO="7101329b86a0c801e643fc8ccf730ec89be10663"
+export NKR_SRC_QUIC_GO="https://github.com/sagernet"

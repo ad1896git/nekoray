@@ -1,0 +1,2 @@
+# Patch context preserves upstream whitespace, including diff context prefixes.
+libs/patches/quic-go-v0.47.0-beta.2-congestion-lock.patch -whitespace

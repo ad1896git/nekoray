@@ -233,6 +233,7 @@ jobs:
           source libs/get_source_env.sh
           test "$(git -C ../sing-box rev-parse HEAD)" = "$COMMIT_SING_BOX"
           test "$(git -C ../sing-quic rev-parse HEAD)" = "$COMMIT_SING_QUIC"
+          test "$(git -C ../quic-go rev-parse HEAD)" = "$COMMIT_QUIC_GO"
           test "$(git -C ../libneko rev-parse HEAD)" = "$COMMIT_LIBNEKO"
 
       - name: Test core lifecycle
@@ -287,6 +288,7 @@ jobs:
           source libs/get_source_env.sh
           test "$(git -C ../sing-box rev-parse HEAD)" = "$COMMIT_SING_BOX"
           test "$(git -C ../sing-quic rev-parse HEAD)" = "$COMMIT_SING_QUIC"
+          test "$(git -C ../quic-go rev-parse HEAD)" = "$COMMIT_QUIC_GO"
           test "$(git -C ../libneko rev-parse HEAD)" = "$COMMIT_LIBNEKO"
 
       - name: Pull pinned external peers
