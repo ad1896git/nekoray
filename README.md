@@ -1,48 +1,36 @@
-# NekoBox For PC
+# NekoBox For PC（个人分支 / personal fork）
 
 Qt based cross-platform GUI proxy configuration manager (backend: sing-box)
 
-Support Windows / Linux out of the box now.
-
 基于 Qt 的跨平台代理配置管理器 (后端 sing-box)
 
-目前支持 Windows / Linux 开箱即用
+本仓库是 [MatsuriDayo/nekoray](https://github.com/MatsuriDayo/nekoray) 的个人分支（`ad1896git/nekoray`），仅供个人使用。安全性和稳定性优先，功能不追求丰富。
+
+This repository is a personal fork of [MatsuriDayo/nekoray](https://github.com/MatsuriDayo/nekoray) (`ad1896git/nekoray`), kept for personal use. Security and stability come first; features are secondary.
+
+## 平台 / Platforms
+
+- Windows (x64)：CI 构建，便携 ZIP。
+- Linux (x64)：CI 构建。
+- macOS (Apple Silicon, arm64)：预览版，要求 macOS 14.4 或更新。目前只在 macOS 27 上测试过。
 
 ## 下载 / Download
 
-### GitHub Releases (Portable ZIP)
+预编译包发布在本仓库的 [Releases](https://github.com/ad1896git/nekoray/releases)。macOS 版本仍在测试中，尚未正式发布。
 
-便携格式，无安装器。转到 Releases 下载预编译的二进制文件，解压后即可使用。
+Pre-built packages are published on this fork's [Releases](https://github.com/ad1896git/nekoray/releases). The macOS build is still under testing and not yet released.
 
-[![GitHub All Releases](https://img.shields.io/github/downloads/Matsuridayo/nekoray/total?label=downloads-total&logo=github&style=flat-square)](https://github.com/Matsuridayo/nekoray/releases)
+## 依赖与版本 / Dependencies
 
-[下载 / Download](https://github.com/Matsuridayo/nekoray/releases)
+核心依赖固定到具体 commit，见 [`libs/get_source_env.sh`](libs/get_source_env.sh)：sing-box 和 sing-quic 使用本仓库所有者的 fork，libneko 和 quic-go 分别来自上游和 sagernet。
 
-[安装包的说明，如果你不知道要下载哪一个](https://github.com/MatsuriDayo/nekoray/wiki/Installation-package-description)
-
-### Package
-
-#### AUR
-
-- [nekoray](https://aur.archlinux.org/packages/nekoray)
-- [nekoray-git](https://aur.archlinux.org/packages/nekoray-git)
-
-#### archlinuxcn
-
-- [nekoray](https://github.com/archlinuxcn/repo/tree/master/archlinuxcn/nekoray)
-- [nekoray-git](https://github.com/archlinuxcn/repo/tree/master/archlinuxcn/nekoray-git)
-
-#### Scoop Extras
-
-`scoop install nekoray`
-
-## 更改记录 & 发布频道 / Changelog & Telegram Channel
-
-https://t.me/Matsuridayo
+The core dependencies are pinned to specific commits in [`libs/get_source_env.sh`](libs/get_source_env.sh). sing-box and sing-quic come from this owner's forks; libneko and quic-go come from upstream.
 
 ## 项目主页 & 文档 / Homepage & Documents
 
-https://matsuridayo.github.io
+本分支的技术文档在 [docs/](docs/) 目录。上游项目：[MatsuriDayo/nekoray](https://github.com/MatsuriDayo/nekoray)。
+
+Technical documentation for this fork is in [docs/](docs/). Upstream project: [MatsuriDayo/nekoray](https://github.com/MatsuriDayo/nekoray).
 
 ## 代理 / Proxy
 
@@ -78,25 +66,14 @@ https://matsuridayo.github.io
 
 ## 编译教程 / Compile Tutorial
 
-请看 [技术文档 / Technical documentation](https://github.com/MatsuriDayo/nekoray/tree/main/docs)
-
-## 捐助 / Donate
-
-如果这个项目对您有帮助，可以通过捐赠的方式帮助我们维持这个项目。
-
-捐赠满等额 50 USD 可以在「[捐赠榜](https://mtrdnt.pages.dev/donation_list)」显示头像，如果您未被添加到这里，欢迎联系我们补充。
-
-Donations of 50 USD or more can display your avatar on the [Donation List](https://mtrdnt.pages.dev/donation_list). If you are not added here, please contact us to add it.
-
-USDT TRC20
-
-`TRhnA7SXE5Sap5gSG3ijxRmdYFiD4KRhPs`
-
-XMR
-
-`49bwESYQjoRL3xmvTcjZKHEKaiGywjLYVQJMUv79bXonGiyDCs8AzE3KiGW2ytTybBCpWJUvov8SjZZEGg66a4e59GXa6k5`
+请看 [技术文档 / Technical documentation](docs/)
 
 ## Credits
+
+本分支基于 MatsuriDayo/nekoray，感谢上游项目及以下依赖的作者。
+
+This fork is based on MatsuriDayo/nekoray. Thanks to the upstream project and the following dependencies.
+
 
 Core:
 
