@@ -170,20 +170,6 @@
         <widget class="QGroupBox" name="horizontalGroupBox1">
          <layout class="QHBoxLayout" name="horizontalLayout_18">
           <item>
-           <widget class="QCheckBox" name="check_include_pre">
-            <property name="text">
-             <string>Include Pre-release when checking update</string>
-            </property>
-           </widget>
-          </item>
-          <item>
-           <widget class="Line" name="sys_proxy_format_vline">
-            <property name="orientation">
-             <enum>Qt::Vertical</enum>
-            </property>
-           </widget>
-          </item>
-          <item>
            <widget class="QCheckBox" name="old_share_link_format">
             <property name="toolTip">
              <string>Share VMess Link with v2rayN Format</string>

@@ -113,7 +113,6 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
     ui->toolButton_preferences->setMenu(ui->menu_preferences);
     ui->toolButton_server->setMenu(ui->menu_server);
     ui->menubar->setVisible(false);
-    connect(ui->toolButton_update, &QToolButton::clicked, this, [=] { runOnNewThread([=] { CheckUpdate(); }); });
     connect(ui->toolButton_url_test, &QToolButton::clicked, this, [=] { speedtest_current_group(1, true); });
 
     // Setup log UI
@@ -706,10 +705,7 @@ void MainWindow::on_menu_exit_triggered() {
     }
     //
     MF_release_runguard();
-    if (exit_reason == 1) {
-        QDir::setCurrent(QApplication::applicationDirPath());
-        QProcess::startDetached("./updater", QStringList{});
-    } else if (exit_reason == 2 || exit_reason == 3) {
+    if (exit_reason == 2 || exit_reason == 3) {
         QDir::setCurrent(QApplication::applicationDirPath());
 
         auto arguments = NekoGui::dataStore->argv;

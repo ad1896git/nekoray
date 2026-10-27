@@ -6,8 +6,6 @@ cp -r linux64 nekobox.AppDir
 
 # The file for Appimage
 
-rm nekobox.AppDir/launcher
-
 cat >nekobox.AppDir/nekobox.desktop <<-EOF
 [Desktop Entry]
 Name=nekobox
