@@ -26,7 +26,9 @@ chmod +x nekobox.AppDir/AppRun
 
 # build
 
-curl -fLSO https://github.com/AppImage/AppImageKit/releases/latest/download/appimagetool-x86_64.AppImage
+# Pinned release. AppImageKit's latest release no longer ships this file.
+curl -fLSO https://github.com/AppImage/appimagetool/releases/download/1.9.1/appimagetool-x86_64.AppImage
+echo "ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0  appimagetool-x86_64.AppImage" | sha256sum -c - || exit 1
 chmod +x appimagetool-x86_64.AppImage
 ./appimagetool-x86_64.AppImage nekobox.AppDir
 
