@@ -723,14 +723,8 @@ This needs to be run NekoBox with administrator privileges.</source>
         <translation>Проксировать процессы</translation>
     </message>
     <message>
-        <source>If you have trouble starting VPN, you can force reset nekobox_core process here.
-
-If still not working, see documentation for more information.
-https://matsuridayo.github.io/n-configuration/#vpn-tun</source>
-        <translation>Если у вас проблемы с запуском VPN, можно принудительно перезапустить процесс nekobox-core.
-
-Если ничего по-прежнему не работает, ознакомьтесь с документацией:
-https://matsuridayo.github.io/n-configuration/#vpn-tun</translation>
+        <source>If you have trouble starting VPN, you can force reset nekobox_core process here.</source>
+        <translation>Если у вас проблемы с запуском VPN, можно принудительно перезапустить процесс nekobox-core.</translation>
     </message>
     <message>
         <source>Reset</source>

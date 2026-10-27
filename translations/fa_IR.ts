@@ -714,10 +714,7 @@ For more information, see the document &quot;Configuration/DNS&quot;.</source>
         <translation type="unfinished">عیب یابی</translation>
     </message>
     <message>
-        <source>If you have trouble starting VPN, you can force reset nekobox_core process here.
-
-If still not working, see documentation for more information.
-https://matsuridayo.github.io/n-configuration/#vpn-tun</source>
+        <source>If you have trouble starting VPN, you can force reset nekobox_core process here.</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
