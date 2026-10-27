@@ -1,6 +1,6 @@
 #!/bin/bash
 
-version="$1"
+version="${1#v}"  # Debian versions must start with a digit
 
 mkdir -p nekoray/DEBIAN
 mkdir -p nekoray/opt
