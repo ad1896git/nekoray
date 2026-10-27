@@ -56,12 +56,12 @@ public:
         bool hasMessage = false;
         for (auto i = first; i < headers.size(); ++i) {
             const auto &header = headers.at(i);
-            if (header.first.compare("grpc-status", Qt::CaseInsensitive) == 0) {
+            if (header.first.toLower() == "grpc-status") {
                 // Preserve duplicate fields within a batch as invalid status.
                 if (hasStatus) status += ", ";
                 status += header.second;
                 hasStatus = true;
-            } else if (header.first.compare("grpc-message", Qt::CaseInsensitive) == 0) {
+            } else if (header.first.toLower() == "grpc-message") {
                 if (hasMessage) message += ", ";
                 message += header.second;
                 hasMessage = true;
