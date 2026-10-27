@@ -233,23 +233,6 @@ target_link_libraries(tst_w20 PRIVATE
 add_test(NAME w20 COMMAND tst_w20)
 set_tests_properties(w20 PROPERTIES TIMEOUT 30 LABELS "W20")
 
-if (TARGET myproto)
-    add_executable(tst_w22 tst_w22.cpp)
-    set_target_properties(tst_w22 PROPERTIES
-        AUTOMOC ON
-        CXX_STANDARD 17
-        CXX_STANDARD_REQUIRED ON
-        CXX_EXTENSIONS OFF
-    )
-    target_link_libraries(tst_w22 PRIVATE
-        myproto
-        Qt${QT_VERSION_MAJOR}::Core
-        Qt${QT_VERSION_MAJOR}::Test
-    )
-    add_test(NAME w22 COMMAND tst_w22)
-    set_tests_properties(w22 PROPERTIES TIMEOUT 15 LABELS "W22")
-endif()
-
 add_executable(tst_linux_vpn_launch
     tst_linux_vpn_launch.cpp
     "${PROJECT_SOURCE_DIR}/res/neko.qrc"

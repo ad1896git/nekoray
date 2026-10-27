@@ -184,7 +184,7 @@ struct Case {
     bool hasRpcOK;
 };
 
-const std::array<Case, 9> Cases{{
+const std::array<Case, 7> Cases{{
     {"Exit", 500, false},
     {"Start", 10000, true},
     {"Stop", 10000, true},
@@ -192,8 +192,6 @@ const std::array<Case, 9> Cases{{
     {"ListConnections", 500, false},
     {"Test", 15000, true},
     {"Test", 45000, true},
-    {"Update(Check)", 15000, true},
-    {"Update(Download)", 300000, true},
 }};
 
 struct Result {
@@ -241,16 +239,6 @@ Result invoke(NekoGui_rpc::Client &client, int index) {
             reply.ms() == 0;
         break;
     }
-    case 7:
-    case 8: {
-        libcore::UpdateReq request;
-        request.set_action(
-            index == 7 ? libcore::Check : libcore::Download);
-        const auto reply = client.Update(&result.ok, request);
-        result.empty =
-            reply.error().empty() && reply.assets_name().empty();
-        break;
-    }
     default:
         qFatal("Invalid RPC test case");
     }
@@ -267,7 +255,7 @@ std::vector<Result> runCalls(NekoGui_rpc::Client &client,
     }
 
     std::vector<Result> results(indices.size());
-    std::array<std::atomic_bool, 9> done;
+    std::array<std::atomic_bool, 7> done;
     for (auto &value : done) value.store(false);
 
     std::vector<std::thread> callers;
@@ -440,7 +428,7 @@ private slots:
             [&](const QString &message) { messages.append(message); },
             QStringLiteral("127.0.0.1:%1").arg(peer.server.serverPort()),
             QStringLiteral("test-token"));
-        const auto results = runCalls(client, {0, 1, 2, 3, 4, 5, 6, 7, 8}, 3000);
+        const auto results = runCalls(client, {0, 1, 2, 3, 4, 5, 6}, 3000);
         QCOMPARE(peer.responses, int(Cases.size()));
         QVERIFY2(messages.snapshot().isEmpty(),
                  qPrintable((messages.snapshot() + logs.snapshot()).join('\n')));
@@ -466,7 +454,7 @@ private slots:
                 .arg(peer.server.serverPort()),
             QStringLiteral("test-token"));
 
-        const std::vector<int> indices{0, 1, 2, 3, 4, 5, 6, 7, 8};
+        const std::vector<int> indices{0, 1, 2, 3, 4, 5, 6};
         const auto failed = runCalls(client, indices, 305000);
 
         QVERIFY(peer.requests > 0);

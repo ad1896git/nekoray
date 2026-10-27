@@ -106,10 +106,6 @@
         <translation>آمار اتصال</translation>
     </message>
     <message>
-        <source>Include Pre-release when checking update</source>
-        <translation>هنگام بررسی به‌روزرسانی، نسخه پیش‌انتشار را نیز لحاظ شود</translation>
-    </message>
-    <message>
         <source>System proxy format</source>
         <translation>فرمت پروکسی سیستم</translation>
     </message>
@@ -1080,18 +1076,6 @@ This needs to be run NekoBox with administrator privileges.</source>
         <translation>سرور</translation>
     </message>
     <message>
-        <source>Ads</source>
-        <translation>تبلیغات</translation>
-    </message>
-    <message>
-        <source>Document</source>
-        <translation>اسناد</translation>
-    </message>
-    <message>
-        <source>Update</source>
-        <translation>بروزرسانی</translation>
-    </message>
-    <message>
         <source>Tun Mode</source>
         <translation>حالتvpn</translation>
     </message>
@@ -1523,30 +1507,8 @@ End: %2</source>
         <translation>انتخاب کردن</translation>
     </message>
     <message>
-        <source>Update</source>
-        <translation>بروزرسانی</translation>
-    </message>
-    <message>
-        <source>No update</source>
-        <translation>بدون بروزرسانی جدید</translation>
-    </message>
-    <message>
-        <source>Update found: %1
-Release note:
-%2</source>
-        <translation type="unfinished"></translation>
-    </message>
-    <message>
-        <source>Open in browser</source>
-        <translation>در مرور گر باز شود</translation>
-    </message>
-    <message>
         <source>Close</source>
         <translation>بستن</translation>
-    </message>
-    <message>
-        <source>Update is ready, restart to install?</source>
-        <translation>به روز رسانی آماده است، برای نصب مجدد راه اندازی شود؟</translation>
     </message>
     <message>
         <source>As link</source>
@@ -1570,23 +1532,8 @@ How to update?</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <source>Clearing servers...</source>
-        <translation type="unfinished">پاک کردن سرورها</translation>
-    </message>
-    <message>
-        <source>Added %1 profiles:
-%2
-Deleted %3 Profiles:
-%4</source>
-        <translation type="unfinished"></translation>
-    </message>
-    <message>
         <source>Nothing</source>
         <translation type="unfinished">خالی</translation>
-    </message>
-    <message>
-        <source>Change of %1:</source>
-        <translation type="unfinished"></translation>
     </message>
     <message>
         <source>Chain Proxy</source>
@@ -1607,10 +1554,6 @@ Direct: %2</source>
     </message>
     <message>
         <source>Request with proxy but no profile started.</source>
-        <translation type="unfinished"></translation>
-    </message>
-    <message>
-        <source>Subscription request fininshed: %1</source>
         <translation type="unfinished"></translation>
     </message>
     <message>

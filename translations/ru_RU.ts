@@ -40,10 +40,6 @@
         <translation>URL теста загрузки</translation>
     </message>
     <message>
-        <source>Include Pre-release when checking update</source>
-        <translation>Проверять пре-релизы при обновлениях</translation>
-    </message>
-    <message>
         <source>System proxy format</source>
         <translation>Формат строки системного прокси</translation>
     </message>
@@ -1080,18 +1076,6 @@ This needs to be run NekoBox with administrator privileges.</source>
         <translation>Сервер</translation>
     </message>
     <message>
-        <source>Ads</source>
-        <translation>Реклама</translation>
-    </message>
-    <message>
-        <source>Document</source>
-        <translation>Документация</translation>
-    </message>
-    <message>
-        <source>Update</source>
-        <translation>Обновление</translation>
-    </message>
-    <message>
         <source>Tun Mode</source>
         <translation>Режим TUN</translation>
     </message>
@@ -1570,30 +1554,8 @@ How to update?</source>
         <translation>Запрашиваем подписку %1 ошибка: %2</translation>
     </message>
     <message>
-        <source>Subscription request fininshed: %1</source>
-        <translation>Запрос подписки завершен: %1</translation>
-    </message>
-    <message>
-        <source>Clearing servers...</source>
-        <translation>Очишаем серверы...</translation>
-    </message>
-    <message>
-        <source>Added %1 profiles:
-%2
-Deleted %3 Profiles:
-%4</source>
-        <translation>Добавлено %1 профилей:
-%2
-Удалено %3 профилей:
-%4</translation>
-    </message>
-    <message>
         <source>Nothing</source>
         <translation>Ничего</translation>
-    </message>
-    <message>
-        <source>Change of %1:</source>
-        <translation>Изменение %1:</translation>
     </message>
     <message>
         <source>Core exits too frequently, stop automatic restart this profile.</source>
@@ -1608,32 +1570,8 @@ Deleted %3 Profiles:
         <translation>Выбор</translation>
     </message>
     <message>
-        <source>Update</source>
-        <translation>Обновление</translation>
-    </message>
-    <message>
-        <source>No update</source>
-        <translation>Нет обновлений</translation>
-    </message>
-    <message>
-        <source>Update found: %1
-Release note:
-%2</source>
-        <translation>Найдено обновление: %1
-Примечания к выпуску:
-%2</translation>
-    </message>
-    <message>
-        <source>Open in browser</source>
-        <translation>Открыть в браузере</translation>
-    </message>
-    <message>
         <source>Close</source>
         <translation>Закрыть</translation>
-    </message>
-    <message>
-        <source>Update is ready, restart to install?</source>
-        <translation>Обновление готово, перезапуститься для установки?</translation>
     </message>
     <message>
         <source>Used: %1 Remain: %2 Expire: %3</source>

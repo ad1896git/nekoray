@@ -111,8 +111,6 @@ namespace {
 constexpr qint64 ExitTimeoutMs = 500;
 constexpr qint64 ControlTimeoutMs = 10000;
 constexpr qint64 PollTimeoutMs = 500;
-constexpr qint64 UpdateCheckTimeoutMs = 15000;
-constexpr qint64 UpdateDownloadTimeoutMs = 300000;
 
 QString rpcFailure(const QString &operation,
                    QNetworkReply::NetworkError status,
@@ -242,26 +240,6 @@ libcore::TestResp Client::Test(bool *rpcOK,
     *rpcOK = status == QNetworkReply::NoError;
     if (!*rpcOK) {
         onError(rpcFailure("Test", status, timeoutMs));
-    }
-    return reply;
-}
-
-libcore::UpdateResp Client::Update(bool *rpcOK,
-                                  const libcore::UpdateReq &request) {
-    libcore::UpdateResp reply;
-    const bool checking = request.action() == libcore::Check;
-    const qint64 timeoutMs =
-        checking ? UpdateCheckTimeoutMs : UpdateDownloadTimeoutMs;
-    const QString operation =
-        checking ? QStringLiteral("Update(Check)")
-                 : QStringLiteral("Update(Download)");
-
-    const auto status = default_grpc_channel->Call(
-        "Update", request, &reply, timeoutMs);
-
-    *rpcOK = status == QNetworkReply::NoError;
-    if (!*rpcOK) {
-        onError(rpcFailure(operation, status, timeoutMs));
     }
     return reply;
 }

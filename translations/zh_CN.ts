@@ -104,10 +104,6 @@
         <translation>连接统计</translation>
     </message>
     <message>
-        <source>Include Pre-release when checking update</source>
-        <translation>检查更新时包括 Pre-release 版本</translation>
-    </message>
-    <message>
         <source>Set custom icon</source>
         <translation>自定义图标</translation>
     </message>
@@ -1081,10 +1077,6 @@ This needs to be run NekoBox with administrator privileges.</source>
         <translation>服务器</translation>
     </message>
     <message>
-        <source>Ads</source>
-        <translation>推广</translation>
-    </message>
-    <message>
         <source>Type</source>
         <translation>类型</translation>
     </message>
@@ -1195,14 +1187,6 @@ This needs to be run NekoBox with administrator privileges.</source>
     <message>
         <source>Testing</source>
         <translation>正在测试</translation>
-    </message>
-    <message>
-        <source>Update</source>
-        <translation>更新</translation>
-    </message>
-    <message>
-        <source>Document</source>
-        <translation>文档</translation>
     </message>
     <message>
         <source>Select</source>
@@ -1532,16 +1516,6 @@ How to update?</source>
 如何处理？</translation>
     </message>
     <message>
-        <source>Added %1 profiles:
-%2
-Deleted %3 Profiles:
-%4</source>
-        <translation>增加了 %1 个配置：
-%2
-删除了 %3 个配置：
-%4</translation>
-    </message>
-    <message>
         <source>Proxy: %1
 Direct: %2</source>
         <translation>代理: %1
@@ -1556,32 +1530,8 @@ Direct: %2</source>
         <translation>找不到 &quot;%1&quot; 核心。请前往设置</translation>
     </message>
     <message>
-        <source>Update</source>
-        <translation>更新</translation>
-    </message>
-    <message>
-        <source>No update</source>
-        <translation>无更新</translation>
-    </message>
-    <message>
-        <source>Open in browser</source>
-        <translation>浏览器打开</translation>
-    </message>
-    <message>
         <source>Close</source>
         <translation>关闭</translation>
-    </message>
-    <message>
-        <source>Update is ready, restart to install?</source>
-        <translation>更新已下载好，重启应用？</translation>
-    </message>
-    <message>
-        <source>Update found: %1
-Release note:
-%2</source>
-        <translation>检测到更新: %1
-更新日志:
-%2</translation>
     </message>
     <message>
         <source>Unavailable</source>
@@ -1608,20 +1558,8 @@ Release note:
         <translation>无</translation>
     </message>
     <message>
-        <source>Change of %1:</source>
-        <translation>%1 变化:</translation>
-    </message>
-    <message>
         <source>Select</source>
         <translation>选择</translation>
-    </message>
-    <message>
-        <source>Clearing servers...</source>
-        <translation>正在清理服务器...</translation>
-    </message>
-    <message>
-        <source>Subscription request fininshed: %1</source>
-        <translation>订阅请求完成: %1</translation>
     </message>
     <message>
         <source>Core exited, restarting.</source>
