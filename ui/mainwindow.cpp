@@ -43,6 +43,11 @@
 #include <QProgressDialog>
 #include <QScopedValueRollback>
 #endif
+#ifdef Q_OS_MACOS
+#include "sys/MacVpnLaunch.hpp"
+#include <QEventLoop>
+#include <QUuid>
+#endif
 #include <unistd.h>
 #endif
 
@@ -772,7 +777,7 @@ void MainWindow::neko_set_spmode_vpn(bool enable, bool save) {
 #endif
     if (enable != NekoGui::dataStore->spmode_vpn) {
         if (enable) {
-            if (NekoGui::dataStore->vpn_internal_tun) {
+            if (NekoGui::UseInternalTun()) {
                 bool requestPermission = !NekoGui::IsAdmin();
                 if (requestPermission) {
 #ifdef Q_OS_LINUX
@@ -865,7 +870,7 @@ void MainWindow::neko_set_spmode_vpn(bool enable, bool save) {
                 }
             }
         } else {
-            if (NekoGui::dataStore->vpn_internal_tun) {
+            if (NekoGui::UseInternalTun()) {
                 // current core is sing-box
             } else {
                 if (!StopVPNProcess()) {
@@ -886,7 +891,7 @@ void MainWindow::neko_set_spmode_vpn(bool enable, bool save) {
     NekoGui::dataStore->spmode_vpn = enable;
     refresh_status();
 
-    if (NekoGui::dataStore->vpn_internal_tun && NekoGui::dataStore->started_id >= 0) neko_start(NekoGui::dataStore->started_id);
+    if (NekoGui::UseInternalTun() && NekoGui::dataStore->started_id >= 0) neko_start(NekoGui::dataStore->started_id);
 }
 
 void MainWindow::refresh_status(const QString &traffic_update) {
@@ -1972,6 +1977,8 @@ bool MainWindow::StartVPNProcess() {
 
     vpn_pid = process->processId();
     return true;
+#elif defined(Q_OS_MACOS)
+    return StartMacVPNProcess();
 #else
 #ifndef Q_OS_WIN
     if (vpnProcess_) {
@@ -2045,18 +2052,9 @@ bool MainWindow::StartVPNProcess() {
             MessageBoxWarning(tr("Error"), error);
     });
 
-#ifdef Q_OS_MACOS
-    const bool started = process->start(
-        QStringLiteral("osascript"),
-        {QStringLiteral("-e"),
-         QStringLiteral(
-             "do shell script \"%1\" with administrator privileges")
-             .arg("bash " + scriptPath)});
-#else
     const bool started = process->start(
         QStringLiteral("pkexec"),
         {QStringLiteral("bash"), scriptPath});
-#endif
 
     if (!started) {
         const auto error = process->errorString();
@@ -2147,6 +2145,8 @@ bool MainWindow::StopVPNProcess(bool unconditional) {
 
     vpn_pid = 0;
     return true;
+#elif defined(Q_OS_MACOS)
+    return StopMacVPNProcess(unconditional);
 #else
 #ifndef Q_OS_WIN
     auto *stoppingProcess = vpnProcess_;
@@ -2165,16 +2165,11 @@ bool MainWindow::StopVPNProcess(bool unconditional) {
         ok = ret == 0;
 #else
         QProcess p;
-#ifdef Q_OS_MACOS
-        p.start("osascript", {"-e", QStringLiteral("do shell script \"%1\" with administrator privileges")
-                                        .arg("pkill -2 -U 0 nekobox_core")});
-#else
         if (unconditional) {
             p.start("pkexec", {"killall", "-2", "nekobox_core"});
         } else {
             p.start("pkexec", {"pkill", "-2", "-P", Int2String(vpn_pid)});
         }
-#endif
         p.waitForFinished();
         ok = p.exitCode() == 0;
 #endif
@@ -2190,3 +2185,246 @@ bool MainWindow::StopVPNProcess(bool unconditional) {
     return true;
 #endif
 }
+
+#ifdef Q_OS_MACOS
+// macOS Tun (PR-22): one administrator prompt per start; stop, quit and crash
+// cleanup need no prompt. See res/vpn/vpn-run-root-macos.sh.
+bool MainWindow::StartMacVPNProcess() {
+    if (vpnProcess_) {
+        if (vpnProcess_->stopRequested()) {
+            MessageBoxWarning(
+                tr("Error"),
+                tr("The previous VPN process is still stopping."));
+            return false;
+        }
+        return true;
+    }
+
+    QString error;
+    const QString script = NekoGui_sys::ReadMacVpnScript(error);
+    if (script.isEmpty()) {
+        MessageBoxWarning(tr("Error"), error);
+        return false;
+    }
+
+    auto files = std::make_shared<NekoGui_sys::ExternalTempFiles>();
+    QString configPath = NekoGui::WriteVPNSingBoxConfig(files);
+    if (configPath.isEmpty()) {
+        MessageBoxWarning(
+            tr("Error"), tr("Failed to write private Tun configuration"));
+        return false;
+    }
+
+    QStringList assetArguments;
+    const auto config = NekoGui_sys::PrepareMacVpnConfig(
+        ReadFileText(configPath).toUtf8(), QDir::currentPath(), assetArguments, error);
+    if (config.isEmpty()) {
+        MessageBoxWarning(tr("Error"), error);
+        return false;
+    }
+    configPath = NekoGui_sys::WriteLinuxVpnConfig(*files, config, error);
+    if (configPath.isEmpty()) {
+        MessageBoxWarning(tr("Error"), error);
+        return false;
+    }
+    const auto interfaceName = NekoGui_runtime::TunInterfaceName(config);
+    if (!NekoGui_sys::IsMacTunInterfaceName(interfaceName)) {
+        MessageBoxWarning(
+            tr("Error"),
+            tr("Cannot determine a single utun interface name "
+               "from the generated VPN configuration."));
+        return false;
+    }
+
+    const QString core = NekoGui::FindNekoBoxCoreRealPath();
+    const QString coreSha = NekoGui_sys::Sha256File(core, error);
+    const QString configSha =
+        coreSha.isEmpty() ? QString() : NekoGui_sys::Sha256File(configPath, error);
+    if (coreSha.isEmpty() || configSha.isEmpty()) {
+        MessageBoxWarning(tr("Error"), error);
+        return false;
+    }
+
+    QStringList arguments{
+        QStringLiteral("start"),
+        QString::number(::getuid()),
+        QString::number(QCoreApplication::applicationPid()),
+        core,
+        coreSha,
+        configPath,
+        configSha,
+        interfaceName,
+        QUuid::createUuid().toString(QUuid::WithoutBraces),
+    };
+    arguments.append(assetArguments);
+
+    auto *process = new NekoGui_runtime::VpnProcess(
+        [interfaceName] {
+            return QNetworkInterface::interfaceFromName(
+                       interfaceName).isValid();
+        },
+        this);
+    process->setCaptureStandardError(true);
+    process->setStandardInput(
+        NekoGui_sys::MacVpnAppleScript(script, arguments, true).toUtf8());
+    vpnProcess_ = process;
+    macVpnFiles_ = files;
+
+    connect(process, &NekoGui_runtime::VpnProcess::ready,
+            this, [this, process] {
+        if (vpnProcess_ != process) return;
+        MW_show_log(tr("Tun is ready. Tun core log: %1/core.log")
+                        .arg(QString::fromLatin1(NekoGui_sys::kMacVpnRunDir)));
+        refresh_status();
+    });
+
+    connect(process, &NekoGui_runtime::VpnProcess::ended,
+            this, [this, process](const QString &launchError) {
+        if (vpnProcess_ != process) {
+            process->deleteLater();
+            return;
+        }
+
+        const bool stopping = process->stopRequested();
+        const QByteArray launcherError = process->capturedStandardError();
+        const auto result = NekoGui_sys::ClassifyMacVpnExit(
+            process->exitCode(), process->exitStatus(), launcherError,
+            stopping);
+
+        // Clear ownership before UI callbacks or a modal warning can
+        // re-enter this window. Releasing the files also removes the
+        // launch config, which stops a supervisor that is still running.
+        vpnProcess_ = nullptr;
+        vpn_pid = 0;
+        macVpnFiles_.reset();
+        process->deleteLater();
+
+        // A stop the GUI requested is completed by its caller.
+        if (!stopping) neko_set_spmode_vpn(false);
+
+        switch (result.kind) {
+            case NekoGui_sys::MacVpnExit::Stopped:
+                if (!stopping) MW_show_log(tr("Tun stopped."));
+                break;
+            case NekoGui_sys::MacVpnExit::Cancelled:
+                MW_show_log(tr("Tun authorization was cancelled; "
+                               "Tun mode remains off."));
+                break;
+            default: {
+                QString message = result.message;
+                if (launcherError.isEmpty() && !launchError.isEmpty())
+                    message = launchError;
+                MW_show_log(message);
+                MessageBoxWarning(tr("Error"), message);
+                break;
+            }
+        }
+    });
+
+    if (!process->start(QStringLiteral("/usr/bin/osascript"), {})) {
+        const auto startError = process->errorString();
+        vpnProcess_ = nullptr;
+        vpn_pid = 0;
+        macVpnFiles_.reset();
+        process->deleteLater();
+        MessageBoxWarning(tr("Error"), startError);
+        return false;
+    }
+
+    vpn_pid = process->processId();
+    return true;
+}
+
+bool MainWindow::StopMacVPNProcess(bool unconditional) {
+    if (vpnProcess_) {
+        auto *process = vpnProcess_;
+        process->setStopRequested(true);
+        // Deleting the launch config is the stop request to the supervisor.
+        if (macVpnFiles_) macVpnFiles_->clear();
+        // Authorization may still be pending: dismiss it. If it was granted
+        // at this instant, the supervisor sees the missing config and stops.
+        if (!process->isReady()) process->abort();
+
+        QEventLoop loop;
+        QTimer timer;
+        timer.setSingleShot(true);
+        connect(process, &NekoGui_runtime::VpnProcess::ended,
+                &loop, &QEventLoop::quit, Qt::QueuedConnection);
+        connect(&timer, &QTimer::timeout, &loop, &QEventLoop::quit);
+        timer.start(20000);
+        if (vpnProcess_ == process) loop.exec();
+
+        if (vpnProcess_ == process) {
+            MessageBoxWarning(
+                tr("Error"),
+                tr("Tun did not stop within 20 seconds. It stops "
+                   "automatically when NekoBox quits."));
+            return false;
+        }
+    }
+    vpn_pid = 0;
+    if (!unconditional) return true;
+    return ResetMacVPNState();
+}
+
+// Troubleshooting reset: stops only a recorded, identity-checked stale
+// instance. Requires an administrator prompt.
+bool MainWindow::ResetMacVPNState() {
+    QString error;
+    const QString script = NekoGui_sys::ReadMacVpnScript(error);
+    if (script.isEmpty()) {
+        MessageBoxWarning(tr("Error"), error);
+        return false;
+    }
+
+    QProcess process;
+    QEventLoop loop;
+    QTimer timer;
+    timer.setSingleShot(true);
+    bool timedOut = false;
+    connect(&process,
+            QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
+            &loop, &QEventLoop::quit);
+    connect(&timer, &QTimer::timeout, &loop, [&] {
+        timedOut = true;
+        process.kill();
+        loop.quit();
+    });
+
+    process.start(QStringLiteral("/usr/bin/osascript"), QStringList{});
+    if (!process.waitForStarted(3000)) {
+        MessageBoxWarning(tr("Error"), process.errorString());
+        return false;
+    }
+    process.write(NekoGui_sys::MacVpnAppleScript(
+                      script,
+                      {QStringLiteral("cleanup"), QString::number(::getuid())},
+                      true)
+                      .toUtf8());
+    process.closeWriteChannel();
+    timer.start(120000);
+    if (process.state() != QProcess::NotRunning) loop.exec();
+    if (process.state() != QProcess::NotRunning) {
+        process.kill();
+        process.waitForFinished(1000);
+    }
+
+    if (timedOut) {
+        MessageBoxWarning(tr("Error"), tr("Tun reset timed out."));
+        return false;
+    }
+    const auto result = NekoGui_sys::ClassifyMacVpnExit(
+        process.exitCode(), process.exitStatus(),
+        process.readAllStandardError(), false);
+    switch (result.kind) {
+        case NekoGui_sys::MacVpnExit::Stopped:
+            MessageBoxInfo(software_name, tr("Tun state has been reset."));
+            return true;
+        case NekoGui_sys::MacVpnExit::Cancelled:
+            return false;
+        default:
+            MessageBoxWarning(tr("Error"), result.message);
+            return false;
+    }
+}
+#endif

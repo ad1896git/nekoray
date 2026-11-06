@@ -420,7 +420,7 @@ namespace NekoGui {
         }
 
         // tun-in
-        if (dataStore->vpn_internal_tun && dataStore->spmode_vpn && !status->forTest) {
+        if (UseInternalTun() && dataStore->spmode_vpn && !status->forTest) {
             QJsonObject inboundObj;
             inboundObj["tag"] = "tun-in";
             inboundObj["type"] = "tun";
@@ -570,7 +570,7 @@ namespace NekoGui {
             };
 
         // Fakedns
-        if (dataStore->fake_dns && dataStore->vpn_internal_tun && dataStore->spmode_vpn && !status->forTest) {
+        if (dataStore->fake_dns && UseInternalTun() && dataStore->spmode_vpn && !status->forTest) {
             dnsServers += QJsonObject{
                 {"tag", "dns-fake"},
                 {"address", "fakeip"},
@@ -612,7 +612,7 @@ namespace NekoGui {
         }
 
         // fakedns rule
-        if (dataStore->fake_dns && dataStore->vpn_internal_tun && dataStore->spmode_vpn && !status->forTest) {
+        if (dataStore->fake_dns && UseInternalTun() && dataStore->spmode_vpn && !status->forTest) {
             dnsRules += QJsonObject{
                 {"inbound", "tun-in"},
                 {"server", "dns-fake"},
@@ -670,7 +670,7 @@ namespace NekoGui {
         };
 
         // tun user rule
-        if (dataStore->vpn_internal_tun && dataStore->spmode_vpn && !status->forTest) {
+        if (UseInternalTun() && dataStore->spmode_vpn && !status->forTest) {
             auto match_out = dataStore->vpn_rule_white ? "proxy" : "bypass";
 
             QString process_name_rule = dataStore->vpn_rule_process.trimmed();
@@ -791,9 +791,9 @@ namespace NekoGui {
             dataStore->inbound_auth->username,
             dataStore->inbound_auth->password);
         // write config
-#ifdef Q_OS_LINUX
+#if defined(Q_OS_LINUX) || defined(Q_OS_MACOS)
         if (!files) {
-            qWarning("Linux VPN configuration has no temporary-file owner.");
+            qWarning("VPN configuration has no temporary-file owner.");
             return {};
         }
 
@@ -815,7 +815,8 @@ namespace NekoGui {
     }
 
     QString WriteVPNLinuxScript(const QString &configPath) {
-#if defined(Q_OS_WIN) || defined(Q_OS_LINUX)
+#if defined(Q_OS_WIN) || defined(Q_OS_LINUX) || defined(Q_OS_MACOS)
+        // macOS uses the embedded vpn-run-root-macos.sh (sys/MacVpnLaunch).
         Q_UNUSED(configPath)
         return {};
 #else

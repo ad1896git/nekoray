@@ -15,6 +15,10 @@ namespace NekoGui {
     QString FindNekoBoxCoreRealPath();
 
     bool IsAdmin();
+
+    // Effective single-core Tun setting. On macOS the separate privileged Tun
+    // process is used unless the GUI itself runs as root.
+    bool UseInternalTun();
 } // namespace NekoGui
 
 #define ROUTES_PREFIX_NAME QStringLiteral("routes_box")

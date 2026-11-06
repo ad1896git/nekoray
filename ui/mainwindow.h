@@ -27,6 +27,7 @@
 namespace NekoGui_sys {
     class CoreProcess;
     class TimedProcess;
+    class ExternalTempFiles;
 }
 
 namespace NekoGui_runtime {
@@ -158,6 +159,14 @@ private:
 #endif
 #ifndef Q_OS_WIN
     NekoGui_runtime::VpnProcess *vpnProcess_ = nullptr;
+#endif
+#ifdef Q_OS_MACOS
+    // Private launch config of the running Tun; deleting it stops the
+    // root supervisor (see res/vpn/vpn-run-root-macos.sh).
+    std::shared_ptr<NekoGui_sys::ExternalTempFiles> macVpnFiles_;
+    bool StartMacVPNProcess();
+    bool StopMacVPNProcess(bool unconditional);
+    bool ResetMacVPNState();
 #endif
     //
     bool qvLogAutoScoll = true;
