@@ -1,0 +1,24 @@
+name: diag-w07-red
+
+# Diagnostic only, never for main: runs the new W07 sandbox against the
+# pre-fix vpn-run-root.sh to show the gate-wait regression case fails.
+on:
+  push:
+    branches:
+      - diag/w07-ready-gate-red
+
+permissions:
+  contents: read
+
+jobs:
+  w07-old-script:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run W07 sandbox against the old script
+        shell: bash
+        run: |
+          bash --version | head -n 1
+          timeout 300 python3 tests/test_linux_vpn_script.py \
+            res/vpn/vpn-run-root.sh
