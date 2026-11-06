@@ -303,3 +303,10 @@ if(APPLE)
     set_tests_properties(pr22_mac_vpn_script PROPERTIES
         TIMEOUT 180 RUN_SERIAL TRUE LABELS "PR22;macOS;sandbox")
 endif()
+
+if (UNIX)
+    find_program(NKR_BUILD_CORE_BASH bash REQUIRED)
+    add_test(NAME build_core_sources
+        COMMAND "${NKR_BUILD_CORE_BASH}" "${CMAKE_CURRENT_SOURCE_DIR}/test_build_core.sh")
+    set_tests_properties(build_core_sources PROPERTIES TIMEOUT 30)
+endif ()

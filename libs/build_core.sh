@@ -51,9 +51,10 @@ verify_source() {
 }
 
 prepare_source() {
-    local name=$1 expected=$2 base=$3 patch=${4:-} actual status
+    local name=$1 expected=$2 base=$3 patch=${4:-} actual status fresh=0
     if [[ ! -e $src_dir/$name ]]; then
         git clone --no-checkout "${base%/}/$name.git" "$src_dir/$name"
+        fresh=1
     else
         git -C "$src_dir/$name" rev-parse --git-dir >/dev/null 2>&1 || die "not a Git checkout: $src_dir/$name"
         status=$(git -C "$src_dir/$name" status --porcelain)
@@ -71,6 +72,9 @@ prepare_source() {
             verify_source "$name" "$expected" "$patch"
             die "failed to fetch $name at $expected"
         fi
+    fi
+    # --no-checkout leaves an empty index even when clone HEAD equals the pin.
+    if [[ $fresh == 1 || $actual != "$expected" ]]; then
         git -C "$src_dir/$name" checkout --detach "$expected"
     fi
     verify_source "$name" "$expected" "$patch"
