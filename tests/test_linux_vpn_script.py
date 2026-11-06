@@ -477,9 +477,6 @@ def run_tests():
     assert owner.wait(timeout=8) == 0
     root_case.clean()
 
-    # Do not reuse the earlier UID fixture's cores marker: ready() could
-    # otherwise observe the new gated child before the fake core has run.
-    case = Case(PKEXEC_UID="1000")
     owner = case.spawn()
     identity = case.ready()
     owner.kill()
