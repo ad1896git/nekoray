@@ -276,3 +276,13 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
 else()
     message(STATUS "W07 Linux sandbox is not registered on this platform")
 endif()
+
+add_executable(tst_coordinated_quit tst_coordinated_quit.cpp
+    ${PROJECT_SOURCE_DIR}/main/NekoGui_UiThread.cpp)
+target_include_directories(tst_coordinated_quit PRIVATE "${PROJECT_SOURCE_DIR}")
+target_link_libraries(tst_coordinated_quit PRIVATE Qt${QT_VERSION_MAJOR}::Widgets Threads::Threads)
+foreach(route IN ITEMS quit exit term int burst)
+    add_test(NAME coordinated_quit_${route} COMMAND tst_coordinated_quit ${route})
+    set_tests_properties(coordinated_quit_${route} PROPERTIES
+        TIMEOUT 10 ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+endforeach()

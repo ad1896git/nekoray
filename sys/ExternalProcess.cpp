@@ -147,6 +147,7 @@ namespace NekoGui_sys {
     }
 
     void CoreProcess::Restart() {
+        if (NekoGui::dataStore->prepare_exit) return;
         restarting = true;
         QProcess::kill();
         QProcess::waitForFinished(500);

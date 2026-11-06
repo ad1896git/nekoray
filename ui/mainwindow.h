@@ -59,6 +59,8 @@ public:
 
     void neko_stop(bool crash = false, bool sem = false);
 
+    bool coordinatedShutdown();
+
     void neko_set_spmode_system_proxy(bool enable, bool save = true);
 
     void neko_set_spmode_vpn(bool enable, bool save = true);
@@ -147,7 +149,7 @@ private:
     QShortcut *shortcut_ctrl_f = new QShortcut(QKeySequence("Ctrl+F"), this);
     QShortcut *shortcut_esc = new QShortcut(QKeySequence("Esc"), this);
     //
-    NekoGui_sys::CoreProcess *core_process;
+    NekoGui_sys::CoreProcess *core_process = nullptr;
     qint64 vpn_pid = 0;
 #ifdef Q_OS_LINUX
     QPointer<QProcess> linux_vpn_process;
@@ -173,7 +175,8 @@ private:
     bool select_mode = false;
     QSemaphore mu_starting{1};
     QSemaphore mu_stopping{1};
-    QMutex mu_exit;
+    bool shutdownInProgress_ = false;
+    bool shutdownComplete_ = false;
     QSemaphore sem_stopped;
     int exit_reason = 0;
 
