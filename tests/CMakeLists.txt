@@ -292,3 +292,33 @@ if (UNIX)
         COMMAND "${NKR_BUILD_CORE_BASH}" "${CMAKE_CURRENT_SOURCE_DIR}/test_build_core.sh")
     set_tests_properties(build_core_sources PROPERTIES TIMEOUT 30)
 endif ()
+
+# Execute the real main/MainWindow/CoreProcess integration with synthetic RPCs.
+# The probe only arranges pending profile timers; shutdown is production code.
+if(UNIX AND NOT NKR_NO_GRPC)
+    find_package(Python3 REQUIRED COMPONENTS Interpreter)
+    add_executable(tst_coordinated_gui coordinated_gui_probe.cpp
+        "${PROJECT_SOURCE_DIR}/res/neko.qrc"
+        "${PROJECT_SOURCE_DIR}/res/theme/feiyangqingyun/qss.qrc")
+    if(APPLE)
+        enable_language(OBJCXX)
+        target_sources(tst_coordinated_gui PRIVATE "${PROJECT_SOURCE_DIR}/main/MacQuitHandler.mm")
+    endif()
+    set_target_properties(tst_coordinated_gui PROPERTIES AUTORCC ON)
+    target_link_libraries(tst_coordinated_gui PRIVATE nkr_runtime)
+    foreach(mode IN ITEMS idle pending_start pending_stop)
+        foreach(route IN ITEMS term int)
+            add_test(NAME coordinated_gui_${mode}_${route}
+                COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/test_coordinated_gui.py"
+                    $<TARGET_FILE:tst_coordinated_gui> ${mode} ${route})
+            set_tests_properties(coordinated_gui_${mode}_${route} PROPERTIES TIMEOUT 25 RUN_SERIAL TRUE)
+        endforeach()
+    endforeach()
+endif()
+
+add_executable(tst_shutdown_dialogs tst_shutdown_dialogs.cpp)
+target_include_directories(tst_shutdown_dialogs PRIVATE "${PROJECT_SOURCE_DIR}")
+target_link_libraries(tst_shutdown_dialogs PRIVATE Qt${QT_VERSION_MAJOR}::Widgets)
+add_test(NAME coordinated_quit_pending_dialogs COMMAND tst_shutdown_dialogs)
+set_tests_properties(coordinated_quit_pending_dialogs PROPERTIES
+    TIMEOUT 5 ENVIRONMENT "QT_QPA_PLATFORM=offscreen")

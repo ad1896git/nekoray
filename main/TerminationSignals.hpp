@@ -3,12 +3,12 @@
 #include <QObject>
 #include <QTimer>
 #include <csignal>
+#include <cerrno>
 #include <functional>
 #include <utility>
 
 #ifdef Q_OS_UNIX
 #include <QSocketNotifier>
-#include <cerrno>
 #include <fcntl.h>
 #include <unistd.h>
 #endif
@@ -69,7 +69,7 @@ public:
     }
 
 private:
-    static void handle(int) {
+    static void handle(int signal) {
 #ifdef Q_OS_UNIX
         const int savedErrno = errno;
         const char byte = 1;
@@ -80,7 +80,14 @@ private:
         }
         errno = savedErrno;
 #else
+        // MSVC resets CRT handlers before calling them. Rearm immediately,
+        // not at the next Qt poll. Windows SIGTERM is a CRT raise() route;
+        // this does not promise cleanup after TerminateProcess/console close.
+        // https://learn.microsoft.com/cpp/c-runtime-library/reference/signal
+        const int savedErrno = errno;
+        std::signal(signal, handle);
         requested_ = 1;
+        errno = savedErrno;
 #endif
     }
 

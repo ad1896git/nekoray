@@ -411,6 +411,8 @@ bool MainWindow::coordinatedShutdown() {
     if (shutdownInProgress_) return false;
     QScopedValueRollback<bool> inProgress(shutdownInProgress_, true);
     NekoGui::dataStore->prepare_exit = true;
+    QScopedValueRollback<bool> dialogs(ShutdownDialogs::suppressed, true);
+    MessageBoxTimer::cancelAll();
 
     // Preserve VPN/system-proxy teardown and refuse to quit if VPN stop fails.
     neko_set_spmode_system_proxy(false, false);
@@ -446,6 +448,7 @@ bool MainWindow::coordinatedShutdown() {
     }
     shutdownUiThreadDispatcher();
     shutdownComplete_ = true;
+    dialogs.commit();
     return true;
 }
 
@@ -554,8 +557,6 @@ void MainWindow::neko_start(int _id) {
                                          QMessageBox::Yes | QMessageBox::No, this);
     connect(restartMsgbox, &QMessageBox::accepted, this, [=] { MW_dialog_message("", "RestartProgram"); });
     auto restartMsgboxTimer = new MessageBoxTimer(this, restartMsgbox, 5000);
-    // A modal exec() during quit would outlive the shutdown wait deadline.
-    if (NekoGui::dataStore->prepare_exit) restartMsgboxTimer->cancel();
 
     runOnNewThread([=] {
         bool canStart = true;
@@ -658,8 +659,6 @@ void MainWindow::neko_stop(bool crash, bool sem) {
                                          QMessageBox::Yes | QMessageBox::No, this);
     connect(restartMsgbox, &QMessageBox::accepted, this, [=] { MW_dialog_message("", "RestartProgram"); });
     auto restartMsgboxTimer = new MessageBoxTimer(this, restartMsgbox, 5000);
-    // A modal exec() during quit would outlive the shutdown wait deadline.
-    if (NekoGui::dataStore->prepare_exit) restartMsgboxTimer->cancel();
 
     runOnNewThread([=] {
         // do stop

@@ -16,12 +16,21 @@ int main(int argc, char **argv) {
     int cleanups = 0;
     app.setShutdownHandler([&] {
         if (cleaned) return true;
+        if (cleanups) return false;
+        ++cleanups;
+        if (mode == "burst") {
+            // Repeat after cleanup begins, while the nested loop pumps events.
+            QTimer::singleShot(10, &context, [] {
+                for (int i = 0; i < 100; ++i) std::raise(i % 2 ? SIGTERM : SIGINT);
+            });
+        }
         if (dispatcherStopped || QThread::currentThread() != app.thread()) failed = true;
         // Cleanup must be able to deliver queued UI work before shutdown.
         bool delivered = false;
         QEventLoop loop;
         UiThreadResult result = UiThreadResult::NotCommitted;
         std::thread worker([&] {
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
             result = runOnUiThreadAndWait([&] {
                 delivered = true;
                 return UiThreadResult::Committed;
@@ -31,7 +40,6 @@ int main(int argc, char **argv) {
         loop.exec();
         worker.join();
         if (!delivered || result != UiThreadResult::Committed) failed = true;
-        ++cleanups;
         cleaned = true;
         return true;
     });
