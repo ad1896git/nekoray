@@ -43,20 +43,28 @@ STATE="$RUN_DIR/nekoray-vpn.state"
 exec 9>>"$LOCKFILE" || die 74 "cannot open lock"
 chmod 600 "$LOCKFILE" 9>&- || die 74 "cannot protect lock"
 
-proc_token() {
+# Sets TOKEN to "<pid>:<start time>" without forking, so callers that must
+# react to signals never wait for a command substitution (see gate below).
+read_token() {
     local data rest
     local -a fields
+    TOKEN=
     [[ "$1" =~ ^[0-9]+$ ]] && (( $1 > 1 )) || return 1
     IFS= read -r data <"/proc/$1/stat" 2>/dev/null || return 1
     rest=${data##*) }
     read -r -a fields <<<"$rest"
     [[ ${#fields[@]} -ge 20 && "${fields[0]}" != Z ]] || return 1
-    printf '%s:%s\n' "$1" "${fields[19]}"
+    TOKEN="$1:${fields[19]}"
+}
+
+proc_token() {
+    read_token "$1" || return 1
+    printf '%s\n' "$TOKEN"
 }
 
 same_process() {
     [[ "$1" =~ ^[0-9]+:[0-9]+$ ]] || return 1
-    [[ "$(proc_token "${1%%:*}")" = "$1" ]]
+    read_token "${1%%:*}" && [[ "$TOKEN" = "$1" ]]
 }
 
 read_record() {
@@ -261,10 +269,20 @@ r6 -C "$CMT" 2>/dev/null || {
 
 (
     exec 9>&-
-    trap - INT TERM HUP
+    # A stop request that reaches this pre-exec child must end it, never be
+    # lost. Without job control, bash discards a SIGINT that arrives while it
+    # waits for a foreground child (sleep, command substitution) that then
+    # exits normally, and the core would start anyway. So poll with builtins
+    # only, wait for the delay with the wait builtin, and exit from a trap.
+    # exec resets these caught signals to their defaults for the core.
+    set +m
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+    trap 'exit 129' HUP
     while [[ ! -e "$GATE" ]]; do
         same_process "$SUP" || exit 75
-        sleep 0.02
+        sleep 0.02 &
+        wait "$!"
     done
     exec "$CORE" run -c "$CONFIG"
 ) &

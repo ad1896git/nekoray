@@ -102,32 +102,53 @@ if mode in ("run", "decoy"):
         os._exit(0)
     for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
         signal.signal(sig, stop)
+    record("handled", "%d\n" % os.getpid())
     while True:
         time.sleep(0.05)
 if mode == "stubborn":
     signal.signal(signal.SIGINT, signal.SIG_IGN)
     signal.signal(signal.SIGTERM, lambda signum, frame: os._exit(0))
+    record("handled", "%d\n" % os.getpid())
     while True:
         time.sleep(0.05)
 sys.exit(64)
 '''
 
 FAKE_MV = r'''#!/bin/bash
-if [[ "${HOLD_CORE_RECORD:-0}" = 1 ]] &&
+# HOLD_CORE_RECORD=1: hold the CORE record until the supervisor dies, then fail.
+# HOLD_CORE_RECORD=2: hold it until the test creates release-mv, then move.
+if [[ "${HOLD_CORE_RECORD:-0}" != 0 ]] &&
    grep -q '^CORE=[0-9]' "$1"; then
     sed -n 's/^CORE=//p' "$1" >"$FAKE_STATE/blocked-core"
     printf '%s\n' "$$" >"$FAKE_STATE/blocked-mv"
+    if [[ "$HOLD_CORE_RECORD" = 2 ]]; then
+        while [[ ! -e "$FAKE_STATE/release-mv" ]]; do /bin/sleep 0.02; done
+        exec /bin/mv "$@"
+    fi
     parent=$PPID
-    while kill -0 "$parent" 2>/dev/null; do sleep 0.02; done
+    while kill -0 "$parent" 2>/dev/null; do /bin/sleep 0.02; done
     exit 74
 fi
 exec /bin/mv "$@"
+'''
+
+# HOLD_GATE_SLEEP=1 holds every sleep until release-sleep exists. While the
+# core record is held, the gate loop is the only caller, so this pins the
+# pre-exec child inside a sleep: the window where bash used to drop SIGINT.
+FAKE_SLEEP = r'''#!/bin/bash
+if [[ "${HOLD_GATE_SLEEP:-0}" = 1 ]]; then
+    printf '%s\n' "$$" >>"$FAKE_STATE/held-sleep"
+    while [[ ! -e "$FAKE_STATE/release-sleep" ]]; do /bin/sleep 0.02; done
+    exit 0
+fi
+exec /bin/sleep "$@"
 '''
 
 for name, contents in (
     ("iptables", FAKE_IPTABLES),
     ("ip6tables", FAKE_IPTABLES),
     ("mv", FAKE_MV),
+    ("sleep", FAKE_SLEEP),
 ):
     path = BIN / name
     path.write_text(contents)
@@ -165,14 +186,6 @@ def until(predicate, timeout=8):
             return
         time.sleep(0.01)
     raise AssertionError("timed out waiting for sandbox condition")
-
-
-def kill_orphan(identity):
-    # Sandbox cleanup is verified with the orphan already gone. Delivering
-    # INT to an orphaned core is not reliable on CI runners, so the test
-    # SIGKILLs it instead; the signal-forwarding case still covers INT.
-    os.kill(int(identity.split(":")[0]), signal.SIGKILL)
-    until(lambda: not alive(identity))
 
 
 def read_when_ready(path):
@@ -241,15 +254,24 @@ class Case:
         return dict(line.split("=", 1) for line in path.read_text().splitlines())
 
     def ready(self):
+        # Ready means the recorded core itself has installed its handlers.
+        # A "cores" file is not enough: a reused case keeps earlier owners'
+        # entries while the recorded pid may still be the script's pre-exec
+        # child, which is not the core yet.
         def check():
-            record = self.record()
-            core = record.get("CORE")
-            if not core or not (self.root / "cores").exists():
+            core = self.record().get("CORE")
+            if not core:
                 return False
             remember(core)
-            return alive(core)
+            handled = self.root / "handled"
+            return (alive(core) and handled.exists() and
+                    core.split(":")[0] in handled.read_text().split())
         until(check)
         return self.record()["CORE"]
+
+    def signals(self):
+        path = self.root / "signals"
+        return len(path.read_text().splitlines()) if path.exists() else 0
 
     def rules(self, family):
         path = self.root / (family + ".json")
@@ -342,11 +364,12 @@ def run_tests():
     identity = case.ready()
     owner.kill()
     owner.wait(timeout=5)
-    kill_orphan(identity)
+    assert alive(identity)
     assert case.rules("iptables")
     cleaners = [case.spawn(["--stop"]) for _ in range(5)]
     assert all(process.wait(timeout=10) == 0 for process in cleaners)
     until(lambda: not alive(identity))
+    assert case.signals() == 1
     case.clean()
     case.run(parameters=["--stop"])
     case.run(parameters=["--terminate"])
@@ -357,9 +380,10 @@ def run_tests():
     identity = case.ready()
     owner.kill()
     owner.wait(timeout=5)
-    kill_orphan(identity)
+    assert alive(identity)
     case.run(FAKE_MODE="quick")
     assert not alive(identity)
+    assert case.signals() == 1
     case.clean()
 
     # A nonresponsive orphan blocks replacement and retains its state/rules.
@@ -410,8 +434,9 @@ def run_tests():
     identity = case.ready()
     owner.kill()
     owner.wait(timeout=5)
-    kill_orphan(identity)
     case.run(parameters=["--stop"])
+    assert not alive(identity)
+    assert case.signals() == 1
     assert case.rules("iptables") == foreign
     assert not case.rules("ip6tables")
     assert not case.record()
@@ -467,15 +492,13 @@ def run_tests():
     assert owner.wait(timeout=8) == 0
     case.clean()
 
-    # Fresh case: the reused one still holds cores from the previous owner.
-    root_case = Case(PKEXEC_UID="0")
-    owner = root_case.spawn()
-    root_case.ready()
-    # Wait for the release gate so the core is running before the signal.
-    until(lambda: any(root_case.root.glob("nekoray-vpn.ready.*")))
-    root_case.run(parameters=["--terminate"])
+    # The case is reused on purpose: its cores file already lists the first
+    # owner, so ready() must wait for the new core's own handlers.
+    owner = case.spawn()
+    case.ready()
+    case.run(parameters=["--terminate"], PKEXEC_UID="0")
     assert owner.wait(timeout=8) == 0
-    root_case.clean()
+    case.clean()
 
     owner = case.spawn()
     identity = case.ready()
@@ -483,8 +506,27 @@ def run_tests():
     owner.wait(timeout=5)
     case.run(expected=77, parameters=["--stop"], PKEXEC_UID="1001")
     assert alive(identity)
-    kill_orphan(identity)
     case.run(parameters=["--stop"], PKEXEC_UID="1000")
+    assert not alive(identity)
+    assert case.signals() == 3
+    case.clean()
+
+    # A stop request that reaches the pre-exec child while it sleeps in the
+    # gate loop must end it. bash used to drop that SIGINT: the child kept
+    # polling for a gate that never came and the supervisor never exited.
+    case = Case(HOLD_CORE_RECORD="2", HOLD_GATE_SLEEP="1")
+    owner = case.spawn()
+    child = read_when_ready(case.root / "blocked-core")
+    remember(child)
+    read_when_ready(case.root / "held-sleep")
+    owner.send_signal(signal.SIGINT)
+    (case.root / "release-mv").touch()
+    try:
+        assert owner.wait(timeout=8) == 130
+    finally:
+        (case.root / "release-sleep").touch()
+    assert not alive(child)
+    assert not (case.root / "cores").exists()
     case.clean()
 
     # Both contenders remain live unless rejected, making double starts visible.

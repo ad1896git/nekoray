@@ -203,6 +203,32 @@ jobs:
           /usr/bin/ctest --test-dir "$NKR_BUILD_DIR" \
             --output-on-failure --no-tests=error --verbose
 
+  linux-w07-repeat:
+    # The W07 sandbox once failed only on some runs; repeat it on two bash
+    # versions so a timing-dependent regression shows up here.
+    name: linux-w07-repeat (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, ubuntu-24.04]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run W07 sandbox repeatedly
+        run: |
+          bash --version | head -n 1
+          python3 --version
+          for round in 1 2 3 4 5; do
+            echo "::group::W07 sandbox round $round"
+            timeout 300 python3 tests/test_linux_vpn_script.py \
+              res/vpn/vpn-run-root.sh
+            echo "::endgroup::"
+          done
+
   linux-go:
     name: linux-go
     runs-on: ubuntu-22.04
