@@ -264,6 +264,6 @@ int main(int argc, char* argv[]) {
     UI_InitMainWindow();
     a.setShutdownHandler([] { return GetMainWindow()->coordinatedShutdown(); });
     InstallMacQuitHandler();
-    TerminationSignals terminationSignals(&a, [&a] { a.quit(); });
+    TerminationSignals terminationSignals(&a, [&a] { a.requestQuit(); });
     return QApplication::exec();
 }

@@ -104,7 +104,7 @@ def run_gui(binary, mode, route):
         (cfg / 'profiles/0.json').write_text(json.dumps(dict(type='socks', id=0, gid=0,
             bean=dict(_v=0, name='synthetic', addr='127.0.0.1', port=9, v=5))))
     env = os.environ.copy()
-    env.update(NKR_QUIT_TEST_MODE=mode, NKR_QUIT_TEST_ROOT=str(root), QT_QPA_PLATFORM='offscreen')
+    env.update(NKR_QUIT_TEST_MODE=mode, NKR_QUIT_TEST_ROOT=str(root), QT_QPA_PLATFORM=env.get('NKR_QUIT_TEST_QPA', 'offscreen'))
     for key in ('HOME', 'CFFIXED_USER_HOME', 'XDG_CONFIG_HOME', 'XDG_CACHE_HOME', 'XDG_DATA_HOME', 'TMPDIR'):
         path = root / key
         path.mkdir()
@@ -117,7 +117,7 @@ def run_gui(binary, mode, route):
                                    env=env, stdout=log, stderr=subprocess.STDOUT)
             deadline = time.monotonic() + 15
             while 'QUIT_PROBE_READY' not in (root / 'gui.log').read_text():
-                assert gui.poll() is None, 'GUI exited during startup'
+                assert gui.poll() is None, f'GUI exited during startup: {gui.returncode}'
                 assert time.monotonic() < deadline, 'probe readiness timeout'
                 time.sleep(.01)
             core = int((root / 'core.pid').read_text())

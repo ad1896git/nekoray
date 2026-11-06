@@ -48,7 +48,7 @@ int main(int argc, char **argv) {
         dispatcherStopped = true;
         if (!cleaned) failed = true;
     });
-    TerminationSignals terminationSignals(&app, [&] { app.quit(); });
+    TerminationSignals terminationSignals(&app, [&] { app.requestQuit(); });
     QTimer::singleShot(0, &app, [&] {
         if (mode == "term") std::raise(SIGTERM);
         else if (mode == "int") std::raise(SIGINT);

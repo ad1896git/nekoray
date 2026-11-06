@@ -15,6 +15,13 @@ public:
         }, Qt::DirectConnection);
     }
 
+    void requestQuit() {
+        // Qt 5 quit() directly exits every nested event loop. Intercept the
+        // request before that can unwind an in-progress shutdown wait.
+        QEvent quit(QEvent::Quit);
+        QCoreApplication::sendEvent(this, &quit);
+    }
+
     void setShutdownHandler(std::function<bool()> shutdown) {
         shutdown_ = std::move(shutdown);
     }
