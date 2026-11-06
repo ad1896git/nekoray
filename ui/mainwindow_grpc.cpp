@@ -554,6 +554,8 @@ void MainWindow::neko_start(int _id) {
                                          QMessageBox::Yes | QMessageBox::No, this);
     connect(restartMsgbox, &QMessageBox::accepted, this, [=] { MW_dialog_message("", "RestartProgram"); });
     auto restartMsgboxTimer = new MessageBoxTimer(this, restartMsgbox, 5000);
+    // A modal exec() during quit would outlive the shutdown wait deadline.
+    if (NekoGui::dataStore->prepare_exit) restartMsgboxTimer->cancel();
 
     runOnNewThread([=] {
         bool canStart = true;
@@ -624,7 +626,10 @@ void MainWindow::neko_stop(bool crash, bool sem) {
             bool rpcOK;
             QString error = defaultClient->Stop(&rpcOK);
             if (rpcOK && !error.isEmpty()) {
-                runOnUiThread([=] { MessageBoxWarning("Stop return error", error); });
+                runOnUiThread([=] {
+                    if (!NekoGui::dataStore->prepare_exit)
+                        MessageBoxWarning("Stop return error", error);
+                });
                 return false;
             } else if (!rpcOK) {
                 return false;
@@ -653,6 +658,8 @@ void MainWindow::neko_stop(bool crash, bool sem) {
                                          QMessageBox::Yes | QMessageBox::No, this);
     connect(restartMsgbox, &QMessageBox::accepted, this, [=] { MW_dialog_message("", "RestartProgram"); });
     auto restartMsgboxTimer = new MessageBoxTimer(this, restartMsgbox, 5000);
+    // A modal exec() during quit would outlive the shutdown wait deadline.
+    if (NekoGui::dataStore->prepare_exit) restartMsgboxTimer->cancel();
 
     runOnNewThread([=] {
         // do stop
