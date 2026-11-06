@@ -25,6 +25,13 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Install Go for build-script source tests
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22.12'
+          check-latest: false
+          cache: false
+
       - name: Install build and Qt runtime dependencies
         run: |
           sudo apt-get update
@@ -118,6 +125,13 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Install Go for build-script source tests
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22.12'
+          check-latest: false
+          cache: false
 
       - name: Install build and Qt runtime dependencies
         run: |
@@ -282,6 +296,59 @@ jobs:
             go/cmd/nekobox_core/go.sum \
             go/grpc_server/go.mod \
             go/grpc_server/go.sum
+
+  linux-go-race:
+    # KI-1: the NK04 TUIC tests once raced in quic-go congestion control.
+    # This proves the patched quic-go build is race-free under -race.
+    name: linux-go-race
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    env:
+      GOTOOLCHAIN: local
+      CGO_ENABLED: '1'
+      GOWORK: 'off'
+      GOFLAGS: ''
+      NKR_GO_TAGS: with_clash_api,with_gvisor,with_quic,with_wireguard,with_utls,with_ech
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Go 1.22.12
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22.12'
+          check-latest: false
+          cache: false
+
+      - name: Fetch pinned Go dependencies
+        run: bash ./libs/get_source.sh
+
+      - name: Verify dependency revisions and quic-go patch
+        run: |
+          source libs/get_source_env.sh
+          test "$(git -C ../sing-box rev-parse HEAD)" = "$COMMIT_SING_BOX"
+          test "$(git -C ../sing-quic rev-parse HEAD)" = "$COMMIT_SING_QUIC"
+          test "$(git -C ../quic-go rev-parse HEAD)" = "$COMMIT_QUIC_GO"
+          test "$(git -C ../libneko rev-parse HEAD)" = "$COMMIT_LIBNEKO"
+          # The reverse check passes only if the patch is applied.
+          git -C ../quic-go apply --reverse --check \
+            "$GITHUB_WORKSPACE/libs/patches/quic-go-v0.47.0-beta.2-congestion-lock.patch"
+
+      - name: Race test core (NK04 included)
+        working-directory: go/cmd/nekobox_core
+        run: |
+          go version
+          set +o pipefail
+          go test -race -mod=readonly -tags "$NKR_GO_TAGS" \
+            -count=3 -timeout=600s -v . 2>&1 | tee "$RUNNER_TEMP/race.log"
+          status=${PIPESTATUS[0]}
+          if grep -q 'WARNING: DATA RACE' "$RUNNER_TEMP/race.log"; then
+            echo "::error::data race reported"
+            exit 1
+          fi
+          grep -c -- '--- PASS: TestNK04TUICTCP' "$RUNNER_TEMP/race.log"
+          exit "$status"
 
   external-interop:
     name: external-interop

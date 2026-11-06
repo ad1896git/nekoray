@@ -68,7 +68,7 @@ int main(int argc, char* argv[]) {
     if (QFile::exists("updater.old")) {
         QFile::remove("updater.old");
     }
-#ifndef Q_OS_WIN
+#if !defined(Q_OS_WIN) && !defined(Q_OS_MACOS)
     if (!QFile::exists("updater")) {
         QFile::link("launcher", "updater");
     }

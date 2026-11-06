@@ -286,3 +286,9 @@ foreach(route IN ITEMS quit exit term int burst)
     set_tests_properties(coordinated_quit_${route} PROPERTIES
         TIMEOUT 10 ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 endforeach()
+if (UNIX)
+    find_program(NKR_BUILD_CORE_BASH bash REQUIRED)
+    add_test(NAME build_core_sources
+        COMMAND "${NKR_BUILD_CORE_BASH}" "${CMAKE_CURRENT_SOURCE_DIR}/test_build_core.sh")
+    set_tests_properties(build_core_sources PROPERTIES TIMEOUT 30)
+endif ()
