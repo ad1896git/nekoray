@@ -318,6 +318,20 @@ set_target_properties(nkr_linux_vpn PROPERTIES
 target_include_directories(nkr_linux_vpn PUBLIC "${PROJECT_SOURCE_DIR}")
 target_link_libraries(nkr_linux_vpn PUBLIC Qt${QT_VERSION_MAJOR}::Core)
 
+# macOS Tun launcher helpers (PR-22); pure, so built and tested everywhere.
+add_library(nkr_mac_vpn STATIC
+    sys/MacVpnLaunch.cpp
+    sys/MacVpnLaunch.hpp
+)
+set_target_properties(nkr_mac_vpn PROPERTIES
+    CXX_STANDARD 17
+    CXX_STANDARD_REQUIRED ON
+    CXX_EXTENSIONS OFF
+    POSITION_INDEPENDENT_CODE ON
+)
+target_include_directories(nkr_mac_vpn PUBLIC "${PROJECT_SOURCE_DIR}")
+target_link_libraries(nkr_mac_vpn PUBLIC Qt${QT_VERSION_MAJOR}::Core)
+
 # Keep PROJECT_SOURCES intact for the Qt 5 translation scan.
 set(NKR_APPLICATION_SOURCES ${PROJECT_SOURCES})
 
@@ -364,7 +378,7 @@ set_target_properties(nkr_runtime PROPERTIES
     AUTOMOC ON AUTOUIC ON AUTORCC ON POSITION_INDEPENDENT_CODE ON
     CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
 target_include_directories(nkr_runtime PUBLIC "${PROJECT_SOURCE_DIR}")
-target_link_libraries(nkr_runtime PUBLIC nkr_timed_process nkr_grpc_frame nkr_linux_vpn nkr_vpn_process nkr_input_escaping
+target_link_libraries(nkr_runtime PUBLIC nkr_timed_process nkr_grpc_frame nkr_linux_vpn nkr_mac_vpn nkr_vpn_process nkr_input_escaping
     ${NKR_AUTORUN_TARGET}
     Qt${QT_VERSION_MAJOR}::Widgets Qt${QT_VERSION_MAJOR}::Network Qt${QT_VERSION_MAJOR}::Svg
     Threads::Threads ${NKR_EXTERNAL_TARGETS} ${PLATFORM_LIBRARIES})

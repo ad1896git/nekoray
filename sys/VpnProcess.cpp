@@ -168,6 +168,12 @@ bool VpnProcess::start(const QString &program,
         return false;
     }
 
+    if (captureError_) {
+        process_.setProcessChannelMode(QProcess::ForwardedOutputChannel);
+        connect(&process_, &QProcess::readyReadStandardError,
+                this, &VpnProcess::readError);
+    }
+
     process_.start(program, arguments);
     if (!process_.waitForStarted(3000)) {
         error_ = tr("Failed to start VPN launcher: %1")
@@ -180,8 +186,31 @@ bool VpnProcess::start(const QString &program,
         return false;
     }
 
+    if (!input_.isEmpty()) {
+        process_.write(input_);
+        process_.closeWriteChannel();
+    }
+
     poll_.start();
     return true;
+}
+
+void VpnProcess::abort() {
+    stopRequested_ = true;
+    poll_.stop();
+    if (process_.state() != QProcess::NotRunning)
+        process_.kill();
+}
+
+void VpnProcess::readError() {
+    const QByteArray chunk = process_.readAllStandardError();
+    if (chunk.isEmpty()) return;
+    qDebug("%s", chunk.constData());
+    capturedError_ += chunk;
+    // osascript appends its numeric error at the end. Keep that suffix even
+    // when a failing core prints more than the capture budget.
+    if (capturedError_.size() > kMaxCapturedError)
+        capturedError_.remove(0, capturedError_.size() - kMaxCapturedError);
 }
 
 void VpnProcess::checkInterface() {
@@ -201,6 +230,9 @@ void VpnProcess::finish(int exitCode,
     if (terminal_) return;
     terminal_ = true;
     poll_.stop();
+    exitCode_ = exitCode;
+    exitStatus_ = exitStatus;
+    if (captureError_) readError();
 
     if (!stopRequested_) {
         if (!ready_) {

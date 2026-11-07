@@ -21,6 +21,14 @@ DialogVPNSettings::DialogVPNSettings(QWidget *parent) : QDialog(parent), ui(new 
 #endif
     ui->strict_route->setChecked(NekoGui::dataStore->vpn_strict_route);
     ui->single_core->setChecked(NekoGui::dataStore->vpn_internal_tun);
+#ifdef Q_OS_MACOS
+    if (!NekoGui::IsAdmin()) {
+        ui->single_core->setEnabled(false);
+        ui->single_core->setToolTip(
+            tr("On macOS, Tun always runs in a separate "
+               "administrator-authorized process."));
+    }
+#endif
     //
     D_LOAD_STRING_PLAIN(vpn_rule_cidr)
     D_LOAD_STRING_PLAIN(vpn_rule_process)

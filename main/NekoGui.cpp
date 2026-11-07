@@ -4,6 +4,7 @@
 #include <QRegularExpression>
 #include "NekoGui.hpp"
 #include "fmt/Preset.hpp"
+#include "sys/MacVpnLaunch.hpp"
 
 #include <QFile>
 #include <QDir>
@@ -631,6 +632,15 @@ namespace NekoGui {
         isAdminCache = admin;
         return admin;
     };
+
+    bool UseInternalTun() {
+#ifdef Q_OS_MACOS
+        return NekoGui_sys::MacUsesInternalTun(dataStore->vpn_internal_tun,
+                                               IsAdmin());
+#else
+        return dataStore->vpn_internal_tun;
+#endif
+    }
 
 } // namespace NekoGui
 

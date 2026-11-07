@@ -277,6 +277,33 @@ else()
     message(STATUS "W07 Linux sandbox is not registered on this platform")
 endif()
 
+add_executable(tst_mac_vpn_launch
+    tst_mac_vpn_launch.cpp
+    "${PROJECT_SOURCE_DIR}/res/neko.qrc"
+)
+set_target_properties(tst_mac_vpn_launch PROPERTIES
+    AUTOMOC ON AUTORCC ON
+    CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF
+)
+target_link_libraries(tst_mac_vpn_launch PRIVATE
+    nkr_mac_vpn nkr_linux_vpn nkr_vpn_process Qt${QT_VERSION_MAJOR}::Test
+)
+target_compile_definitions(tst_mac_vpn_launch PRIVATE
+    NKR_MAC_VPN_SCRIPT="${PROJECT_SOURCE_DIR}/res/vpn/vpn-run-root-macos.sh"
+    NKR_VPN_TEMPLATE_PATH="${PROJECT_SOURCE_DIR}/res/vpn/sing-box-vpn.json"
+)
+add_test(NAME pr22_mac_vpn COMMAND tst_mac_vpn_launch)
+set_tests_properties(pr22_mac_vpn PROPERTIES TIMEOUT 60 LABELS "PR22")
+
+if(APPLE)
+    find_package(Python3 REQUIRED COMPONENTS Interpreter)
+    add_test(NAME pr22_mac_vpn_script
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/test_macos_vpn_script.py"
+                "${PROJECT_SOURCE_DIR}/res/vpn/vpn-run-root-macos.sh")
+    set_tests_properties(pr22_mac_vpn_script PROPERTIES
+        TIMEOUT 180 RUN_SERIAL TRUE LABELS "PR22;macOS;sandbox")
+endif()
+
 add_executable(tst_coordinated_quit tst_coordinated_quit.cpp
     ${PROJECT_SOURCE_DIR}/main/NekoGui_UiThread.cpp)
 target_include_directories(tst_coordinated_quit PRIVATE "${PROJECT_SOURCE_DIR}")
@@ -303,6 +330,10 @@ if(UNIX AND NOT NKR_NO_GRPC)
     if(APPLE)
         enable_language(OBJCXX)
         target_sources(tst_coordinated_gui PRIVATE "${PROJECT_SOURCE_DIR}/main/MacQuitHandler.mm")
+        add_test(NAME coordinated_gui_mac_stop_failure
+            COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/test_coordinated_gui.py"
+                $<TARGET_FILE:tst_coordinated_gui> mac_stop_failure term)
+        set_tests_properties(coordinated_gui_mac_stop_failure PROPERTIES TIMEOUT 25 RUN_SERIAL TRUE)
     endif()
     set_target_properties(tst_coordinated_gui PROPERTIES AUTORCC ON)
     target_link_libraries(tst_coordinated_gui PRIVATE nkr_runtime)
