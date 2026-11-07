@@ -94,11 +94,11 @@ require (
 
 replace grpc_server => ../../grpc_server
 
-replace github.com/matsuridayo/libneko => ../../../../libneko
+replace github.com/matsuridayo/libneko => github.com/matsuridayo/libneko v0.0.0-20240702024904-1c47a3af7199
 
-replace github.com/sagernet/sing-box => ../../../../sing-box
+replace github.com/sagernet/sing-box => github.com/ad1896git/sing-box v0.0.0-20261106182936-8bd0e6be17a4
 
-replace github.com/sagernet/sing-quic => ../../../../sing-quic
+replace github.com/sagernet/sing-quic => github.com/ad1896git/sing-quic v0.1.3-0.20261106182924-9c9fdac85d4b
 
 replace github.com/sagernet/quic-go => ../../../../quic-go
 

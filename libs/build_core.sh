@@ -3,6 +3,7 @@
 # from the ad1896git forks, libneko from MatsuriDayo, and patched quic-go from sagernet.
 # NKR_SRC_BASE overrides the fork base for sing-box and sing-quic (mirrors supported).
 # NKR_SRC_DIR holds sing-box, sing-quic, quic-go and libneko; default: repository parent.
+# Versioned modules use the Go module cache; offline builds also need it populated.
 # GOOS/GOARCH default to the host. VERSION defaults to git describe, or dev.
 # NKR_CORE_OUT_DIR overrides <repository>/build-core/<GOOS>-<GOARCH>.
 # NKR_CHECKLINKNAME_OFF=1 links with -checklinkname=0 so Go 1.23+ can build the
@@ -105,18 +106,34 @@ if [[ ${NKR_CHECKLINKNAME_OFF:-0} == 1 ]]; then
 fi
 if [[ $GOOS == windows ]]; then binary+=.exe; fi
 
-# Use an alternate module file so custom source paths never edit tracked files.
-work_dir=$(mktemp -d "${TMPDIR:-/tmp}/nekobox-core.XXXXXXXX")
+# Relative replacements resolve from the main module, even with -modfile.
+# Stage that small module under an ignored directory in this repository so Git
+# revision metadata is preserved. Stable relative symlinks keep arbitrary local
+# source paths out of build information even with -trimpath.
+mkdir -p -- "$repo_dir/build-core"
+work_dir=$(mktemp -d "$repo_dir/build-core/.work.XXXXXXXX")
 trap 'rm -rf -- "$work_dir"' EXIT
-cp "$repo_dir/go/cmd/nekobox_core/go.mod" "$work_dir/go.mod"
-cp "$repo_dir/go/cmd/nekobox_core/go.sum" "$work_dir/go.sum"
-cd -- "$repo_dir/go/cmd/nekobox_core"
+cp -R "$repo_dir/go/cmd/nekobox_core/." "$work_dir/"
+mkdir "$work_dir/sources"
+ln -s "$repo_dir/go/grpc_server" "$work_dir/sources/grpc_server"
+ln -s "$src_dir/quic-go" "$work_dir/sources/quic-go"
+cd -- "$work_dir"
 go mod edit -modfile="$work_dir/go.mod" \
-    "-replace=grpc_server=$repo_dir/go/grpc_server" \
-    "-replace=github.com/matsuridayo/libneko=$src_dir/libneko" \
-    "-replace=github.com/sagernet/sing-box=$src_dir/sing-box" \
-    "-replace=github.com/sagernet/sing-quic=$src_dir/sing-quic" \
-    "-replace=github.com/sagernet/quic-go=$src_dir/quic-go"
+    '-replace=grpc_server=./sources/grpc_server' \
+    '-replace=github.com/sagernet/quic-go=./sources/quic-go'
+
+# Pin updates must change both the source commit and its module pseudo-version.
+# Check the destination too: accepting another module would bypass the fork pin.
+verify_module_pin() {
+    local name=$1 expected=$2 module=$3 actual
+    actual=$(go list -mod=readonly -modfile="$work_dir/go.mod" -m \
+        -f '{{with .Replace}}{{.Path}}@{{.Version}}{{end}}' "$name")
+    [[ $actual == "$module"@*-"${expected:0:12}" ]] ||
+        die "module/source pin mismatch: $name ($actual; expected $module at $expected)"
+}
+verify_module_pin github.com/sagernet/sing-box "$COMMIT_SING_BOX" github.com/ad1896git/sing-box
+verify_module_pin github.com/sagernet/sing-quic "$COMMIT_SING_QUIC" github.com/ad1896git/sing-quic
+verify_module_pin github.com/matsuridayo/libneko "$COMMIT_LIBNEKO" github.com/matsuridayo/libneko
 go build -mod=readonly -modfile="$work_dir/go.mod" -o "$out_dir/$binary" -trimpath \
     -ldflags "-w -s $checklinkname_flag -X github.com/matsuridayo/libneko/neko_common.Version_neko=$VERSION" \
     -tags 'with_clash_api,with_gvisor,with_quic,with_wireguard,with_utls,with_ech'
