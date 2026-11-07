@@ -286,10 +286,8 @@ jobs:
             -count=1 -timeout=90s -v .
 
       - name: Build core
-        working-directory: go/cmd/nekobox_core
         run: |
-          go build -mod=readonly -tags "$NKR_GO_TAGS" \
-            -trimpath -o "$RUNNER_TEMP/nekobox_core" .
+          NKR_CORE_OUT_DIR="$RUNNER_TEMP/core" bash libs/build_core.sh
 
       - name: Check dependency manifests remain unchanged
         run: |

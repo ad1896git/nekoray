@@ -90,4 +90,42 @@ for dirty in tracked untracked; do
     # Restore only this test's tracked fixture; leave the untracked case last.
     if [[ $dirty == tracked ]]; then git -C "$src_dir/example" restore tracked; fi
 done
+
+# Check the real module-to-source pin gate offline, without fetching or building
+# the large dependency graph. A stale source pin, wrong fork, or directory
+# override must fail before compilation.
+sed -n '/^verify_module_pin() {/,/^}/p' libs/build_core.sh > "$tmp_dir/module-pin.sh"
+source "$tmp_dir/module-pin.sh"
+die() { printf 'build_core: %s\n' "$*" >&2; exit 1; }
+work_dir="$tmp_dir/module-pin"
+mkdir -p "$work_dir"
+module_pin=8bd0e6be17a44ccfcb55c7812f1b389f1b3b80c1
+cat > "$work_dir/go.mod" <<EOF
+module module_pin_test
+go 1.19
+require github.com/sagernet/sing-box v1.0.0
+replace github.com/sagernet/sing-box => github.com/ad1896git/sing-box v0.0.0-20261106182936-8bd0e6be17a4
+EOF
+stdout="$tmp_dir/module-pin.stdout"
+stderr="$tmp_dir/module-pin.stderr"
+(
+    cd "$work_dir"
+    export GOWORK=off GOTOOLCHAIN=local GOPROXY=off GOSUMDB=off
+    verify_module_pin github.com/sagernet/sing-box "$module_pin" github.com/ad1896git/sing-box
+) >"$stdout" 2>"$stderr" || fail 'valid module/source pin rejected'
+for invalid in stale-pin wrong-fork local-path; do
+    (
+        cd "$work_dir"
+        export GOWORK=off GOTOOLCHAIN=local GOPROXY=off GOSUMDB=off
+        expected=$module_pin
+        module=github.com/ad1896git/sing-box
+        case $invalid in
+            stale-pin) expected=0000000000000000000000000000000000000000 ;;
+            wrong-fork) module=github.com/another-fork/sing-box ;;
+            local-path) go mod edit -replace=github.com/sagernet/sing-box=./local ;;
+        esac
+        verify_module_pin github.com/sagernet/sing-box "$expected" "$module"
+    ) >"$stdout" 2>"$stderr" && fail "accepted $invalid module/source pin"
+    assert_stderr 'module/source pin mismatch: github.com/sagernet/sing-box'
+done
 printf '%s\n' 'test_build_core: PASS'
