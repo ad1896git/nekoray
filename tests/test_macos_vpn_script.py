@@ -11,6 +11,7 @@ Usage: test_macos_vpn_script.py <path to vpn-run-root-macos.sh>
 
 import hashlib
 import os
+import shlex
 import shutil
 import signal
 import stat
@@ -370,6 +371,149 @@ class Sandbox(unittest.TestCase):
         rc, _, err = self.run_script(self.start_args(core_sha="2" * 64))
         self.assertEqual(rc, 76, err)
         self.assertFalse(os.path.exists(os.path.join(self.marker, "args")))
+        self.assert_clean()
+
+    def staging_swap(self, kind, asset=False, config=False):
+        # Pause the real copy primitive after check_inputs (and the asset -f
+        # check), without depending on a large core or scheduler timing. This
+        # anchor also exists in the pre-fix script for the negative control.
+        source = self.core
+        args = self.start_args()
+        if config:
+            source = self.config
+        if asset:
+            source = os.path.join(self.work, "rules.db")
+            with open(source, "wb") as handle:
+                handle.write(b"verified asset")
+            args += [source, sha256(source)]
+        with open(source, "rb") as handle:
+            original = handle.read()
+        anchor = '    rm -f "$tmp" || return 74\n'
+        self.assertIn(anchor, self.script)
+        pause = ("    if [[ \"$source\" = %s ]]; then\n"
+                 '        : >"$source.ready"\n'
+                 '        while [[ ! -f "$source.go" ]]; do sleep 0.01; done\n'
+                 '    fi\n') % shlex.quote(source)
+        self.script = self.script.replace(anchor, pause + anchor, 1)
+        proc = self.spawn(args)
+        self.assertTrue(wait_for(lambda: os.path.exists(source + ".ready")))
+        os.rename(source, source + ".saved")
+        if kind == "fifo":
+            os.mkfifo(source, 0o600)
+        elif kind == "symlink":
+            # Same authorized bytes: a hash check alone cannot reject this.
+            os.symlink(source + ".saved", source)
+        else:
+            os.mkdir(source, 0o700)
+        with open(source + ".go", "w"):
+            pass
+        timed_out = False
+        try:
+            _, err = proc.communicate(timeout=3)
+        except subprocess.TimeoutExpired:
+            timed_out = True
+            # Unblock the old FIFO implementation for safe negative-control
+            # teardown. Stop first so even its authorized fake core cannot run.
+            if not config:
+                os.unlink(self.config)
+            if kind == "fifo":
+                fd = os.open(source, os.O_WRONLY | os.O_NONBLOCK)
+                try:
+                    os.write(fd, original)
+                finally:
+                    os.close(fd)
+                if config:
+                    os.unlink(self.config)
+            _, err = proc.communicate(timeout=5)
+        self.assertFalse(timed_out, "staging did not reject swapped " + kind)
+        # A replaced stop config may cancel staging before the helper rejects
+        # it. Neither outcome may block or execute the fake core.
+        self.assertIn(proc.returncode, (0, 77) if config else (77,), err)
+        self.assertFalse(os.path.exists(os.path.join(self.marker, "args")))
+        self.assert_clean()
+        # Authorized Reset must be able to get the lock after refusal.
+        rc, _, err = self.run_script(["cleanup", str(os.getuid())])
+        self.assertEqual(rc, 0, err)
+
+    def test_fifo_swap_after_validation(self):
+        self.staging_swap("fifo")
+
+    def test_symlink_swap_after_validation(self):
+        self.staging_swap("symlink")
+
+    def test_directory_swap_after_validation(self):
+        self.staging_swap("directory")
+
+    def test_config_fifo_swap_after_validation(self):
+        self.staging_swap("fifo", config=True)
+
+    def test_asset_swaps_at_copy_time(self):
+        original = self.script
+        for kind in ("fifo", "symlink", "directory"):
+            with self.subTest(kind=kind):
+                self.script = original
+                self.staging_swap(kind, asset=True)
+                for suffix in ("", ".saved", ".ready", ".go"):
+                    path = os.path.join(self.work, "rules.db") + suffix
+                    if os.path.isdir(path) and not os.path.islink(path):
+                        os.rmdir(path)
+                    else:
+                        os.unlink(path)
+
+    def test_staging_deadline_reaps_helper_and_releases_lock(self):
+        self.script = self.script.replace(
+            'COPY_DEADLINE=$((SECONDS + 30))',
+            'COPY_DEADLINE=$((SECONDS + 1))')
+        self.script = self.script.replace(
+            '# Copy only the size of the opened inode, even if it keeps growing.',
+            'sleep 60; # Simulate stalled regular-file I/O.')
+        started = time.monotonic()
+        rc, _, err = self.run_script(self.start_args(), timeout=5)
+        self.assertEqual(rc, 74, err)
+        self.assertIn("staging deadline exceeded", err)
+        self.assertLess(time.monotonic() - started, 4)
+        self.assert_clean()
+        rc, _, err = self.run_script(["cleanup", str(os.getuid())])
+        self.assertEqual(rc, 0, err)
+
+    def test_gui_exit_during_staging_reaps_helper(self):
+        self.script = self.script.replace(
+            '# Copy only the size of the opened inode, even if it keeps growing.',
+            'sleep 60; # Simulate stalled regular-file I/O.')
+        gui = subprocess.Popen(["/bin/sleep", "60"])
+        self.procs.append(gui)
+        proc = self.spawn(self.start_args(gui_pid=gui.pid))
+        self.assertTrue(wait_for(lambda: os.path.exists(self.path("nekobox_core.tmp"))))
+        gui.kill()
+        gui.wait()
+        _, err = proc.communicate(timeout=5)
+        self.assertEqual(proc.returncode, 0, err)
+        self.assert_clean()
+        rc, _, err = self.run_script(["cleanup", str(os.getuid())])
+        self.assertEqual(rc, 0, err)
+
+    def test_config_removal_during_staging_reaps_helper(self):
+        self.script = self.script.replace(
+            '# Copy only the size of the opened inode, even if it keeps growing.',
+            'sleep 60; # Simulate stalled regular-file I/O.')
+        proc = self.spawn(self.start_args())
+        self.assertTrue(wait_for(lambda: os.path.exists(self.path("nekobox_core.tmp"))))
+        os.unlink(self.config)
+        _, err = proc.communicate(timeout=5)
+        self.assertEqual(proc.returncode, 0, err)
+        self.assert_clean()
+        rc, _, err = self.run_script(["cleanup", str(os.getuid())])
+        self.assertEqual(rc, 0, err)
+
+    def test_hash_verifies_copied_bytes(self):
+        # Alter only the destination, after copying the authorized source.
+        anchor = '        my $position = sysseek($out, 0, SEEK_SET);'
+        self.assertIn(anchor, self.script)
+        self.script = self.script.replace(anchor,
+            '        sysseek($out, 0, SEEK_SET); syswrite($out, "!");\n' + anchor)
+        rc, _, err = self.run_script(self.start_args())
+        self.assertEqual(rc, 76, err)
+        self.assertIn("hash mismatch", err)
         self.assert_clean()
 
     # 5. lifecycle: start, readiness record, stop by deleting the config

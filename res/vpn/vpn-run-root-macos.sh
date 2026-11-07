@@ -23,7 +23,7 @@ die() {
     exit "$1"
 }
 
-for tool in lockf shasum ps ifconfig route cp mv rm stat chmod tail sleep mkdir; do
+for tool in lockf perl ps ifconfig route mv rm stat chmod tail sleep mkdir; do
     command -v "$tool" >/dev/null 2>&1 || die 69 "$tool is required"
 done
 
@@ -269,23 +269,70 @@ launch_alive() {
 }
 
 copy_verified() {
-    local source=$1 target=$2 sum=$3 mode=$4 tmp="$2.tmp" actual
+    local source=$1 target=$2 sum=$3 mode=$4 tmp="$2.tmp" rc limit=536870912
+    [[ "$source" != "$CONFIG" ]] || limit=1048576
     rm -f "$tmp" || return 74
-    if ! cp -X "$source" "$tmp" 2>/dev/null; then
-        rm -f "$tmp"
-        printf 'nekoray-vpn: cannot copy %s (launch cancelled?)\n' \
-            "$source" >&2
-        return 66
-    fi
+    # macOS ships Perl (also used by shasum). No requester environment/modules.
+    # Open once without following links or waiting for a FIFO writer, then
+    # validate the descriptor, not a pathname checked before open. New files
+    # contain bytes only, so no source xattrs/quarantine are carried across.
+    /usr/bin/env -i PATH="$PATH" LC_ALL=C /usr/bin/perl -e '
+        use strict;
+        use Fcntl qw(:DEFAULT :mode SEEK_SET);
+        use Digest::SHA ();
+        my ($source, $target, $expected, $limit, $uid, $config) = @ARGV;
+        sub fail { print STDERR "nekoray-vpn: $_[1]\n"; exit $_[0]; }
+        sysopen(my $in, $source, O_RDONLY | O_NONBLOCK | O_NOFOLLOW)
+            or fail(77, "cannot safely open staging input");
+        my @st = stat($in);
+        @st && S_ISREG($st[2]) && $st[7] <= $limit
+            or fail(77, "staging input must be a bounded regular file");
+        if ($source eq $config) {
+            $st[4] == $uid && ($st[2] & 077) == 0
+                or fail(77, "unsafe configuration owner or permissions");
+        }
+        sysopen(my $out, $target, O_RDWR | O_CREAT | O_EXCL | O_NOFOLLOW, 0600)
+            or fail(74, "cannot create staging file");
+        # Copy only the size of the opened inode, even if it keeps growing.
+        my $left = $st[7];
+        while ($left) {
+            my $n = sysread($in, my $buf, $left > 65536 ? 65536 : $left);
+            defined($n) && $n > 0 or fail(74, "short staging read");
+            my $offset = 0;
+            while ($offset < $n) {
+                my $written = syswrite($out, $buf, $n - $offset, $offset);
+                defined($written) && $written > 0 or fail(74, "staging write failed");
+                $offset += $written;
+            }
+            $left -= $n;
+        }
+        my $extra = sysread($in, my $buf, 1);
+        defined($extra) && $extra == 0 or fail(77, "staging input grew or read failed");
+        close($in) or fail(74, "cannot close staging input");
+        my $position = sysseek($out, 0, SEEK_SET);
+        defined($position) && $position == 0 or fail(74, "cannot rewind staging file");
+        Digest::SHA->new(256)->addfile($out)->hexdigest eq $expected
+            or fail(76, "staging input changed after authorization (hash mismatch)");
+        close($out) or fail(74, "cannot close staging file");
+    ' -- "$source" "$tmp" "$sum" "$limit" "$REQ_UID" "$CONFIG" &
+    COPY_CHILD=$!
+    # One deadline covers ALL inputs and copied-byte hashing. The helper has no
+    # children; cancel and reap it before releasing the machine-wide lock.
+    while kill -0 "$COPY_CHILD" 2>/dev/null; do
+        if (( SECONDS >= COPY_DEADLINE )); then
+            printf 'nekoray-vpn: staging deadline exceeded\n' >&2
+            return 74
+        fi
+        if (( STOP_SIGNAL )) || ! launch_alive || ! same_process "$GUI_TOKEN"; then
+            exit 0
+        fi
+        sleep 0.05
+    done
+    wait "$COPY_CHILD"
+    rc=$?
+    COPY_CHILD=
+    (( rc == 0 )) || return "$rc"
     chmod "$mode" "$tmp" || { rm -f "$tmp"; return 74; }
-    actual=$(shasum -a 256 "$tmp") || { rm -f "$tmp"; return 74; }
-    actual=${actual%% *}
-    if [[ "$actual" != "$sum" ]]; then
-        rm -f "$tmp"
-        printf 'nekoray-vpn: %s changed after authorization (hash mismatch)\n' \
-            "$source" >&2
-        return 76
-    fi
     mv -f "$tmp" "$target" || { rm -f "$tmp"; return 74; }
 }
 
@@ -307,6 +354,13 @@ finish() {
     local rc=$? i
     trap - EXIT
     trap '' INT TERM
+    if [[ -n "$COPY_CHILD" ]]; then
+        # During staging this is our only background job. Address the shell
+        # job, so an already completed helper cannot lead to a reused PID kill.
+        kill -KILL %+ 2>/dev/null
+        wait "$COPY_CHILD" 2>/dev/null
+        COPY_CHILD=
+    fi
     if [[ -n "$CORE_TOKEN" ]] && same_process "$CORE_TOKEN"; then
         stop_token "$CORE_TOKEN" || {
             printf 'nekoray-vpn: %s\n' \
@@ -351,6 +405,10 @@ start_locked() {
     CORE_TOKEN=
     LOG_READY=
     CHILD=
+    COPY_CHILD=
+    COPY_DEADLINE=$((SECONDS + 30))
+    STOP_SIGNAL=0
+    trap 'STOP_SIGNAL=1' INT TERM
     trap finish EXIT
 
     copy_verified "$CORE" "$CORE_COPY" "$CORE_SHA" 0700 || exit $?
@@ -374,8 +432,7 @@ start_locked() {
     write_state || exit 74
     log "default route before: $(default_route)"
 
-    STOP_SIGNAL=0
-    trap 'STOP_SIGNAL=1' INT TERM
+    (( STOP_SIGNAL )) && exit 0
     launch_alive || exit 0
 
     # Publish the child identity before allowing exec. If the supervisor dies
