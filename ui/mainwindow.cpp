@@ -680,34 +680,7 @@ void MainWindow::on_commitDataRequest() {
 }
 
 void MainWindow::on_menu_exit_triggered() {
-    if (mu_exit.tryLock()) {
-        NekoGui::dataStore->prepare_exit = true;
-        //
-        neko_set_spmode_system_proxy(false, false);
-        neko_set_spmode_vpn(false, false);
-        if (NekoGui::dataStore->spmode_vpn) {
-            mu_exit.unlock(); // retry
-            return;
-        }
-        NekoGui_traffic::trafficLooper->RequestShutdown();
-        shutdownUiThreadDispatcher();
-        RegisterHotkey(true);
-        //
-        on_commitDataRequest();
-        //
-        NekoGui::dataStore->save_control_no_save = true; // don't change datastore after this line
-        neko_stop(false, true);
-        //
-        hide();
-        runOnNewThread([=] {
-            sem_stopped.acquire();
-            stop_core_daemon();
-            runOnUiThread([=] {
-                on_menu_exit_triggered(); // continue exit progress
-            });
-        });
-        return;
-    }
+    if (!coordinatedShutdown()) return;
     //
     MF_release_runguard();
     if (exit_reason == 2 || exit_reason == 3) {

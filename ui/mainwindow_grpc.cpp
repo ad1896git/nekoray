@@ -1,6 +1,8 @@
 #include "main/UiOwnership.hpp"
 #include "main/UiSnapshot.hpp"
 #include <QElapsedTimer>
+#include <QEventLoop>
+#include <QScopedValueRollback>
 #include "./ui_mainwindow.h"
 #include "mainwindow.h"
 #include "StopTrafficPersistence.hpp"
@@ -11,6 +13,7 @@
 #include "rpc/gRPC.h"
 #include "sys/ExternalTempFiles.hpp"
 #include <utility>
+#include <atomic>
 #include "ui/widget/MessageBoxTimer.h"
 
 #include <QTimer>
@@ -121,10 +124,7 @@ void MainWindow::setup_grpc() {
         },
         "127.0.0.1:" + Int2String(NekoGui::dataStore->core_port), NekoGui::dataStore->core_token);
 
-    // Looper
-    connect(QCoreApplication::instance(), &QCoreApplication::aboutToQuit,
-            QCoreApplication::instance(),
-            [] { NekoGui_traffic::trafficLooper->RequestShutdown(); });
+    // Looper shutdown is part of coordinatedShutdown(), before UI teardown.
     runOnNewThread([] { NekoGui_traffic::trafficLooper->Loop(); });
 #endif
 }
@@ -382,6 +382,76 @@ void MainWindow::speedtest_current() {
 #endif
 }
 
+namespace {
+// Keep dispatching final traffic commits and stop completion before closing the
+// UI gate. User input is excluded; nested quit requests are guarded below.
+bool WaitForShutdown(QSemaphore &done, int timeoutMs) {
+    if (done.tryAcquire()) return true;
+    QEventLoop loop;
+    QTimer poll, deadline;
+    bool completed = false;
+    QObject::connect(&poll, &QTimer::timeout, &loop, [&] {
+        if (done.tryAcquire()) {
+            completed = true;
+            loop.quit();
+        }
+    });
+    QObject::connect(&deadline, &QTimer::timeout, &loop, &QEventLoop::quit);
+    poll.start(10);
+    deadline.setSingleShot(true);
+    deadline.start(timeoutMs);
+    loop.exec(QEventLoop::ExcludeUserInputEvents);
+    return completed;
+}
+} // namespace
+
+bool MainWindow::coordinatedShutdown() {
+    Q_ASSERT(QThread::currentThread() == qApp->thread());
+    if (shutdownComplete_) return true;
+    if (shutdownInProgress_) return false;
+    QScopedValueRollback<bool> inProgress(shutdownInProgress_, true);
+    NekoGui::dataStore->prepare_exit = true;
+    QScopedValueRollback<bool> dialogs(ShutdownDialogs::suppressed, true);
+    MessageBoxTimer::cancelAll();
+
+    // Preserve VPN/system-proxy teardown and refuse to quit if VPN stop fails.
+    neko_set_spmode_system_proxy(false, false);
+    neko_set_spmode_vpn(false, false);
+    if (NekoGui::dataStore->spmode_vpn) return false;
+
+    NekoGui_traffic::trafficLooper->RequestShutdown();
+    RegisterHotkey(true);
+    on_commitDataRequest();
+    NekoGui::dataStore->save_control_no_save = true;
+    neko_stop(false, true);
+    if (!WaitForShutdown(sem_stopped, 12000))
+        qWarning("Profile stop timed out during shutdown; exiting owned core");
+
+    // CoreProcess belongs to DS_cores. Serialize with startup and perform the
+    // RPC and bounded process wait there, never touching QProcess across threads.
+    auto done = std::make_shared<QSemaphore>();
+    auto stopped = std::make_shared<std::atomic_bool>(false);
+    runOnUiThread([this, done, stopped] {
+        stop_core_daemon();
+        if (core_process && core_process->state() != QProcess::NotRunning) {
+            if (!core_process->waitForFinished(500)) {
+                core_process->kill();
+                core_process->waitForFinished(500);
+            }
+        }
+        stopped->store(!core_process || core_process->state() == QProcess::NotRunning);
+        done->release();
+    }, DS_cores);
+    if (!WaitForShutdown(*done, 2000) || !stopped->load()) {
+        qWarning("Owned core did not stop within the shutdown deadline");
+        return false;
+    }
+    shutdownUiThreadDispatcher();
+    shutdownComplete_ = true;
+    dialogs.commit();
+    return true;
+}
+
 void MainWindow::stop_core_daemon() {
 #ifndef NKR_NO_GRPC
     NekoGui_rpc::defaultClient->Exit();
@@ -557,7 +627,10 @@ void MainWindow::neko_stop(bool crash, bool sem) {
             bool rpcOK;
             QString error = defaultClient->Stop(&rpcOK);
             if (rpcOK && !error.isEmpty()) {
-                runOnUiThread([=] { MessageBoxWarning("Stop return error", error); });
+                runOnUiThread([=] {
+                    if (!NekoGui::dataStore->prepare_exit)
+                        MessageBoxWarning("Stop return error", error);
+                });
                 return false;
             } else if (!rpcOK) {
                 return false;
