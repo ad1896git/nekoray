@@ -1,6 +1,8 @@
 #include "db/Renumber.hpp"
 #include "db/Database.hpp"
-#include <csignal>
+#include "main/CoordinatedApplication.hpp"
+#include "main/TerminationSignals.hpp"
+#include "main/MacQuitHandler.hpp"
 
 #include <QApplication>
 #include <QDir>
@@ -19,13 +21,6 @@
 #ifdef Q_OS_WIN
 #include "sys/windows/MiniDump.h"
 #endif
-
-void signal_handler(int signum) {
-    if (qApp) {
-        GetMainWindow()->on_commitDataRequest();
-        qApp->exit();
-    }
-}
 
 QTranslator* trans = nullptr;
 QTranslator* trans_qt = nullptr;
@@ -117,7 +112,7 @@ int main(int argc, char* argv[]) {
 
     // init QApplication
     delete preQApp;
-    QApplication a(argc, argv);
+    CoordinatedApplication a(argc, argv);
 
     // dispatchers
     DS_cores = new QThread;
@@ -253,10 +248,6 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    // Signals
-    signal(SIGTERM, signal_handler);
-    signal(SIGINT, signal_handler);
-
     // QLocalServer
     QLocalServer server;
     auto server_name = LOCAL_SERVER_PREFIX + Int2String(guard_data_in);
@@ -271,5 +262,8 @@ int main(int argc, char* argv[]) {
     });
 
     UI_InitMainWindow();
+    a.setShutdownHandler([] { return GetMainWindow()->coordinatedShutdown(); });
+    InstallMacQuitHandler();
+    TerminationSignals terminationSignals(&a, [&a] { a.requestQuit(); });
     return QApplication::exec();
 }

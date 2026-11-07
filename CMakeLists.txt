@@ -492,3 +492,11 @@ if (NKR_BUILD_TESTS)
         TIMEOUT 1500 LABELS "W02;crash"
         ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QTEST_FUNCTION_TIMEOUT=1500000")
 endif ()
+
+if (APPLE)
+    enable_language(OBJCXX)
+    target_sources(nekobox PRIVATE main/MacQuitHandler.mm)
+    set_target_properties(nekobox PROPERTIES OBJCXX_STANDARD 17 OBJCXX_STANDARD_REQUIRED ON)
+    find_library(NKR_APPKIT AppKit REQUIRED)
+    target_link_libraries(nekobox PRIVATE "${NKR_APPKIT}")
+endif ()

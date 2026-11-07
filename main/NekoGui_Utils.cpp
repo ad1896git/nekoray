@@ -1,3 +1,4 @@
+#include "ShutdownDialogs.hpp"
 #include "NekoGui_Utils.hpp"
 
 #include "3rdparty/base64.h"
@@ -210,10 +211,18 @@ QWidget *GetMessageBoxParent() {
 }
 
 int MessageBoxWarning(const QString &title, const QString &text) {
+    if (ShutdownDialogs::suppressed) {
+        qWarning().noquote() << title << text;
+        return QMessageBox::No;
+    }
     return QMessageBox::warning(GetMessageBoxParent(), title, text);
 }
 
 int MessageBoxInfo(const QString &title, const QString &text) {
+    if (ShutdownDialogs::suppressed) {
+        qInfo().noquote() << title << text;
+        return QMessageBox::No;
+    }
     return QMessageBox::information(GetMessageBoxParent(), title, text);
 }
 

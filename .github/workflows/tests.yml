@@ -137,7 +137,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            build-essential cmake ninja-build libglib2.0-bin desktop-file-utils \
+            build-essential cmake ninja-build libglib2.0-bin desktop-file-utils xvfb xauth \
             libgl1-mesa-dev libgstreamer-gl1.0-0 libpulse-dev \
             libxcb-glx0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 \
             libxcb-randr0 libxcb-render-util0 libxcb-render0 \
@@ -213,8 +213,10 @@ jobs:
       - name: Run tests
         env:
           NKR_BUILD_DIR: ${{ runner.temp }}/nkr-pr0-qt5
+          # Qt 5 Linux system-tray integration requires an X server.
+          NKR_QUIT_TEST_QPA: xcb
         run: |
-          /usr/bin/ctest --test-dir "$NKR_BUILD_DIR" \
+          xvfb-run -a /usr/bin/ctest --test-dir "$NKR_BUILD_DIR" \
             --output-on-failure --no-tests=error --verbose
 
   linux-w07-repeat:
