@@ -330,6 +330,10 @@ if(UNIX AND NOT NKR_NO_GRPC)
     if(APPLE)
         enable_language(OBJCXX)
         target_sources(tst_coordinated_gui PRIVATE "${PROJECT_SOURCE_DIR}/main/MacQuitHandler.mm")
+        add_test(NAME coordinated_gui_mac_stop_failure
+            COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/test_coordinated_gui.py"
+                $<TARGET_FILE:tst_coordinated_gui> mac_stop_failure term)
+        set_tests_properties(coordinated_gui_mac_stop_failure PROPERTIES TIMEOUT 25 RUN_SERIAL TRUE)
     endif()
     set_target_properties(tst_coordinated_gui PROPERTIES AUTORCC ON)
     target_link_libraries(tst_coordinated_gui PRIVATE nkr_runtime)

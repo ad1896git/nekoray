@@ -2240,8 +2240,29 @@ bool MainWindow::StartMacVPNProcess() {
     process->setCaptureStandardError(true);
     process->setStandardInput(
         NekoGui_sys::MacVpnAppleScript(script, arguments, true).toUtf8());
+    AttachMacVPNProcess(process, files);
+
+    if (!process->start(QStringLiteral("/usr/bin/osascript"), {})) {
+        const auto startError = process->errorString();
+        vpnProcess_ = nullptr;
+        vpn_pid = 0;
+        macVpnFiles_.reset();
+        process->deleteLater();
+        MessageBoxWarning(tr("Error"), startError);
+        return false;
+    }
+
+    vpn_pid = process->processId();
+    return true;
+}
+
+void MainWindow::AttachMacVPNProcess(
+    NekoGui_runtime::VpnProcess *process,
+    const std::shared_ptr<NekoGui_sys::ExternalTempFiles> &files) {
     vpnProcess_ = process;
     macVpnFiles_ = files;
+    const auto stopFailed = std::make_shared<bool>(false);
+    macVpnStopFailed_ = stopFailed;
 
     connect(process, &NekoGui_runtime::VpnProcess::ready,
             this, [this, process] {
@@ -2252,7 +2273,7 @@ bool MainWindow::StartMacVPNProcess() {
     });
 
     connect(process, &NekoGui_runtime::VpnProcess::ended,
-            this, [this, process](const QString &launchError) {
+            this, [this, process, stopFailed](const QString &launchError) {
         if (vpnProcess_ != process) {
             process->deleteLater();
             return;
@@ -2263,6 +2284,9 @@ bool MainWindow::StartMacVPNProcess() {
         const auto result = NekoGui_sys::ClassifyMacVpnExit(
             process->exitCode(), process->exitStatus(), launcherError,
             stopping);
+        *stopFailed = stopping &&
+            result.kind != NekoGui_sys::MacVpnExit::Stopped &&
+            result.kind != NekoGui_sys::MacVpnExit::Cancelled;
 
         // Clear ownership before UI callbacks or a modal warning can
         // re-enter this window. Releasing the files also removes the
@@ -2293,24 +2317,12 @@ bool MainWindow::StartMacVPNProcess() {
             }
         }
     });
-
-    if (!process->start(QStringLiteral("/usr/bin/osascript"), {})) {
-        const auto startError = process->errorString();
-        vpnProcess_ = nullptr;
-        vpn_pid = 0;
-        macVpnFiles_.reset();
-        process->deleteLater();
-        MessageBoxWarning(tr("Error"), startError);
-        return false;
-    }
-
-    vpn_pid = process->processId();
-    return true;
 }
 
 bool MainWindow::StopMacVPNProcess(bool unconditional) {
     if (vpnProcess_) {
         auto *process = vpnProcess_;
+        const auto stopFailed = macVpnStopFailed_;
         process->setStopRequested(true);
         // Deleting the launch config is the stop request to the supervisor.
         if (macVpnFiles_) macVpnFiles_->clear();
@@ -2334,6 +2346,13 @@ bool MainWindow::StopMacVPNProcess(bool unconditional) {
                    "automatically when NekoBox quits."));
             return false;
         }
+        // ended() releases ownership before UI callbacks. Its classified
+        // result, rather than the cleared pointer, determines stop success.
+        if (stopFailed && *stopFailed) return false;
+    } else if (macVpnStopFailed_ && *macVpnStopFailed_) {
+        // The supervisor kept identity-checked state for recovery. A later
+        // stop retries via the same authorized cleanup as Troubleshooting.
+        return ResetMacVPNState();
     }
     vpn_pid = 0;
     if (!unconditional) return true;
@@ -2342,7 +2361,7 @@ bool MainWindow::StopMacVPNProcess(bool unconditional) {
 
 // Troubleshooting reset: stops only a recorded, identity-checked stale
 // instance. Requires an administrator prompt.
-bool MainWindow::ResetMacVPNState() {
+bool MainWindow::ResetMacVPNState(const QString &launcher) {
     QString error;
     const QString script = NekoGui_sys::ReadMacVpnScript(error);
     if (script.isEmpty()) {
@@ -2364,7 +2383,7 @@ bool MainWindow::ResetMacVPNState() {
         loop.quit();
     });
 
-    process.start(QStringLiteral("/usr/bin/osascript"), QStringList{});
+    process.start(launcher, QStringList{});
     if (!process.waitForStarted(3000)) {
         MessageBoxWarning(tr("Error"), process.errorString());
         return false;
@@ -2391,6 +2410,7 @@ bool MainWindow::ResetMacVPNState() {
         process.readAllStandardError(), false);
     switch (result.kind) {
         case NekoGui_sys::MacVpnExit::Stopped:
+            macVpnStopFailed_.reset();
             MessageBoxInfo(software_name, tr("Tun state has been reset."));
             return true;
         case NekoGui_sys::MacVpnExit::Cancelled:

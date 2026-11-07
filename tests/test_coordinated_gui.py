@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Real GUI entry/owned-QProcess regression, with a loopback-only fake RPC core.
 
-No real proxy, TUN or system proxy is enabled. All config and HOME paths are
+No real proxy, TUN or system proxy is enabled; the macOS stop probe uses an
+unprivileged fake launcher and readiness probe. All config and HOME paths are
 inside the CTest build tree. Every child is waited for, including failure paths.
 """
 import json
@@ -94,11 +95,11 @@ def run_gui(binary, mode, route):
     cfg = root / 'appdata/config'
     for sub in ('groups', 'profiles', 'routes_box'):
         (cfg / sub).mkdir(parents=True)
-    settings = dict(remember_enable=mode != 'idle', remember_id=0, spmode2=[],
+    settings = dict(remember_enable=mode in ('pending_start', 'pending_stop'), remember_id=0, spmode2=[],
                     sub_auto_update=0, inbound_address='127.0.0.1', language=1,
                     traffic_loop_interval=0)
     (cfg / 'groups/nekobox.json').write_text(json.dumps(settings))
-    if mode != 'idle':
+    if mode in ('pending_start', 'pending_stop'):
         (cfg / 'groups/pm.json').write_text('{"groups":[0]}')
         (cfg / 'groups/0.json').write_text('{"id":0,"name":"quit test","order":[0]}')
         (cfg / 'profiles/0.json').write_text(json.dumps(dict(type='socks', id=0, gid=0,
@@ -120,6 +121,10 @@ def run_gui(binary, mode, route):
                 assert gui.poll() is None, f'GUI exited during startup: {gui.returncode}'
                 assert time.monotonic() < deadline, 'probe readiness timeout'
                 time.sleep(.01)
+            if mode == 'mac_stop_failure':
+                evidence = (root / 'gui.log').read_text()
+                assert 'stop=0 released=1 tun_after_stop=1 shutdown=0 tun_after_shutdown=1 dialogs_restored=1' in evidence
+                assert 'MAC_STOP_RECOVERY_OK' in evidence
             core = int((root / 'core.pid').read_text())
             started = time.monotonic()
             gui.send_signal(signal.SIGTERM if route == 'term' else signal.SIGINT)

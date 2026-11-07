@@ -166,9 +166,18 @@ private:
     // Private launch config of the running Tun; deleting it stops the
     // root supervisor (see res/vpn/vpn-run-root-macos.sh).
     std::shared_ptr<NekoGui_sys::ExternalTempFiles> macVpnFiles_;
+    // Per-launch result outlives launcher ownership and nested UI callbacks.
+    // A failed stop remains pending until an authorized reset succeeds.
+    std::shared_ptr<bool> macVpnStopFailed_;
+    friend struct MacVpnShutdownProbe;
+    void AttachMacVPNProcess(
+        NekoGui_runtime::VpnProcess *process,
+        const std::shared_ptr<NekoGui_sys::ExternalTempFiles> &files);
     bool StartMacVPNProcess();
     bool StopMacVPNProcess(bool unconditional);
-    bool ResetMacVPNState();
+    // The private launcher override permits unprivileged reset regression tests.
+    bool ResetMacVPNState(
+        const QString &launcher = QStringLiteral("/usr/bin/osascript"));
 #endif
     //
     bool qvLogAutoScoll = true;
