@@ -2162,7 +2162,16 @@ bool MainWindow::StopVPNProcess(bool unconditional) {
 #ifdef Q_OS_MACOS
 // macOS Tun (PR-22): one administrator prompt per start; stop, quit and crash
 // cleanup need no prompt. See res/vpn/vpn-run-root-macos.sh.
-bool MainWindow::StartMacVPNProcess() {
+bool MainWindow::StartMacVPNProcess(const QString &launcher) {
+    // A new launcher must not replace the failed stop's recovery obligation.
+    // Only the existing authorized Stop/Reset path can discharge it.
+    if (macVpnStopFailed_ && *macVpnStopFailed_) {
+        MessageBoxWarning(
+            tr("Error"),
+            tr("The previous Tun cleanup failed. Stop Tun again or use "
+               "Tun Settings, Troubleshooting, Reset before starting."));
+        return false;
+    }
     if (vpnProcess_) {
         if (vpnProcess_->stopRequested()) {
             MessageBoxWarning(
@@ -2242,7 +2251,7 @@ bool MainWindow::StartMacVPNProcess() {
         NekoGui_sys::MacVpnAppleScript(script, arguments, true).toUtf8());
     AttachMacVPNProcess(process, files);
 
-    if (!process->start(QStringLiteral("/usr/bin/osascript"), {})) {
+    if (!process->start(launcher, {})) {
         const auto startError = process->errorString();
         vpnProcess_ = nullptr;
         vpn_pid = 0;
