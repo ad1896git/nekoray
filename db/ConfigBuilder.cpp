@@ -294,12 +294,12 @@ namespace NekoGui {
 
             if (thisExternalStat > 0) {
                 auto extR = ent->bean->BuildExternal(ext_mapping_port, ext_socks_port, thisExternalStat);
-                if (extR.program.isEmpty()) {
-                    status->result->error = QObject::tr("Core not found: %1").arg(ent->bean->DisplayCoreType());
-                    return {};
-                }
                 if (!extR.error.isEmpty()) { // rejected
                     status->result->error = extR.error;
+                    return {};
+                }
+                if (extR.program.isEmpty()) {
+                    status->result->error = QObject::tr("Core not found: %1").arg(ent->bean->DisplayCoreType());
                     return {};
                 }
                 extR.tag = ent->bean->DisplayType();
