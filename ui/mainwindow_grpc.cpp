@@ -410,7 +410,7 @@ bool MainWindow::coordinatedShutdown() {
     if (shutdownComplete_) return true;
     if (shutdownInProgress_) return false;
     QScopedValueRollback<bool> inProgress(shutdownInProgress_, true);
-    NekoGui::dataStore->prepare_exit = true;
+    QScopedValueRollback<bool> preparing(NekoGui::dataStore->prepare_exit, true);
     QScopedValueRollback<bool> dialogs(ShutdownDialogs::suppressed, true);
     MessageBoxTimer::cancelAll();
 
@@ -419,10 +419,8 @@ bool MainWindow::coordinatedShutdown() {
     neko_set_spmode_vpn(false, false);
     if (NekoGui::dataStore->spmode_vpn) return false;
 
-    NekoGui_traffic::trafficLooper->RequestShutdown();
-    RegisterHotkey(true);
     on_commitDataRequest();
-    NekoGui::dataStore->save_control_no_save = true;
+    QScopedValueRollback<bool> saving(NekoGui::dataStore->save_control_no_save, true);
     neko_stop(false, true);
     if (!WaitForShutdown(sem_stopped, 12000))
         qWarning("Profile stop timed out during shutdown; exiting owned core");
@@ -431,7 +429,12 @@ bool MainWindow::coordinatedShutdown() {
     // RPC and bounded process wait there, never touching QProcess across threads.
     auto done = std::make_shared<QSemaphore>();
     auto stopped = std::make_shared<std::atomic_bool>(false);
-    runOnUiThread([this, done, stopped] {
+    auto cancelled = std::make_shared<std::atomic_bool>(false);
+    runOnUiThread([this, done, stopped, cancelled] {
+        // If the core thread was busy past our deadline, do not run an old
+        // shutdown after the UI has resumed. Already-running cleanup remains
+        // serialized with any subsequent core startup on this same thread.
+        if (cancelled->load()) return;
         stop_core_daemon();
         if (core_process && core_process->state() != QProcess::NotRunning) {
             if (!core_process->waitForFinished(500)) {
@@ -443,11 +446,18 @@ bool MainWindow::coordinatedShutdown() {
         done->release();
     }, DS_cores);
     if (!WaitForShutdown(*done, 2000) || !stopped->load()) {
+        cancelled->store(true);
         qWarning("Owned core did not stop within the shutdown deadline");
         return false;
     }
+    // These operations cannot be rolled back. Keep the live app's traffic
+    // loop and hotkeys until all shutdown refusal points have passed.
+    NekoGui_traffic::trafficLooper->RequestShutdown();
+    RegisterHotkey(true);
     shutdownUiThreadDispatcher();
     shutdownComplete_ = true;
+    preparing.commit();
+    saving.commit();
     dialogs.commit();
     return true;
 }

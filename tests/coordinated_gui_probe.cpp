@@ -7,7 +7,95 @@
 #undef main
 
 #include "ui/widget/MessageBoxTimer.h"
+#include "db/traffic/TrafficLooper.hpp"
+#include "main/ShutdownDialogs.hpp"
+#include "main/UiSnapshot.hpp"
+#include <QElapsedTimer>
 #include <cstdio>
+
+static bool waitUntil(const std::function<bool()> &ready, int timeoutMs = 3000) {
+    QElapsedTimer timer;
+    timer.start();
+    while (!ready() && timer.elapsed() < timeoutMs) {
+        QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents, 10);
+        QThread::msleep(1);
+    }
+    return ready();
+}
+
+static void checkRefusalRecovery(MainWindow *window) {
+    auto *store = NekoGui::dataStore;
+    // Exercise the public start path, persistence and the existing traffic loop.
+    // The synthetic core acknowledges RPCs without opening any proxy listeners.
+    store->test_latency_url = "https://shutdown-recovery.invalid/";
+    const bool saved = store->Save();
+    auto uiDone = std::make_shared<QSemaphore>();
+    auto uiOpen = std::make_shared<std::atomic_bool>(false);
+    runOnNewThread([uiDone, uiOpen] {
+        uiOpen->store(NekoGui_concurrency::ReadUi<bool>([] { return true; }).value_or(false));
+        uiDone->release();
+    });
+    const bool uiResponding = waitUntil([uiDone] { return uiDone->available() > 0; }) && uiOpen->load();
+    window->neko_start(0);
+    const bool started = waitUntil([] { return NekoGui::dataStore->started_id == 0; });
+    const bool sampling = started && waitUntil([] {
+        return NekoGui_traffic::trafficLooper->looping.load();
+    });
+    std::printf("REFUSAL_RECOVERY prepare_exit=%d save_blocked=%d saved=%d "
+                "dialogs=%d ui_open=%d started=%d sampling=%d\n",
+                store->prepare_exit, store->save_control_no_save, saved,
+                ShutdownDialogs::suppressed, uiResponding, started, sampling);
+    std::fflush(stdout);
+    if (store->prepare_exit || store->save_control_no_save || !saved ||
+        ShutdownDialogs::suppressed || !uiResponding || !started || !sampling)
+        qFatal("refused shutdown did not restore a usable application");
+}
+
+static void checkOwnedCoreTimeout(MainWindow *window) {
+    // Hold the production core thread past the two-second shutdown deadline.
+    // No real process refuses SIGKILL and no privileged action is involved.
+    auto release = std::make_shared<QSemaphore>();
+    auto entered = std::make_shared<QSemaphore>();
+    runOnUiThread([release, entered] {
+        entered->release();
+        if (!release->tryAcquire(1, 15000)) qFatal("core probe was not released");
+    }, DS_cores);
+    if (!waitUntil([entered] { return entered->available() > 0; }))
+        qFatal("core probe was not scheduled");
+    int nested = 0;
+    bool nestedAccepted = false;
+    QTimer reentry;
+    QObject::connect(&reentry, &QTimer::timeout, window, [&] {
+        ++nested;
+        nestedAccepted |= window->coordinatedShutdown();
+    });
+    reentry.start(100);
+    const bool first = window->coordinatedShutdown();
+    const bool firstRestored = !NekoGui::dataStore->prepare_exit &&
+                              !NekoGui::dataStore->save_control_no_save &&
+                              !ShutdownDialogs::suppressed;
+    const bool second = window->coordinatedShutdown();
+    reentry.stop();
+    const bool secondRestored = !NekoGui::dataStore->prepare_exit &&
+                               !NekoGui::dataStore->save_control_no_save &&
+                               !ShutdownDialogs::suppressed;
+    release->release();
+    auto drained = std::make_shared<QSemaphore>();
+    runOnUiThread([drained] { drained->release(); }, DS_cores);
+    if (!waitUntil([drained] { return drained->available() > 0; }))
+        qFatal("core probe did not drain");
+    // A timed-out queued shutdown must not later kill a core in the live app.
+    const bool coreRunning = NekoGui::dataStore->core_running;
+    std::printf("CORE_TIMEOUT first=%d second=%d first_restored=%d second_restored=%d "
+                "nested=%d nested_accepted=%d core_running=%d\n",
+                first, second, firstRestored, secondRestored,
+                nested, nestedAccepted, coreRunning);
+    std::fflush(stdout);
+    if (first || second || !firstRestored || !secondRestored ||
+        !nested || nestedAccepted || !coreRunning)
+        qFatal("owned-core timeout/retry did not restore shutdown state");
+    checkRefusalRecovery(window);
+}
 
 #ifdef Q_OS_MACOS
 #include "sys/VpnProcess.hpp"
@@ -190,6 +278,7 @@ struct MacVpnShutdownProbe {
             window->neko_set_spmode_vpn(false, false);
         }
         if (NekoGui::dataStore->spmode_vpn) qFatal("normal stop failed");
+        checkRefusalRecovery(window);
         std::puts("MAC_STOP_RECOVERY_OK");
     }
 };
@@ -201,6 +290,13 @@ static void installProbe() {
         auto *window = GetMainWindow();
         if (!window || !NekoGui::dataStore->core_running) return;
         const auto mode = qEnvironmentVariable("NKR_QUIT_TEST_MODE");
+        if (mode == "owned_core_timeout") {
+            poll->stop();
+            checkOwnedCoreTimeout(window);
+            std::puts("QUIT_PROBE_READY");
+            std::fflush(stdout);
+            return;
+        }
 #ifdef Q_OS_MACOS
         if (mode == "mac_start_recovery") {
             poll->stop();

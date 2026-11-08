@@ -61,13 +61,14 @@ def fake_core():
                 elif kind == 6 and not flags & 1:
                     conn.sendall(frame(6, 1, 0, payload))
                 elif kind in (0, 1) and flags & 1 and stream:
-                    # A pending Start never completes. In the Stop case Start
-                    # succeeds, subsequent Stop/Exit remain pending. This peer
-                    # deliberately never exits itself: production must reap it.
+                    # Recovery probes acknowledge every call. A pending Start
+                    # never completes; pending_stop acknowledges only Start.
+                    # This peer never exits itself: production must reap it.
                     with request_lock:
                         first = not (root / 'request').exists()
                         (root / 'request').touch()
-                    if os.environ['NKR_QUIT_TEST_MODE'] == 'pending_stop' and first:
+                    if (os.environ['NKR_QUIT_TEST_MODE'] in ('owned_core_timeout', 'mac_stop_failure') or
+                            os.environ['NKR_QUIT_TEST_MODE'] == 'pending_stop' and first):
                         conn.sendall(frame(1, 4, stream, b'\x88') +
                                      frame(0, 0, stream, b'\0' * 5) +
                                      frame(1, 5, stream, b'\x00\x0bgrpc-status\x010'))
@@ -118,9 +119,9 @@ def run_gui(binary, mode, route):
         (cfg / sub).mkdir(parents=True)
     settings = dict(remember_enable=mode in ('pending_start', 'pending_stop'), remember_id=0, spmode2=[],
                     sub_auto_update=0, inbound_address='127.0.0.1', language=1,
-                    traffic_loop_interval=0)
+                    traffic_loop_interval=500 if mode in ('owned_core_timeout', 'mac_stop_failure') else 0)
     (cfg / 'groups/nekobox.json').write_text(json.dumps(settings))
-    if mode in ('pending_start', 'pending_stop'):
+    if mode in ('pending_start', 'pending_stop', 'owned_core_timeout', 'mac_stop_failure'):
         (cfg / 'groups/pm.json').write_text('{"groups":[0]}')
         (cfg / 'groups/0.json').write_text('{"id":0,"name":"quit test","order":[0]}')
         (cfg / 'profiles/0.json').write_text(json.dumps(dict(type='socks', id=0, gid=0,
@@ -146,6 +147,12 @@ def run_gui(binary, mode, route):
                 evidence = (root / 'gui.log').read_text()
                 assert 'stop=0 released=1 tun_after_stop=1 shutdown=0 tun_after_shutdown=1 dialogs_restored=1' in evidence
                 assert 'MAC_STOP_RECOVERY_OK' in evidence
+            if mode in ('owned_core_timeout', 'mac_stop_failure'):
+                assert 'REFUSAL_RECOVERY prepare_exit=0 save_blocked=0 saved=1 dialogs=0 ui_open=1 started=1 sampling=1' in (root / 'gui.log').read_text()
+                saved = json.loads((cfg / 'groups/nekobox.json').read_text())
+                assert saved['test_url'] == 'https://shutdown-recovery.invalid/'
+            if mode == 'owned_core_timeout':
+                assert 'first=0 second=0 first_restored=1 second_restored=1' in (root / 'gui.log').read_text()
             if mode == 'mac_start_recovery':
                 assert 'MAC_START_RECOVERY_OK' in (root / 'gui.log').read_text()
             core = int((root / 'core.pid').read_text())

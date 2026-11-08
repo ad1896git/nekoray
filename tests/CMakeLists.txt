@@ -344,6 +344,10 @@ if(UNIX AND NOT NKR_NO_GRPC)
     endif()
     set_target_properties(tst_coordinated_gui PROPERTIES AUTORCC ON)
     target_link_libraries(tst_coordinated_gui PRIVATE nkr_runtime)
+    add_test(NAME coordinated_gui_owned_core_timeout
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/test_coordinated_gui.py"
+            $<TARGET_FILE:tst_coordinated_gui> owned_core_timeout term)
+    set_tests_properties(coordinated_gui_owned_core_timeout PROPERTIES TIMEOUT 25 RUN_SERIAL TRUE)
     foreach(mode IN ITEMS idle pending_start pending_stop)
         foreach(route IN ITEMS term int)
             add_test(NAME coordinated_gui_${mode}_${route}
