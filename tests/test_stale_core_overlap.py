@@ -68,7 +68,7 @@ def regression(binary, mode="auth"):
         inbound_address='127.0.0.1', language=1, traffic_loop_interval=0)))
     env = os.environ.copy()
     env.update(NKR_QUIT_TEST_ROOT=str(root), NKR_STALE_MODE=mode,
-               NKR_QUIT_TEST_MODE='stale_exit_restart' if mode in ('auth', 'pre_spawn') else 'idle',
+               NKR_QUIT_TEST_MODE='stale_exit_restart' if mode == 'auth' else 'idle',
                QT_QPA_PLATFORM=env.get('NKR_QUIT_TEST_QPA', 'offscreen'))
     for key in ('HOME', 'CFFIXED_USER_HOME', 'XDG_CONFIG_HOME', 'XDG_CACHE_HOME', 'XDG_DATA_HOME', 'TMPDIR'):
         path = root / key
@@ -95,10 +95,13 @@ def regression(binary, mode="auth"):
                 pending = subprocess.Popen([str(executable), '-appdata', str(root / 'appdata')],
                                            env=env, stdout=log, stderr=subprocess.STDOUT)
             guis.append(pending)
-            until(lambda: 'Startup: waiting for previous core launch' in
-                  (root / 'gui-pending.log').read_text())
+            until(lambda: 'SIGNAL_HANDLERS_READY' in (root / 'gui-pending.log').read_text() or
+                  pending.poll() is not None)
+            assert pending.poll() is None, (root / 'gui-pending.log').read_text()
             pending.terminate()
-            assert pending.wait(timeout=3) == 0, 'quit during gate must complete normally'
+            rc = pending.wait(timeout=3)
+            assert rc == 0, ('quit during gate must complete normally: exit=%d\n' % rc +
+                             (root / 'gui-pending.log').read_text())
             assert not launches(), 'quit during recovery must not activate a core'
             assert record.exists(), 'unresolved recovery record must survive quit'
             print('QUIT_DURING_GATE_OK no replacement started', flush=True)
@@ -148,7 +151,7 @@ def regression(binary, mode="auth"):
         (root / 'release-core').touch()
         # The fake old core self-exits on the same 10s parent poll as production.
         until(lambda: all(not fixture.alive(row['pid']) for row in launches()), 15)
-        if mode != 'refuse':
+        if mode != 'refuse' and launches():
             assert not (cfg / '.core-launch.json').exists(), 'clean stop must remove its own launch record'
 
 

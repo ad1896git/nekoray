@@ -408,9 +408,14 @@ endif()
 
 if(UNIX AND NOT NKR_NO_GRPC)
     foreach(mode IN ITEMS wait pre_spawn refuse)
+        if(mode STREQUAL "pre_spawn")
+            set(stale_core_binary tst_coordinated_gui)
+        else()
+            set(stale_core_binary nekobox)
+        endif()
         add_test(NAME stale_core_${mode}
             COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/test_stale_core_overlap.py"
-                $<TARGET_FILE:nekobox> ${mode})
+                $<TARGET_FILE:${stale_core_binary}> ${mode})
         set_tests_properties(stale_core_${mode} PROPERTIES TIMEOUT 45 RUN_SERIAL TRUE)
     endforeach()
 endif()
