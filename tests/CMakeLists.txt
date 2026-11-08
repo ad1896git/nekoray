@@ -418,4 +418,10 @@ if(UNIX AND NOT NKR_NO_GRPC)
                 $<TARGET_FILE:${stale_core_binary}> ${mode})
         set_tests_properties(stale_core_${mode} PROPERTIES TIMEOUT 45 RUN_SERIAL TRUE)
     endforeach()
+    if(APPLE)
+        add_test(NAME stale_core_unknown_owner
+            COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/test_stale_core_overlap.py"
+                $<TARGET_FILE:nekobox> unknown_owner)
+        set_tests_properties(stale_core_unknown_owner PROPERTIES TIMEOUT 45 RUN_SERIAL TRUE)
+    endif()
 endif()

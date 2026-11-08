@@ -22,6 +22,9 @@ struct Record {
 };
 QString recordPath();
 Identity observe(qint64 pid);
+enum class OwnerState { MATCHING_LIVE, CONFIRMED_DEAD, CONFIRMED_REUSED, UNKNOWN };
+// PID/start observation only; executable lookup and signaling are unnecessary.
+OwnerState observeOwner(const Identity &expected);
 bool same(const Identity &expected, const Identity &actual);
 bool read(const QString &path, Record &record);
 bool write(const QString &path, const Record &record);
@@ -31,6 +34,7 @@ void removeOwned(const QString &path, const QByteArray &token);
 // stale-PID signal operation: authentication binds Exit to the previous launch.
 struct Operations {
     std::function<Identity(qint64)> observeProcess = observe;
+    std::function<OwnerState(const Identity &)> ownerState = observeOwner;
     std::function<void(const Record &)> exit;
     // 0: connection refused; 1: listener present; -1: cannot establish absence.
     std::function<int(int)> listener;

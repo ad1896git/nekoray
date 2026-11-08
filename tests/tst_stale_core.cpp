@@ -5,6 +5,7 @@
 #include <QElapsedTimer>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QProcess>
 #include "sys/StaleCore.hpp"
 #ifdef Q_OS_UNIX
 #include <unistd.h>
@@ -123,6 +124,7 @@ private slots:
         QTest::addColumn<QString>("kind");
         QTest::addColumn<bool>("refuse");
         QTest::newRow("live-sibling") << QString("live") << true;
+        QTest::newRow("unknown-owner") << QString("unknown") << true;
         QTest::newRow("dead-owner") << QString("dead") << false;
         QTest::newRow("reused-pid") << QString("reused") << false;
         QTest::newRow("this-gui") << QString("self") << false;
@@ -157,23 +159,72 @@ private slots:
             QCOMPARE(loaded.owner.start, value.owner.start);
         }
         int requests = 0;
+        bool ownerObserved = false;
         Operations operations;
-        operations.observeProcess = [&](qint64 pid) {
-            if (pid != value.owner.pid || kind == "dead") return Identity{};
-            return Identity{pid, kind == "reused" ? "new-gui-start" : "gui-start", {}};
+        operations.ownerState = [&](const Identity &expected) {
+            ownerObserved = expected.pid == value.owner.pid && expected.start == value.owner.start;
+            if (kind == "unknown") return OwnerState::UNKNOWN;
+            if (kind == "dead") return OwnerState::CONFIRMED_DEAD;
+            if (kind == "reused") return OwnerState::CONFIRMED_REUSED;
+            return OwnerState::MATCHING_LIVE;
         };
+        operations.observeProcess = [](qint64) { return Identity{}; };
         operations.exit = [&](const Record &) { ++requests; };
         operations.listener = [](int) { return 0; };
         std::atomic_bool cancelled{false};
         QString refusal;
         QCOMPARE(wait(path, cancelled, operations, 40, &refusal), !refuse);
+        QCOMPARE(ownerObserved, kind != "self" && kind != "legacy" && kind != "incomplete");
         QCOMPARE(requests, refuse ? 0 : 1);
         QCOMPARE(QFile::exists(path), refuse);
         if (refuse) {
-            QVERIFY(refusal.contains("Another NekoBox GUI is using this configuration"));
+            QVERIFY(refusal.contains(kind == "unknown" ? "Cannot determine whether another NekoBox GUI" :
+                                                       "Another NekoBox GUI is using this configuration"));
             QVERIFY(file.open(QIODevice::ReadOnly));
             QCOMPARE(file.readAll(), original);
         } else QVERIFY(refusal.isEmpty());
+    }
+    void unobservableLiveOwner() {
+        QProcess owner;
+        owner.start(QStringLiteral("/bin/sleep"), {QStringLiteral("10")});
+        QVERIFY(owner.waitForStarted());
+        QTemporaryDir root;
+        const auto path = root.filePath(".core-launch.json");
+        auto value = record(root.path());
+        value.owner = observe(owner.processId());
+        QVERIFY(value.owner.pid > 0);
+        QCOMPARE(observeOwner(value.owner), OwnerState::MATCHING_LIVE);
+        // Owner observation does not depend on executable identity.
+        value.owner.executable.clear();
+        QCOMPARE(observeOwner(value.owner), OwnerState::MATCHING_LIVE);
+        auto reused = value.owner;
+        reused.start += "-reused";
+        QCOMPARE(observeOwner(reused), OwnerState::CONFIRMED_REUSED);
+        QVERIFY(write(path, value));
+        QFile file(path);
+        QVERIFY(file.open(QIODevice::ReadOnly));
+        const auto original = file.readAll(); file.close();
+        int observations = 0, requests = 0, listenerChecks = 0;
+        Operations operations;
+        operations.ownerState = [&](const Identity &expected) {
+            ++observations;
+            return expected.pid == value.owner.pid ? OwnerState::UNKNOWN : OwnerState::CONFIRMED_DEAD;
+        };
+        operations.exit = [&](const Record &) { ++requests; };
+        operations.listener = [&](int) { ++listenerChecks; return 0; };
+        std::atomic_bool cancelled{false};
+        QString refusal;
+        QVERIFY(!wait(path, cancelled, operations, 40, &refusal));
+        QCOMPARE(observations, 1);
+        QCOMPARE(requests, 0);
+        QCOMPARE(listenerChecks, 0);
+        QVERIFY(refusal.contains("Cannot determine whether another NekoBox GUI"));
+        QVERIFY(file.open(QIODevice::ReadOnly));
+        QCOMPARE(file.readAll(), original);
+        QCOMPARE(owner.state(), QProcess::Running);
+        owner.terminate(); // Only this test's controlled child; not record-based signaling.
+        QVERIFY(owner.waitForFinished());
+        QCOMPARE(observeOwner(value.owner), OwnerState::CONFIRMED_DEAD);
     }
     void selfExitAndRefusal() {
         for (bool exits : {true, false}) {

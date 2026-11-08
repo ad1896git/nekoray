@@ -49,6 +49,7 @@ def core():
 
 
 def regression(binary, mode="auth"):
+    many = mode in ('many', 'unknown_owner')
     root = Path(tempfile.mkdtemp(prefix='stale-core-', dir=Path.cwd()))
     print('EVIDENCE: ' + str(root), flush=True)
     executable = root / 'nekobox'
@@ -70,7 +71,7 @@ def regression(binary, mode="auth"):
         shutil.copytree(root / 'appdata', root / 'other-appdata')
     env = os.environ.copy()
     env.update(NKR_QUIT_TEST_ROOT=str(root), NKR_STALE_MODE=mode,
-               NKR_QUIT_TEST_MODE='stale_exit_restart' if mode in ('auth', 'many', 'different_appdata') else 'idle',
+               NKR_QUIT_TEST_MODE='stale_exit_restart' if mode == 'auth' or many or mode == 'different_appdata' else 'idle',
                QT_QPA_PLATFORM=env.get('NKR_QUIT_TEST_QPA', 'offscreen'))
     for key in ('HOME', 'CFFIXED_USER_HOME', 'XDG_CONFIG_HOME', 'XDG_CACHE_HOME', 'XDG_DATA_HOME', 'TMPDIR'):
         path = root / key
@@ -109,24 +110,43 @@ def regression(binary, mode="auth"):
             print('QUIT_DURING_GATE_OK no replacement started', flush=True)
         for index in range(1 if mode == 'pre_spawn' else 2):
             (root / 'core.status').unlink(missing_ok=True)
-            if mode == 'many' and index == 1:
+            if many and index == 1:
                 incumbent = (cfg / '.core-launch.json').read_bytes()
             appdata = root / ('other-appdata' if mode == 'different_appdata' and index == 1 else 'appdata')
+            command = [str(executable), '-appdata', str(appdata)]
+            if (many or mode == 'different_appdata') and index == 1:
+                command += ['-many']
+            if mode == 'unknown_owner' and index == 1:
+                # The owner is genuinely alive. Deny only the second GUI's
+                # sibling queries, keeping self observation and Qt functional.
+                command = ['/usr/bin/sandbox-exec', '-p',
+                           '(version 1)(allow default)(deny process-info-pidinfo)'
+                           '(allow process-info-pidinfo (target self))'] + command
             with (root / ('gui%d.log' % index)).open('w') as log:
-                gui = subprocess.Popen([str(executable), '-appdata', str(appdata)] +
-                                       (['-many'] if mode in ('many', 'different_appdata') and index == 1 else []),
-                                       env=env, stdout=log, stderr=subprocess.STDOUT)
+                gui = subprocess.Popen(command, env=env, stdout=log, stderr=subprocess.STDOUT)
             guis.append(gui)
-            if mode == 'many' and index == 1:
+            if many and index == 1:
                 record = cfg / '.core-launch.json'
                 until(lambda: 'Startup refused:' in (root / 'gui1.log').read_text() or
                       len(launches()) > 1 or gui.poll() is not None, 8)
-                assert fixture.alive(launches()[0]['pid']), 'FU-H: same-config -many exited a live GUI core'
-                assert len(launches()) == 1, 'FU-H: same-config -many must refuse a second core'
-                assert record.read_bytes() == incumbent, 'refusal must preserve the incumbent record exactly'
-                assert not (root / 'exit_requests').exists(), 'live owner must never receive Exit'
-                assert 'Another NekoBox GUI is using this configuration' in (root / 'gui1.log').read_text()
-                assert guis[0].poll() is None, 'incumbent GUI must remain alive'
+                def preserved():
+                    assert fixture.alive(launches()[0]['pid']), 'FU-H: same-config -many exited a live GUI core'
+                    assert len(launches()) == 1, 'FU-H: same-config -many must refuse a second core'
+                    assert record.read_bytes() == incumbent, 'refusal must preserve the incumbent record exactly'
+                    assert not (root / 'exit_requests').exists(), 'live owner must never receive Exit'
+                    assert guis[0].poll() is None, 'incumbent GUI must remain alive'
+                preserved()
+                expected = ('Cannot determine whether another NekoBox GUI is using this configuration'
+                            if mode == 'unknown_owner' else 'Another NekoBox GUI is using this configuration')
+                assert expected in (root / 'gui1.log').read_text()
+                assert gui.poll() is None, 'refused GUI must remain responsive'
+                # Allow the worker completion/modal warning to be delivered,
+                # then check normal quit cannot remove the incumbent record.
+                time.sleep(3)
+                preserved()
+                gui.terminate()
+                assert gui.wait(timeout=3) == 0, 'refused GUI must quit normally'
+                preserved()
                 print('LIVE_OWNER_REFUSED incumbent core and record preserved; no Exit sent', flush=True)
                 break
             if mode == 'refuse' and index == 1:
@@ -139,7 +159,7 @@ def regression(binary, mode="auth"):
             assert gui.poll() is None, (root / ('gui%d.log' % index)).read_text()
             until(lambda: (root / 'core.status').exists() and
                   (root / 'core.status').read_text() == 'listening')
-            if index == 0 and mode not in ('pre_spawn', 'many', 'different_appdata'):
+            if index == 0 and not many and mode not in ('pre_spawn', 'different_appdata'):
                 gui.kill()  # SIGKILL only the GUI, as in KI-2.
                 gui.wait(timeout=5)
                 assert fixture.alive(launches()[0]['pid']), 'old core must survive GUI SIGKILL'

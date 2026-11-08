@@ -52,6 +52,52 @@ Identity observe(qint64 pid) {
     return result;
 }
 
+OwnerState observeOwner(const Identity &expected) {
+    if (expected.pid <= 0 || expected.pid > INT_MAX || expected.start.isEmpty())
+        return OwnerState::UNKNOWN;
+    QString start;
+#ifdef Q_OS_MACOS
+    proc_bsdinfo info{};
+    errno = 0;
+    const int bytes = proc_pidinfo(int(expected.pid), PROC_PIDTBSDINFO, 0, &info, sizeof(info));
+    if (bytes != sizeof(info)) {
+        // A short read or an access error is not evidence of process death.
+        return bytes <= 0 && errno == ESRCH ? OwnerState::CONFIRMED_DEAD : OwnerState::UNKNOWN;
+    }
+    if (info.pbi_pid != expected.pid) return OwnerState::UNKNOWN;
+    if (info.pbi_status == 5) return OwnerState::CONFIRMED_DEAD; // zombie
+    if (info.pbi_status < 1 || info.pbi_status > 5 || !info.pbi_start_tvsec || info.pbi_start_tvusec >= 1000000)
+        return OwnerState::UNKNOWN;
+    start = QString::number(info.pbi_start_tvsec) + ":" + QString::number(info.pbi_start_tvusec);
+#elif defined(Q_OS_LINUX)
+    const auto name = QFile::encodeName(QStringLiteral("/proc/%1/stat").arg(expected.pid));
+    const int fd = ::open(name.constData(), O_RDONLY | O_CLOEXEC);
+    if (fd < 0)
+        return errno == ENOENT || errno == ESRCH ? OwnerState::CONFIRMED_DEAD : OwnerState::UNKNOWN;
+    QFile stat;
+    if (!stat.open(fd, QIODevice::ReadOnly, QFileDevice::AutoCloseHandle)) {
+        ::close(fd);
+        return OwnerState::UNKNOWN;
+    }
+    const auto data = stat.readAll();
+    const auto end = data.lastIndexOf(')');
+    if (stat.error() != QFileDevice::NoError || !data.endsWith('\n') ||
+        !data.startsWith(QByteArray::number(expected.pid) + " (") || end < 0 || data.mid(end, 2) != ") ")
+        return OwnerState::UNKNOWN;
+    const auto fields = data.mid(end + 2).simplified().split(' ');
+    if (fields.size() < 20 || fields[0].size() != 1 || !QByteArray("RSDZTtWXxKPI").contains(fields[0]))
+        return OwnerState::UNKNOWN;
+    bool validStart = false;
+    fields[19].toULongLong(&validStart);
+    if (!validStart) return OwnerState::UNKNOWN;
+    if (fields[0] == "Z") return OwnerState::CONFIRMED_DEAD;
+    start = QString::fromLatin1(fields[19]);
+#else
+    return OwnerState::UNKNOWN;
+#endif
+    return start == expected.start ? OwnerState::MATCHING_LIVE : OwnerState::CONFIRMED_REUSED;
+}
+
 bool same(const Identity &expected, const Identity &actual) {
     return expected.pid > 0 && !expected.start.isEmpty() && !expected.executable.isEmpty() &&
            expected.pid == actual.pid && expected.start == actual.start &&
@@ -187,12 +233,18 @@ bool wait(const QString &path, const std::atomic_bool &cancelled, Operations ope
     timer.start();
     if (cancelled.load()) return false;
     if (record.owner.pid && record.owner.pid != QCoreApplication::applicationPid()) {
-        const auto owner = operations.observeProcess(record.owner.pid);
-        if (owner.pid == record.owner.pid && owner.start == record.owner.start) {
+        const auto owner = operations.ownerState(record.owner);
+        if (owner == OwnerState::MATCHING_LIVE) {
             if (refusal) *refusal = QCoreApplication::translate("MainWindow",
                 "Another NekoBox GUI is using this configuration. Close it or use a different -appdata directory, then restart NekoBox.");
             qWarning("Startup refused: Another NekoBox GUI is using this configuration");
             return false; // Preserve the incumbent record and core; do not send Exit.
+        }
+        if (owner != OwnerState::CONFIRMED_DEAD && owner != OwnerState::CONFIRMED_REUSED) {
+            if (refusal) *refusal = QCoreApplication::translate("MainWindow",
+                "Cannot determine whether another NekoBox GUI is using this configuration. Close other instances or use a different -appdata directory, then restart NekoBox.");
+            qWarning("Startup refused: Cannot determine whether another NekoBox GUI is using this configuration");
+            return false; // Unknown must preserve the record and must not send Exit.
         }
     }
     qInfo("Startup: waiting for previous core launch");
