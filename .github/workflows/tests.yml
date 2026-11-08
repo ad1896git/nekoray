@@ -299,7 +299,7 @@ jobs:
 
   linux-go-race:
     # KI-1: the NK04 TUIC tests once raced in quic-go congestion control.
-    # This proves the patched quic-go build is race-free under -race.
+    # Exercise the patched quic-go build under -race with the NK04 regressions.
     name: linux-go-race
     runs-on: ubuntu-22.04
     timeout-minutes: 30
