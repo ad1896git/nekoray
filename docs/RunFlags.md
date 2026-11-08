@@ -20,3 +20,5 @@ existing restart/recovery behavior.
 Legacy records, or records with missing/incomplete owner metadata, retain the
 existing authenticated Exit and bounded wait/refusal recovery path. They cannot
 identify a live legacy GUI; close older instances before launching with `-many`.
+
+Core file log location, console fallback, and old-file migration: [CoreLogs.md](CoreLogs.md).

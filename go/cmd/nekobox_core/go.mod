@@ -94,7 +94,7 @@ require (
 
 replace grpc_server => ../../grpc_server
 
-replace github.com/matsuridayo/libneko => github.com/matsuridayo/libneko v0.0.0-20240702024904-1c47a3af7199
+replace github.com/matsuridayo/libneko => github.com/ad1896git/libneko v0.0.0-20261108075722-45e350171b7b
 
 replace github.com/sagernet/sing-box => github.com/ad1896git/sing-box v0.0.0-20261106182936-8bd0e6be17a4
 

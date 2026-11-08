@@ -42,10 +42,14 @@ popd
 ####
 
 if [ ! -d "libneko" ]; then
-  git clone --no-checkout "$NKR_SRC_UPSTREAM/libneko.git"
+  git clone --no-checkout "$NKR_SRC_LIBNEKO/libneko.git"
 fi
 pushd libneko
-git checkout "$COMMIT_LIBNEKO"
+# An existing checkout may still use upstream origin, which lacks fork commits.
+if ! git cat-file -e "$COMMIT_LIBNEKO^{commit}" 2>/dev/null; then
+  git fetch "$NKR_SRC_LIBNEKO/libneko.git" "$COMMIT_LIBNEKO"
+fi
+git checkout --detach "$COMMIT_LIBNEKO"
 
 popd
 
