@@ -149,7 +149,7 @@ def regression(binary, mode="auth"):
         # The fake old core self-exits on the same 10s parent poll as production.
         until(lambda: all(not fixture.alive(row['pid']) for row in launches()), 15)
         if mode != 'refuse':
-            assert not (cfg / '.core-launch.json').exists(), 'clean stop must remove its own launch record' 
+            assert not (cfg / '.core-launch.json').exists(), 'clean stop must remove its own launch record'
 
 
 if __name__ == '__main__':
