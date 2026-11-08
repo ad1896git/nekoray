@@ -173,7 +173,9 @@ private:
     void AttachMacVPNProcess(
         NekoGui_runtime::VpnProcess *process,
         const std::shared_ptr<NekoGui_sys::ExternalTempFiles> &files);
-    bool StartMacVPNProcess();
+    // Private launcher override permits unprivileged start regression tests.
+    bool StartMacVPNProcess(
+        const QString &launcher = QStringLiteral("/usr/bin/osascript"));
     bool StopMacVPNProcess(bool unconditional);
     // The private launcher override permits unprivileged reset regression tests.
     bool ResetMacVPNState(

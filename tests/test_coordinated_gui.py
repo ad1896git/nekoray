@@ -125,6 +125,8 @@ def run_gui(binary, mode, route):
                 evidence = (root / 'gui.log').read_text()
                 assert 'stop=0 released=1 tun_after_stop=1 shutdown=0 tun_after_shutdown=1 dialogs_restored=1' in evidence
                 assert 'MAC_STOP_RECOVERY_OK' in evidence
+            if mode == 'mac_start_recovery':
+                assert 'MAC_START_RECOVERY_OK' in (root / 'gui.log').read_text()
             core = int((root / 'core.pid').read_text())
             started = time.monotonic()
             gui.send_signal(signal.SIGTERM if route == 'term' else signal.SIGINT)

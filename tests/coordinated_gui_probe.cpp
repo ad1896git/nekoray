@@ -51,6 +51,83 @@ struct MacVpnShutdownProbe {
         NekoGui::dataStore->spmode_vpn = true;
     }
 
+    static void runStartRecovery(MainWindow *window) {
+        QScopedValueRollback<bool> dialogs(ShutdownDialogs::suppressed, true);
+        const auto root = qEnvironmentVariable("NKR_QUIT_TEST_ROOT");
+        // Strict JSON avoids the bundled template's comments; no real Tun is made.
+        QDir().mkpath("vpn");
+        QFile config("vpn/sing-box-vpn.json");
+        const QByteArray json = R"({"inbounds":[{"type":"tun","interface_name":"utun250"}]})";
+        if (!config.open(QIODevice::WriteOnly) || config.write(json) != json.size())
+            qFatal("cannot write start probe config");
+        config.close();
+        const auto launcher = root + "/recovery-launcher";
+        const auto invoked = root + "/helper-invoked";
+        const auto writeLauncher = [&](const QByteArray &ending) {
+            QFile file(launcher);
+            const QByteArray script = "#!/bin/sh\n/bin/cat >/dev/null\n"
+                "touch \"" + invoked.toUtf8() + "\"\n" + ending;
+            if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate) ||
+                file.write(script) != script.size()) qFatal("cannot write fake helper");
+            file.close();
+            if (!file.setPermissions(QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner))
+                qFatal("cannot make fake helper executable");
+        };
+        attachReady(window, 74);
+        if (window->StopVPNProcess()) qFatal("fake failed stop returned success");
+        const auto pending = window->macVpnStopFailed_;
+        if (!pending || !*pending) qFatal("failed stop did not record recovery");
+        const auto assertPending = [&] {
+            if (window->macVpnStopFailed_ != pending || !*pending ||
+                window->vpnProcess_ || window->macVpnFiles_ || window->vpn_pid ||
+                !NekoGui::dataStore->spmode_vpn)
+                qFatal("new Start lost pending failed-stop recovery");
+        };
+        // Missing helper, error and cancellation must all be refused BEFORE launch.
+        if (window->StartMacVPNProcess(root + "/missing-helper"))
+            qFatal("Start accepted while recovery was pending");
+        assertPending();
+        for (const auto &ending : {
+                 QByteArray("echo 'execution error: cleanup failed (74)' >&2\nexit 1\n"),
+                 QByteArray("echo 'execution error: User canceled. (-128)' >&2\nexit 1\n")}) {
+            writeLauncher(ending);
+            if (window->StartMacVPNProcess(launcher))
+                qFatal("Start accepted while recovery was pending");
+            assertPending();
+            if (QFile::exists(invoked)) qFatal("pending Start invoked authorization helper");
+            if (window->ResetMacVPNState(launcher)) qFatal("failed/cancelled reset succeeded");
+            if (!QFile::remove(invoked)) qFatal("reset did not invoke fake helper");
+            assertPending();
+            if (window->StartMacVPNProcess(launcher)) qFatal("Start accepted after failed reset");
+            assertPending();
+            if (QFile::exists(invoked)) qFatal("retry invoked authorization helper");
+        }
+        writeLauncher("exit 0\n");
+        if (!window->ResetMacVPNState(launcher) || window->macVpnStopFailed_)
+            qFatal("successful reset did not release recovery");
+        window->neko_set_spmode_vpn(false, false);
+        if (NekoGui::dataStore->spmode_vpn || !window->StopVPNProcess())
+            qFatal("ordinary stop did not recover after reset");
+        QFile::remove(invoked);
+        // The same real Start path can launch again once recovery succeeds.
+        if (!window->StartMacVPNProcess(launcher)) qFatal("Start remained blocked after reset");
+        QEventLoop ended;
+        QTimer deadline;
+        deadline.setSingleShot(true);
+        QObject::connect(window->vpnProcess_, &NekoGui_runtime::VpnProcess::ended,
+                         &ended, &QEventLoop::quit);
+        QObject::connect(&deadline, &QTimer::timeout, &ended, &QEventLoop::quit);
+        deadline.start(3000);
+        ended.exec();
+        if (window->vpnProcess_ || !QFile::exists(invoked))
+            qFatal("recovered Start did not execute fake helper");
+        attachReady(window, 0);
+        window->neko_set_spmode_vpn(false, false);
+        if (NekoGui::dataStore->spmode_vpn || !window->StopVPNProcess())
+            qFatal("normal start/stop failed after recovery");
+        std::puts("MAC_START_RECOVERY_OK");
+    }
+
     static void run(MainWindow *window) {
         attachReady(window, 74);
         bool stopped;
@@ -125,6 +202,13 @@ static void installProbe() {
         if (!window || !NekoGui::dataStore->core_running) return;
         const auto mode = qEnvironmentVariable("NKR_QUIT_TEST_MODE");
 #ifdef Q_OS_MACOS
+        if (mode == "mac_start_recovery") {
+            poll->stop();
+            MacVpnShutdownProbe::runStartRecovery(window);
+            std::puts("QUIT_PROBE_READY");
+            std::fflush(stdout);
+            return;
+        }
         if (mode == "mac_stop_failure") {
             poll->stop();
             MacVpnShutdownProbe::run(window);
