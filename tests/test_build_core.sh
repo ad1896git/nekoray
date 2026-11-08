@@ -128,4 +128,5 @@ for invalid in stale-pin wrong-fork local-path; do
     ) >"$stdout" 2>"$stderr" && fail "accepted $invalid module/source pin"
     assert_stderr 'module/source pin mismatch: github.com/sagernet/sing-box'
 done
+bash "$repo_dir/tests/test_get_source.sh"
 printf '%s\n' 'test_build_core: PASS'
