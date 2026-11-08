@@ -69,7 +69,7 @@ def regression(binary, mode="auth"):
     env = os.environ.copy()
     env.update(NKR_QUIT_TEST_ROOT=str(root), NKR_STALE_MODE=mode,
                NKR_QUIT_TEST_MODE='stale_exit_restart' if mode in ('auth', 'pre_spawn') else 'idle',
-               QT_QPA_PLATFORM='offscreen')
+               QT_QPA_PLATFORM=env.get('NKR_QUIT_TEST_QPA', 'offscreen'))
     for key in ('HOME', 'CFFIXED_USER_HOME', 'XDG_CONFIG_HOME', 'XDG_CACHE_HOME', 'XDG_DATA_HOME', 'TMPDIR'):
         path = root / key
         path.mkdir()

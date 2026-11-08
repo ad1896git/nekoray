@@ -10,6 +10,7 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QLoggingCategory>
 
 #include "sys/MacVpnLaunch.hpp"
 #include "sys/VpnProcess.hpp"
@@ -412,6 +413,15 @@ private slots:
 #ifndef Q_OS_UNIX
         QSKIP("POSIX shell is required");
 #endif
+        // Keep the 200 KB payload out of the test runner's log stream. The
+        // captured-error size/suffix assertions below still exercise it all.
+        auto *category = QLoggingCategory::defaultCategory();
+        struct RestoreDebug {
+            QLoggingCategory *category;
+            bool enabled;
+            ~RestoreDebug() { category->setEnabled(QtDebugMsg, enabled); }
+        } restore{category, category->isDebugEnabled()};
+        category->setEnabled(QtDebugMsg, false);
         VpnProcess process([] { return false; });
         QSignalSpy ended(&process, &VpnProcess::ended);
         process.setCaptureStandardError(true);
