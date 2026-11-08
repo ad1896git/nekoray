@@ -67,6 +67,8 @@ def fake_core():
                     with request_lock:
                         first = not (root / 'request').exists()
                         (root / 'request').touch()
+                    if os.environ['NKR_QUIT_TEST_MODE'] == 'owned_core_timeout' and first:
+                        continue  # Hold the first Exit until its production RPC deadline.
                     if (os.environ['NKR_QUIT_TEST_MODE'] in ('owned_core_timeout', 'mac_stop_failure') or
                             os.environ['NKR_QUIT_TEST_MODE'] == 'pending_stop' and first):
                         conn.sendall(frame(1, 4, stream, b'\x88') +
@@ -153,6 +155,7 @@ def run_gui(binary, mode, route):
                 assert saved['test_url'] == 'https://shutdown-recovery.invalid/'
             if mode == 'owned_core_timeout':
                 assert 'first=0 second=0 first_restored=1 second_restored=1' in (root / 'gui.log').read_text()
+                assert 'ACTIVE_CORE_TIMEOUT accepted=0 restored=1 exit_started=1 core_running=1' in (root / 'gui.log').read_text()
             if mode == 'mac_start_recovery':
                 assert 'MAC_START_RECOVERY_OK' in (root / 'gui.log').read_text()
             core = int((root / 'core.pid').read_text())

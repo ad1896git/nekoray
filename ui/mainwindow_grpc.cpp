@@ -432,12 +432,13 @@ bool MainWindow::coordinatedShutdown() {
     auto cancelled = std::make_shared<std::atomic_bool>(false);
     runOnUiThread([this, done, stopped, cancelled] {
         // If the core thread was busy past our deadline, do not run an old
-        // shutdown after the UI has resumed. Already-running cleanup remains
-        // serialized with any subsequent core startup on this same thread.
+        // shutdown after the UI has resumed. An Exit RPC already in progress
+        // can cross that deadline too; recheck before touching the process.
         if (cancelled->load()) return;
         stop_core_daemon();
+        if (cancelled->load()) return;
         if (core_process && core_process->state() != QProcess::NotRunning) {
-            if (!core_process->waitForFinished(500)) {
+            if (!core_process->waitForFinished(500) && !cancelled->load()) {
                 core_process->kill();
                 core_process->waitForFinished(500);
             }

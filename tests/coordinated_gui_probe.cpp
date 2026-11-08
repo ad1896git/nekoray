@@ -94,6 +94,38 @@ static void checkOwnedCoreTimeout(MainWindow *window) {
     if (first || second || !firstRestored || !secondRestored ||
         !nested || nestedAccepted || !coreRunning)
         qFatal("owned-core timeout/retry did not restore shutdown state");
+
+    // Also expire the UI deadline while Exit is already running. The fake
+    // core leaves this first RPC unanswered; production's 500 ms RPC deadline
+    // must finish before an expired shutdown can touch the process again.
+    auto activeRelease = std::make_shared<QSemaphore>();
+    auto activeEntered = std::make_shared<QSemaphore>();
+    runOnUiThread([activeRelease, activeEntered] {
+        activeEntered->release();
+        if (!activeRelease->tryAcquire(1, 5000)) qFatal("active probe was not released");
+    }, DS_cores);
+    if (!waitUntil([activeEntered] { return activeEntered->available() > 0; }))
+        qFatal("active probe was not scheduled");
+    QTimer releaseTimer;
+    releaseTimer.setSingleShot(true);
+    releaseTimer.setTimerType(Qt::PreciseTimer);
+    QObject::connect(&releaseTimer, &QTimer::timeout, window,
+                     [activeRelease] { activeRelease->release(); });
+    releaseTimer.start(1700);
+    const bool activeAccepted = window->coordinatedShutdown();
+    const bool activeRestored = !NekoGui::dataStore->prepare_exit &&
+                               !NekoGui::dataStore->save_control_no_save &&
+                               !ShutdownDialogs::suppressed;
+    const bool exitStarted = QFile::exists(qEnvironmentVariable("NKR_QUIT_TEST_ROOT") + "/request");
+    QEventLoop settle;
+    QTimer::singleShot(1000, &settle, &QEventLoop::quit);
+    settle.exec(QEventLoop::ExcludeUserInputEvents);
+    const bool activeCoreRunning = NekoGui::dataStore->core_running;
+    std::printf("ACTIVE_CORE_TIMEOUT accepted=%d restored=%d exit_started=%d core_running=%d\n",
+                activeAccepted, activeRestored, exitStarted, activeCoreRunning);
+    std::fflush(stdout);
+    if (activeAccepted || !activeRestored || !exitStarted || !activeCoreRunning)
+        qFatal("expired active shutdown killed the live core");
     checkRefusalRecovery(window);
 }
 
