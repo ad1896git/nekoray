@@ -109,7 +109,7 @@ func TestRuntimePaths(t *testing.T) {
 			t.Fatalf("existing log not continued: %q", b)
 		}
 	})
-	for _, kind := range []string{"symlink", "hardlink", "broad-file", "broad-parent", "parent-symlink", "ancestor-symlink", "unwritable", "missing-data", "relative-data", "no-data", "directory-file"} {
+	for _, kind := range []string{"symlink", "dangling-symlink", "hardlink", "broad-file", "broad-parent", "parent-symlink", "ancestor-symlink", "unwritable", "missing-data", "relative-data", "no-data", "directory-file"} {
 		t.Run(kind, func(t *testing.T) {
 			cwd, data, path := runtimePathsDirs(t)
 			target := filepath.Join(cwd, "target")
@@ -118,10 +118,15 @@ func TestRuntimePaths(t *testing.T) {
 				t.Fatal(err)
 			}
 			switch kind {
-			case "symlink", "hardlink":
+			case "symlink", "dangling-symlink", "hardlink":
+				if kind == "dangling-symlink" {
+					if err := os.Remove(target); err != nil {
+						t.Fatal(err)
+					}
+				}
 				for _, name := range []string{path, filepath.Join(cwd, "neko.log")} {
 					var err error
-					if kind == "symlink" {
+					if kind != "hardlink" {
 						err = os.Symlink(target, name)
 					} else {
 						err = os.Link(target, name)
@@ -176,6 +181,12 @@ func TestRuntimePaths(t *testing.T) {
 			out := runtimePathsChild(t, cwd, data)
 			if !strings.Contains(out, "file logging disabled") {
 				t.Errorf("missing visible fallback diagnostic: %s", out)
+			}
+			if kind == "dangling-symlink" {
+				if _, err := os.Lstat(target); !os.IsNotExist(err) {
+					t.Fatalf("caller followed dangling log link and created target: %v", err)
+				}
+				return
 			}
 			got, err := os.ReadFile(target)
 			if err != nil {
