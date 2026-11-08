@@ -298,7 +298,15 @@ private slots:
         auto profile = ProfileManager::NewProxyEntity(type);
         profile->traffic_data->uplink = 123;
         profile->traffic_data->downlink = 456;
-        QVERIFY(manager->AddProfile(profile, group->id));
+        if (type == "naive") {
+            // Naive creation is disabled; round-trip a legacy on-disk fixture.
+            profile->id = 0;
+            profile->gid = group->id;
+            profile->fn = "profiles/0.json";
+            QVERIFY(profile->SaveChecked().ok);
+        } else {
+            QVERIFY(manager->AddProfile(profile, group->id));
+        }
 
         const int id = profile->id;
         const QByteArray bytes = Read(profile->fn);
