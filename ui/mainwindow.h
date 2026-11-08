@@ -151,6 +151,7 @@ private:
     QShortcut *shortcut_esc = new QShortcut(QKeySequence("Esc"), this);
     //
     NekoGui_sys::CoreProcess *core_process = nullptr;
+    friend struct CoreRestartProbe;
     qint64 vpn_pid = 0;
 #ifdef Q_OS_LINUX
     QPointer<QProcess> linux_vpn_process;

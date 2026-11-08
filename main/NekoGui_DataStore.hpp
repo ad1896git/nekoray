@@ -1,5 +1,7 @@
 // DO NOT INCLUDE THIS
 
+#include "rpc/RpcAuth.hpp"
+
 namespace NekoGui {
 
     class Routing : public JsonStore {
@@ -64,7 +66,7 @@ namespace NekoGui {
     public:
         // Running
 
-        QString core_token;
+        std::shared_ptr<NkrW04::RpcAuth> core_token = std::make_shared<NkrW04::RpcAuth>();
         int core_port = 19810;
         int started_id = -1919;
         bool core_running = false;

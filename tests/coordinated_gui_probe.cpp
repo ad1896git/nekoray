@@ -7,7 +7,356 @@
 #undef main
 
 #include "ui/widget/MessageBoxTimer.h"
+#include "db/traffic/TrafficLooper.hpp"
+#include "main/ShutdownDialogs.hpp"
+#include "main/UiSnapshot.hpp"
+#include <QElapsedTimer>
+#include "rpc/gRPC.h"
+#include "sys/ExternalProcess.hpp"
 #include <cstdio>
+#include <thread>
+
+namespace {
+struct ShutdownRace {
+    bool cancelWins;
+    QByteArray phase;
+    std::atomic_bool phaseFinished{false};
+    std::atomic_bool cancelledBeforePhaseFinished{false};
+    QSemaphore entered, release, cancelAttempt;
+    std::atomic_bool killFinished{false};
+    std::atomic_bool cancelAttempted{false};
+    std::atomic_int lateCommits{0};
+    QSemaphore issueEntered, issueRelease, issueDrained;
+    std::atomic_bool rpcIssued{false};
+    std::atomic_bool rpcAborted{false};
+    QElapsedTimer handoff;
+    qint64 handoffMs = -1;
+};
+std::atomic<ShutdownRace *> shutdownRace{nullptr};
+}
+
+// Only the probe's copy of mainwindow_grpc.cpp calls these hooks. Semaphores
+// model preemption before each commit and while a commit owns the handoff.
+void ShutdownTestHook(const char *stage) {
+    auto *race = shutdownRace.load();
+    if (!race) return;
+    const QByteArray point(stage);
+    if (race->phase == "rpc" || race->phase == "post") {
+        if (point == "rpc_aborted") {
+            race->rpcAborted.store(true);
+            return;
+        }
+        if (point == "exit_committed") {
+            race->entered.release();
+            if (!race->release.tryAcquire(1, 10000)) qFatal("Exit was not released");
+            return;
+        }
+        if (point == "after_rpc_unlock" && race->phase == "post") {
+            race->issueEntered.release();
+            if (!race->issueRelease.tryAcquire(1, 10000)) qFatal("post was not released");
+            race->issueDrained.release();
+            return;
+        }
+        if (point == "before_rpc_issue_lock" && race->phase == "rpc") {
+            race->issueEntered.release();
+            if (!race->issueRelease.tryAcquire(1, 10000)) qFatal("RPC issue was not released");
+            return;
+        }
+        if (point == "rpc_issued" || point == "rpc_issue_skipped") {
+            race->rpcIssued.store(point == "rpc_issued");
+            if (race->phase == "rpc") race->issueDrained.release();
+            return;
+        }
+    }
+    if (point.endsWith("_committed") && race->cancelAttempted.load())
+        ++race->lateCommits;
+    if ((race->cancelWins && point == "before_" + race->phase + "_lock") ||
+        (!race->cancelWins && point == race->phase + "_committed")) {
+        race->entered.release();
+        if (!race->release.tryAcquire(1, 10000)) qFatal("shutdown seam was not released");
+    } else if (point == race->phase + "_finished") {
+        race->phaseFinished.store(true);
+        if (point == "kill_finished") race->killFinished.store(true);
+    } else if (point == "before_cancel_lock") {
+        if (!race->entered.available()) qFatal("deadline missed the shutdown seam");
+        if (!NekoGui::dataStore->prepare_exit || !ShutdownDialogs::suppressed)
+            qFatal("shutdown admission reopened before cancellation");
+        race->handoff.start();
+        race->cancelAttempted.store(true);
+        race->cancelAttempt.release();
+    } else if (point == "after_cancel_lock") {
+        race->handoffMs = race->handoff.elapsed();
+        race->cancelledBeforePhaseFinished.store(!race->phaseFinished.load());
+    }
+}
+
+static bool waitUntil(const std::function<bool()> &ready, int timeoutMs = 3000) {
+    QElapsedTimer timer;
+    timer.start();
+    while (!ready() && timer.elapsed() < timeoutMs) {
+        QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents, 10);
+        QThread::msleep(1);
+    }
+    return ready();
+}
+
+static void checkRefusalRecovery(MainWindow *window) {
+    auto *store = NekoGui::dataStore;
+    // Exercise the public start path, persistence and the existing traffic loop.
+    // The synthetic core acknowledges RPCs without opening any proxy listeners.
+    store->test_latency_url = "https://shutdown-recovery.invalid/";
+    const bool saved = store->Save();
+    auto uiDone = std::make_shared<QSemaphore>();
+    auto uiOpen = std::make_shared<std::atomic_bool>(false);
+    runOnNewThread([uiDone, uiOpen] {
+        uiOpen->store(NekoGui_concurrency::ReadUi<bool>([] { return true; }).value_or(false));
+        uiDone->release();
+    });
+    const bool uiResponding = waitUntil([uiDone] { return uiDone->available() > 0; }) && uiOpen->load();
+    window->neko_start(0);
+    const bool started = waitUntil([] { return NekoGui::dataStore->started_id == 0; });
+    const bool sampling = started && waitUntil([] {
+        return NekoGui_traffic::trafficLooper->looping.load();
+    });
+    std::printf("REFUSAL_RECOVERY prepare_exit=%d save_blocked=%d saved=%d "
+                "dialogs=%d ui_open=%d started=%d sampling=%d\n",
+                store->prepare_exit, store->save_control_no_save, saved,
+                ShutdownDialogs::suppressed, uiResponding, started, sampling);
+    std::fflush(stdout);
+    if (store->prepare_exit || store->save_control_no_save || !saved ||
+        ShutdownDialogs::suppressed || !uiResponding || !started || !sampling)
+        qFatal("refused shutdown did not restore a usable application");
+}
+
+static void checkShutdownCancellation(MainWindow *window, const QByteArray &phase, bool cancelWins) {
+    ShutdownRace race;
+    race.cancelWins = cancelWins;
+    race.phase = phase;
+    shutdownRace.store(&race);
+    std::thread releaseCommitted;
+    if (!cancelWins) {
+        releaseCommitted = std::thread([&race] {
+            if (!race.cancelAttempt.tryAcquire(1, 10000))
+                qFatal("UI did not attempt cancellation");
+            race.release.release();
+        });
+    }
+    const bool accepted = window->coordinatedShutdown();
+    const bool restored = !NekoGui::dataStore->prepare_exit &&
+                          !NekoGui::dataStore->save_control_no_save &&
+                          !ShutdownDialogs::suppressed;
+    if (releaseCommitted.joinable()) releaseCommitted.join();
+    if (cancelWins) {
+        // Resume admission and reuse the live core before releasing the old
+        // callback. Completion tests instead observe its private publications:
+        // the preceding kill has already reaped the process in that phase.
+        if (phase != "complete") checkRefusalRecovery(window);
+        race.release.release();
+    }
+    auto drained = std::make_shared<QSemaphore>();
+    runOnUiThread([drained] { drained->release(); }, DS_cores);
+    if (!waitUntil([drained] { return drained->available() > 0; }))
+        qFatal("shutdown seam did not drain");
+    shutdownRace.store(nullptr);
+    if ((phase == "complete" || (phase == "kill" && race.killFinished.load())) &&
+        !waitUntil([] { return !NekoGui::dataStore->core_running; }))
+        qFatal("owned core did not report its exit");
+    const bool running = NekoGui::dataStore->core_running;
+    std::printf("SHUTDOWN_RACE phase=%s cancel_wins=%d accepted=%d restored=%d "
+                "phase_finished=%d cancel_before_finished=%d core_running=%d\n",
+                phase.constData(), cancelWins, accepted, restored,
+                race.phaseFinished.load(), race.cancelledBeforePhaseFinished.load(), running);
+    std::printf("RESTORE_HANDOFF_MS=%lld\n", static_cast<long long>(race.handoffMs));
+    std::fflush(stdout);
+    const bool shouldRun = phase != "complete" && (phase != "kill" || cancelWins);
+    if (accepted || !restored || running != shouldRun || race.lateCommits.load() ||
+        (cancelWins && race.phaseFinished.load()) ||
+        (!cancelWins && (!race.phaseFinished.load() || race.cancelledBeforePhaseFinished.load())))
+        qFatal("shutdown cancellation and phase commit were not atomic");
+}
+
+static void checkRpcIssueCancellation(MainWindow *window) {
+    ShutdownRace race;
+    race.phase = "rpc";
+    race.cancelWins = false;
+    shutdownRace.store(&race);
+    // Begin Exit at the UI deadline, then preempt its network thread after the
+    // old abandonment/deadline checks. The caller times out with post still
+    // pending. No sleep determines either ordering.
+    std::thread releaseExit([&race] {
+        if (!race.cancelAttempt.tryAcquire(1, 10000)) qFatal("UI did not cancel Exit");
+        race.release.release();
+    });
+    const bool accepted = window->coordinatedShutdown();
+    releaseExit.join();
+    const bool restored = !NekoGui::dataStore->prepare_exit &&
+                          !NekoGui::dataStore->save_control_no_save &&
+                          !ShutdownDialogs::suppressed;
+    if (!waitUntil([&race] { return race.issueEntered.available() > 0; }))
+        qFatal("network issue seam was not reached");
+    auto drained = std::make_shared<QSemaphore>();
+    runOnUiThread([drained] { drained->release(); }, DS_cores);
+    if (!waitUntil([drained] { return drained->available() > 0; })) qFatal("Exit did not time out");
+    race.issueRelease.release();
+    if (!waitUntil([&race] { return race.issueDrained.available() > 0; }))
+        qFatal("network issue seam did not drain");
+    if (race.rpcIssued.load())
+        (void)waitUntil([] { return !NekoGui::dataStore->core_running; });
+    shutdownRace.store(nullptr);
+    std::printf("RPC_ISSUE_RACE accepted=%d restored=%d issued=%d core_running=%d handoff_ms=%lld\n",
+                accepted, restored, race.rpcIssued.load(), NekoGui::dataStore->core_running,
+                static_cast<long long>(race.handoffMs));
+    std::fflush(stdout);
+    if (accepted || !restored || race.rpcIssued.load() || !NekoGui::dataStore->core_running)
+        qFatal("expired RPC posted Exit after shutdown recovery");
+    checkRefusalRecovery(window);
+}
+
+struct CoreRestartProbe {
+    static void restart(MainWindow *window, std::atomic<qint64> &oldPid, std::atomic<qint64> &newPid) {
+        oldPid.store(window->core_process->processId());
+        window->core_process->Restart();
+        newPid.store(window->core_process->processId());
+    }
+};
+
+// Preempt after QNAM::post returns, before its internal queued network start.
+// Restart on the same port while Exit's caller has already timed out.
+static void checkStaleExitAfterRestart(MainWindow *window) {
+    ShutdownRace race;
+    race.phase = "post";
+    race.cancelWins = false;
+    shutdownRace.store(&race);
+    std::thread releaseExit([&race] {
+        if (!race.cancelAttempt.tryAcquire(1, 10000)) qFatal("UI did not cancel Exit");
+        race.release.release();
+    });
+    const bool accepted = window->coordinatedShutdown();
+    releaseExit.join();
+    if (!race.issueEntered.available()) qFatal("post seam was not reached");
+    const bool restored = !NekoGui::dataStore->prepare_exit &&
+                          !NekoGui::dataStore->save_control_no_save &&
+                          !ShutdownDialogs::suppressed;
+    const auto root = qEnvironmentVariable("NKR_QUIT_TEST_ROOT");
+    QFile oldTokenFile(root + "/launch_token");
+    if (!oldTokenFile.open(QIODevice::ReadOnly)) qFatal("missing old launch token");
+    const auto oldToken = QString::fromLatin1(oldTokenFile.readAll());
+    // This second request deliberately survives transport cancellation. The
+    // server must reject it by launch identity alone, even without a deadline.
+    NekoGui_rpc::Client staleClient([](const QString &) {},
+        "127.0.0.1:" + QString::number(NekoGui::dataStore->core_port), oldToken);
+    auto restarted = std::make_shared<QSemaphore>();
+    auto oldPid = std::make_shared<std::atomic<qint64>>(0);
+    auto newPid = std::make_shared<std::atomic<qint64>>(0);
+    runOnUiThread([window, restarted, oldPid, newPid] {
+        CoreRestartProbe::restart(window, *oldPid, *newPid);
+        restarted->release();
+    }, DS_cores);
+    if (!waitUntil([&] { return restarted->available() > 0 && NekoGui::dataStore->core_running; }))
+        qFatal("restart did not become ready");
+    race.issueRelease.release();
+    if (!waitUntil([&] { return race.issueDrained.available() > 0; }))
+        qFatal("post seam did not drain");
+    // Allow the old request either to be cancelled or to reach authentication.
+    const bool staleKilled = waitUntil([] { return !NekoGui::dataStore->core_running; }, 700);
+    if (!race.rpcAborted.load()) qFatal("timed-out reply was not aborted");
+    shutdownRace.store(nullptr);
+    std::printf("STALE_EXIT_AFTER_RESTART=%d accepted=%d restored=%d old_pid=%lld new_pid=%lld\n",
+                staleKilled, accepted, restored,
+                static_cast<long long>(oldPid->load()), static_cast<long long>(newPid->load()));
+    std::fflush(stdout);
+    if (accepted || !restored || oldPid->load() == newPid->load() || staleKilled)
+        qFatal("stale Exit killed the restarted core");
+    QFile::remove(root + "/auth_rejected_exit");
+    staleClient.Exit();
+    if (!waitUntil([&] { return QFile::exists(root + "/auth_rejected_exit"); }) ||
+        !NekoGui::dataStore->core_running)
+        qFatal("new core accepted the previous launch token");
+    QFile newTokenFile(root + "/launch_token");
+    if (!newTokenFile.open(QIODevice::ReadOnly) || newTokenFile.readAll() == oldToken.toLatin1())
+        qFatal("restart reused authentication token");
+    std::puts("OLD_LAUNCH_EXIT_REJECTED=1");
+    std::puts("TIMED_OUT_REPLY_ABORTED=1");
+    checkRefusalRecovery(window);
+}
+
+static void checkOwnedCoreTimeout(MainWindow *window) {
+    // Hold the production core thread past the two-second shutdown deadline.
+    // No real process refuses SIGKILL and no privileged action is involved.
+    auto release = std::make_shared<QSemaphore>();
+    auto entered = std::make_shared<QSemaphore>();
+    runOnUiThread([release, entered] {
+        entered->release();
+        if (!release->tryAcquire(1, 15000)) qFatal("core probe was not released");
+    }, DS_cores);
+    if (!waitUntil([entered] { return entered->available() > 0; }))
+        qFatal("core probe was not scheduled");
+    int nested = 0;
+    bool nestedAccepted = false;
+    QTimer reentry;
+    QObject::connect(&reentry, &QTimer::timeout, window, [&] {
+        ++nested;
+        nestedAccepted |= window->coordinatedShutdown();
+    });
+    reentry.start(100);
+    const bool first = window->coordinatedShutdown();
+    const bool firstRestored = !NekoGui::dataStore->prepare_exit &&
+                              !NekoGui::dataStore->save_control_no_save &&
+                              !ShutdownDialogs::suppressed;
+    const bool second = window->coordinatedShutdown();
+    reentry.stop();
+    const bool secondRestored = !NekoGui::dataStore->prepare_exit &&
+                               !NekoGui::dataStore->save_control_no_save &&
+                               !ShutdownDialogs::suppressed;
+    release->release();
+    auto drained = std::make_shared<QSemaphore>();
+    runOnUiThread([drained] { drained->release(); }, DS_cores);
+    if (!waitUntil([drained] { return drained->available() > 0; }))
+        qFatal("core probe did not drain");
+    // A timed-out queued shutdown must not later kill a core in the live app.
+    const bool coreRunning = NekoGui::dataStore->core_running;
+    std::printf("CORE_TIMEOUT first=%d second=%d first_restored=%d second_restored=%d "
+                "nested=%d nested_accepted=%d core_running=%d\n",
+                first, second, firstRestored, secondRestored,
+                nested, nestedAccepted, coreRunning);
+    std::fflush(stdout);
+    if (first || second || !firstRestored || !secondRestored ||
+        !nested || nestedAccepted || !coreRunning)
+        qFatal("owned-core timeout/retry did not restore shutdown state");
+
+    // Also expire the UI deadline while Exit is already running. The fake
+    // core leaves this first RPC unanswered; production's 500 ms RPC deadline
+    // must finish before an expired shutdown can touch the process again.
+    auto activeRelease = std::make_shared<QSemaphore>();
+    auto activeEntered = std::make_shared<QSemaphore>();
+    runOnUiThread([activeRelease, activeEntered] {
+        activeEntered->release();
+        if (!activeRelease->tryAcquire(1, 5000)) qFatal("active probe was not released");
+    }, DS_cores);
+    if (!waitUntil([activeEntered] { return activeEntered->available() > 0; }))
+        qFatal("active probe was not scheduled");
+    QTimer releaseTimer;
+    releaseTimer.setSingleShot(true);
+    releaseTimer.setTimerType(Qt::PreciseTimer);
+    QObject::connect(&releaseTimer, &QTimer::timeout, window,
+                     [activeRelease] { activeRelease->release(); });
+    releaseTimer.start(1700);
+    const bool activeAccepted = window->coordinatedShutdown();
+    const bool activeRestored = !NekoGui::dataStore->prepare_exit &&
+                               !NekoGui::dataStore->save_control_no_save &&
+                               !ShutdownDialogs::suppressed;
+    const bool exitStarted = QFile::exists(qEnvironmentVariable("NKR_QUIT_TEST_ROOT") + "/request");
+    QEventLoop settle;
+    QTimer::singleShot(1000, &settle, &QEventLoop::quit);
+    settle.exec(QEventLoop::ExcludeUserInputEvents);
+    const bool activeCoreRunning = NekoGui::dataStore->core_running;
+    std::printf("ACTIVE_CORE_TIMEOUT accepted=%d restored=%d exit_started=%d core_running=%d\n",
+                activeAccepted, activeRestored, exitStarted, activeCoreRunning);
+    std::fflush(stdout);
+    if (activeAccepted || !activeRestored || !exitStarted || !activeCoreRunning)
+        qFatal("expired active shutdown killed the live core");
+    checkRefusalRecovery(window);
+}
 
 #ifdef Q_OS_MACOS
 #include "sys/VpnProcess.hpp"
@@ -190,6 +539,7 @@ struct MacVpnShutdownProbe {
             window->neko_set_spmode_vpn(false, false);
         }
         if (NekoGui::dataStore->spmode_vpn) qFatal("normal stop failed");
+        checkRefusalRecovery(window);
         std::puts("MAC_STOP_RECOVERY_OK");
     }
 };
@@ -201,6 +551,37 @@ static void installProbe() {
         auto *window = GetMainWindow();
         if (!window || !NekoGui::dataStore->core_running) return;
         const auto mode = qEnvironmentVariable("NKR_QUIT_TEST_MODE");
+        if (mode == "stale_exit_restart") {
+            poll->stop();
+            checkStaleExitAfterRestart(window);
+            std::puts("QUIT_PROBE_READY");
+            std::fflush(stdout);
+            return;
+        }
+        if (mode == "rpc_cancelled") {
+            poll->stop();
+            checkRpcIssueCancellation(window);
+            std::puts("QUIT_PROBE_READY");
+            std::fflush(stdout);
+            return;
+        }
+        const auto parts = mode.toLatin1().split('_');
+        if (parts.size() == 2 &&
+            (parts[0] == "exit" || parts[0] == "wait" || parts[0] == "kill" || parts[0] == "complete") &&
+            (parts[1] == "cancelled" || parts[1] == "committed")) {
+            poll->stop();
+            checkShutdownCancellation(window, parts[0], parts[1] == "cancelled");
+            std::puts("QUIT_PROBE_READY");
+            std::fflush(stdout);
+            return;
+        }
+        if (mode == "owned_core_timeout") {
+            poll->stop();
+            checkOwnedCoreTimeout(window);
+            std::puts("QUIT_PROBE_READY");
+            std::fflush(stdout);
+            return;
+        }
 #ifdef Q_OS_MACOS
         if (mode == "mac_start_recovery") {
             poll->stop();

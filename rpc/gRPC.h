@@ -3,6 +3,7 @@
 #ifndef NKR_NO_GRPC
 
 #include "go/grpc_server/gen/libcore.pb.h"
+#include "RpcAuth.hpp"
 #include <QString>
 #include <functional>
 #include <memory>
@@ -15,6 +16,9 @@ namespace NekoGui_rpc {
     class Client {
     public:
         explicit Client(std::function<void(const QString &)> onError, const QString &target, const QString &token);
+
+        Client(std::function<void(const QString &)> onError, const QString &target,
+               std::shared_ptr<NkrW04::RpcAuth> auth);
 
         ~Client();
 

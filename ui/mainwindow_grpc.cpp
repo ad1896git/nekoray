@@ -32,6 +32,14 @@
 
 #include <list>
 #include <memory>
+#include <mutex>
+
+#ifdef NKR_SHUTDOWN_TEST_HOOKS
+void ShutdownTestHook(const char *stage);
+#define SHUTDOWN_TEST_HOOK(stage) ShutdownTestHook(stage)
+#else
+#define SHUTDOWN_TEST_HOOK(stage) ((void)0)
+#endif
 
 
 // ext core
@@ -410,7 +418,7 @@ bool MainWindow::coordinatedShutdown() {
     if (shutdownComplete_) return true;
     if (shutdownInProgress_) return false;
     QScopedValueRollback<bool> inProgress(shutdownInProgress_, true);
-    NekoGui::dataStore->prepare_exit = true;
+    QScopedValueRollback<bool> preparing(NekoGui::dataStore->prepare_exit, true);
     QScopedValueRollback<bool> dialogs(ShutdownDialogs::suppressed, true);
     MessageBoxTimer::cancelAll();
 
@@ -419,10 +427,8 @@ bool MainWindow::coordinatedShutdown() {
     neko_set_spmode_vpn(false, false);
     if (NekoGui::dataStore->spmode_vpn) return false;
 
-    NekoGui_traffic::trafficLooper->RequestShutdown();
-    RegisterHotkey(true);
     on_commitDataRequest();
-    NekoGui::dataStore->save_control_no_save = true;
+    QScopedValueRollback<bool> saving(NekoGui::dataStore->save_control_no_save, true);
     neko_stop(false, true);
     if (!WaitForShutdown(sem_stopped, 12000))
         qWarning("Profile stop timed out during shutdown; exiting owned core");
@@ -431,23 +437,74 @@ bool MainWindow::coordinatedShutdown() {
     // RPC and bounded process wait there, never touching QProcess across threads.
     auto done = std::make_shared<QSemaphore>();
     auto stopped = std::make_shared<std::atomic_bool>(false);
-    runOnUiThread([this, done, stopped] {
-        stop_core_daemon();
-        if (core_process && core_process->state() != QProcess::NotRunning) {
-            if (!core_process->waitForFinished(500)) {
-                core_process->kill();
-                core_process->waitForFinished(500);
-            }
+    auto cancelled = std::make_shared<std::atomic_bool>(false);
+    auto commitMutex = std::make_shared<std::mutex>();
+    runOnUiThread([this, done, stopped, cancelled, commitMutex] {
+        // Each phase checks cancellation under the same mutex as the UI's
+        // restore barrier. A phase already committed finishes before admission
+        // reopens; a cancelled callback cannot begin another side effect.
+        if (cancelled->load()) return;
+        SHUTDOWN_TEST_HOOK("before_exit_lock");
+        {
+            std::lock_guard<std::mutex> commitLock(*commitMutex);
+            if (cancelled->load()) return;
+            SHUTDOWN_TEST_HOOK("exit_committed");
+            stop_core_daemon(); // Client::Exit has a 500 ms deadline.
+            SHUTDOWN_TEST_HOOK("exit_finished");
         }
-        stopped->store(!core_process || core_process->state() == QProcess::NotRunning);
-        done->release();
+        if (cancelled->load()) return;
+        SHUTDOWN_TEST_HOOK("before_wait_lock");
+        bool finished = true;
+        {
+            std::lock_guard<std::mutex> commitLock(*commitMutex);
+            if (cancelled->load()) return;
+            SHUTDOWN_TEST_HOOK("wait_committed");
+            // waitForFinished can synchronously emit stateChanged/finished.
+            // Keep those callbacks inside the restore barrier as well.
+            if (core_process && core_process->state() != QProcess::NotRunning)
+                finished = core_process->waitForFinished(500);
+            SHUTDOWN_TEST_HOOK("wait_finished");
+        }
+        if (!finished && !cancelled->load()) {
+            SHUTDOWN_TEST_HOOK("before_kill_lock");
+            std::lock_guard<std::mutex> commitLock(*commitMutex);
+            if (cancelled->load()) return;
+            SHUTDOWN_TEST_HOOK("kill_committed");
+            core_process->kill();
+            core_process->waitForFinished(500);
+            SHUTDOWN_TEST_HOOK("kill_finished");
+        }
+        SHUTDOWN_TEST_HOOK("before_complete_lock");
+        {
+            std::lock_guard<std::mutex> commitLock(*commitMutex);
+            if (cancelled->load()) return;
+            SHUTDOWN_TEST_HOOK("complete_committed");
+            stopped->store(!core_process || core_process->state() == QProcess::NotRunning);
+            done->release();
+            SHUTDOWN_TEST_HOOK("complete_finished");
+        }
     }, DS_cores);
     if (!WaitForShutdown(*done, 2000) || !stopped->load()) {
+        // Close phase admission BEFORE waiting for the current commit. This
+        // prevents the core thread from chaining multiple 500 ms phases while
+        // the UI waits for the mutex. Only the current phase can delay restore.
+        cancelled->store(true);
+        SHUTDOWN_TEST_HOOK("before_cancel_lock");
+        {
+            std::lock_guard<std::mutex> restoreBarrier(*commitMutex);
+        }
+        SHUTDOWN_TEST_HOOK("after_cancel_lock");
         qWarning("Owned core did not stop within the shutdown deadline");
         return false;
     }
+    // These operations cannot be rolled back. Keep the live app's traffic
+    // loop and hotkeys until all shutdown refusal points have passed.
+    NekoGui_traffic::trafficLooper->RequestShutdown();
+    RegisterHotkey(true);
     shutdownUiThreadDispatcher();
     shutdownComplete_ = true;
+    preparing.commit();
+    saving.commit();
     dialogs.commit();
     return true;
 }

@@ -25,9 +25,107 @@ def frame(kind, flags, stream, payload=b''):
     return len(payload).to_bytes(3, 'big') + bytes([kind, flags]) + struct.pack('!I', stream) + payload
 
 
+# RFC 7541 Appendix B, restricted to the token alphabet and auth header name.
+HUFFMAN = {
+    '0': (0, 5), '1': (1, 5), '2': (2, 5), '3': (25, 6), '4': (26, 6), '5': (27, 6),
+    '6': (28, 6), '7': (29, 6), '8': (30, 6), '9': (31, 6), 'A': (33, 6), 'B': (93, 7),
+    'C': (94, 7), 'D': (95, 7), 'E': (96, 7), 'F': (97, 7), 'G': (98, 7), 'H': (99, 7),
+    'I': (100, 7), 'J': (101, 7), 'K': (102, 7), 'L': (103, 7), 'M': (104, 7), 'N': (105, 7),
+    'O': (106, 7), 'P': (107, 7), 'Q': (108, 7), 'R': (109, 7), 'S': (110, 7), 'T': (111, 7),
+    'U': (112, 7), 'V': (113, 7), 'W': (114, 7), 'X': (252, 8), 'Y': (115, 7), 'Z': (253, 8),
+    '_': (34, 6), 'a': (3, 5), 'b': (35, 6), 'c': (4, 5), 'd': (36, 6), 'e': (5, 5),
+    'f': (37, 6), 'g': (38, 6), 'h': (39, 6), 'i': (6, 5), 'j': (116, 7), 'k': (117, 7),
+    'l': (40, 6), 'm': (41, 6), 'n': (42, 6), 'o': (7, 5), 'p': (43, 6), 'q': (118, 7),
+    'r': (44, 6), 's': (8, 5), 't': (9, 5), 'u': (45, 6), 'v': (119, 7), 'w': (120, 7),
+    'x': (121, 7), 'y': (122, 7), 'z': (123, 7),
+}
+
+
+def huffman_ascii(value):
+    bits = ''.join(format(HUFFMAN[chr(c)][0], '0%db' % HUFFMAN[chr(c)][1]) for c in value)
+    bits += '1' * (-len(bits) % 8)
+    return bytes(int(bits[i:i + 8], 2) for i in range(0, len(bits), 8))
+
+
+class ExitHeaders:
+    """Recognize the exact Exit :path, including Qt's HPACK dynamic indexing.
+
+    Match the fixed RPC path and the launch token supplied on stdin, in plain
+    or Huffman form. No optional Python packages are needed.
+    """
+    EXIT = ((False, b'/libcore.LibcoreService/Exit'),
+            (True, bytes.fromhex('62834643d855f39a321ec2ee2d9dcc42b183c993')))
+
+    def __init__(self):
+        self.dynamic = []
+
+    @staticmethod
+    def integer(data, offset, bits):
+        value = data[offset] & ((1 << bits) - 1)
+        offset += 1
+        if value == (1 << bits) - 1:
+            shift = 0
+            while True:
+                byte = data[offset]
+                offset += 1
+                value += (byte & 127) << shift
+                if not byte & 128:
+                    break
+                shift += 7
+        return value, offset
+
+    @classmethod
+    def string(cls, data, offset):
+        huffman = bool(data[offset] & 128)
+        length, offset = cls.integer(data, offset, 7)
+        end = offset + length
+        assert end <= len(data), 'truncated HPACK string'
+        return (huffman, data[offset:end]), end
+
+    def entry(self, index):
+        if index > 61:
+            return self.dynamic[index - 62]
+        # Only :path has a relevant static-table entry.
+        return (b":path" if index in (4, 5) else b"", None)
+
+    def parse(self, data, token):
+        offset, found, auth = 0, False, []
+        while offset < len(data):
+            byte = data[offset]
+            if byte & 128:
+                index, offset = self.integer(data, offset, 7)
+                path, value = self.entry(index)
+            elif byte & 32 and not byte & 64:
+                size, offset = self.integer(data, offset, 5)
+                # Our tiny peer advertises a zero-sized dynamic table below.
+                assert size == 0, 'unexpected HPACK table size'
+                self.dynamic.clear()
+                continue
+            else:
+                indexed = bool(byte & 64)
+                index, offset = self.integer(data, offset, 6 if indexed else 4)
+                if index:
+                    path, _ = self.entry(index)
+                else:
+                    name, offset = self.string(data, offset)
+                    path = (b":path" if name == (False, b":path") else
+                            b"auth" if name in ((False, b"nekoray_auth"),
+                                               (True, huffman_ascii(b"nekoray_auth"))) else b"")
+                value, offset = self.string(data, offset)
+                if indexed:
+                    self.dynamic.insert(0, (path, value))
+            found |= path == b":path" and value in self.EXIT
+            if path == b"auth":
+                auth.append(value)
+        return found, len(auth) == 1 and auth[0] in ((False, token), (True, huffman_ascii(token)))
+
+
 def fake_core():
     root = Path(os.environ['NKR_QUIT_TEST_ROOT'])
     (root / 'core.pid').write_text(str(os.getpid()))
+    token = sys.stdin.buffer.readline().strip()
+    assert token, 'core did not receive launch token'
+    (root / 'launch_token').write_bytes(token)
     (root / 'core.status').write_text('starting')
     server = socket.socket()
     server.bind(('127.0.0.1', int(sys.argv[sys.argv.index('-port') + 1])))
@@ -36,13 +134,17 @@ def fake_core():
     print('grpc server listening', flush=True)
 
     def serve(conn):
+        headers = ExitHeaders()
+        exits = {}
+        blocks = {}
         data = b''
         while len(data) < 24:
             part = conn.recv(24 - len(data))
             if not part:
                 return
             data += part
-        conn.sendall(frame(4, 0, 0))
+        # HEADER_TABLE_SIZE=0 keeps recognition bounded and dependency-free.
+        conn.sendall(frame(4, 0, 0, struct.pack('!HI', 1, 0)))
         data = b''
         while True:
             part = conn.recv(65536)
@@ -56,22 +158,55 @@ def fake_core():
                 kind, flags = data[3:5]
                 stream = int.from_bytes(data[5:9], 'big')
                 payload, data = data[9:9 + size], data[9 + size:]
+                if kind == 1:
+                    if flags & 8:
+                        payload = payload[1:len(payload) - payload[0]]
+                    if flags & 32:
+                        payload = payload[5:]
+                    blocks[stream] = payload
+                elif kind == 9:
+                    blocks[stream] += payload
+                if kind in (1, 9) and flags & 4:
+                    exits[stream] = headers.parse(blocks.pop(stream), token)
                 if kind == 4 and not flags & 1:
                     conn.sendall(frame(4, 1, 0))
                 elif kind == 6 and not flags & 1:
                     conn.sendall(frame(6, 1, 0, payload))
                 elif kind in (0, 1) and flags & 1 and stream:
-                    # A pending Start never completes. In the Stop case Start
-                    # succeeds, subsequent Stop/Exit remain pending. This peer
-                    # deliberately never exits itself: production must reap it.
+                    mode = os.environ['NKR_QUIT_TEST_MODE']
+                    is_exit, authenticated = exits.get(stream, (False, False))
+                    if not authenticated:
+                        (root / 'auth_rejected').touch()
+                        if is_exit:
+                            (root / 'auth_rejected_exit').touch()
+                        conn.sendall(frame(1, 4, stream, b'\x88') +
+                                     frame(1, 5, stream, b'\x00\x0bgrpc-status\x0216'))
+                        continue
+                    if is_exit:
+                        with request_lock:
+                            exit_count[0] += 1
+                            count = exit_count[0]
+                        (root / 'exit_requests').write_text(str(count))
+                        if mode in ('stale_exit_restart', 'exit_cancelled', 'rpc_cancelled') or mode == 'exit_committed' and count > 1:
+                            # Match BaseServer.Exit: end the actual owned process.
+                            os._exit(0)
+                        if mode == 'exit_committed':
+                            continue  # Exercise the full 500 ms RPC budget.
+                    # Recovery probes acknowledge every call. A pending Start
+                    # never completes; pending_stop acknowledges only Start.
+                    # Other modes leave reaping to the production kill path.
                     with request_lock:
                         first = not (root / 'request').exists()
                         (root / 'request').touch()
-                    if os.environ['NKR_QUIT_TEST_MODE'] == 'pending_stop' and first:
+                    if os.environ['NKR_QUIT_TEST_MODE'] == 'owned_core_timeout' and first:
+                        continue  # Hold the first Exit until its production RPC deadline.
+                    if (os.environ['NKR_QUIT_TEST_MODE'] in ('owned_core_timeout', 'stale_exit_restart', 'mac_stop_failure', 'exit_cancelled', 'rpc_cancelled', 'wait_cancelled', 'wait_committed', 'kill_cancelled', 'kill_committed', 'complete_cancelled', 'complete_committed') or
+                            os.environ['NKR_QUIT_TEST_MODE'] == 'pending_stop' and first):
                         conn.sendall(frame(1, 4, stream, b'\x88') +
                                      frame(0, 0, stream, b'\0' * 5) +
                                      frame(1, 5, stream, b'\x00\x0bgrpc-status\x010'))
     request_lock = threading.Lock()
+    exit_count = [0]
     while True:
         conn, _ = server.accept()
         threading.Thread(target=serve, args=(conn,), daemon=True).start()
@@ -118,9 +253,9 @@ def run_gui(binary, mode, route):
         (cfg / sub).mkdir(parents=True)
     settings = dict(remember_enable=mode in ('pending_start', 'pending_stop'), remember_id=0, spmode2=[],
                     sub_auto_update=0, inbound_address='127.0.0.1', language=1,
-                    traffic_loop_interval=0)
+                    traffic_loop_interval=500 if mode in ('owned_core_timeout', 'stale_exit_restart', 'mac_stop_failure', 'exit_cancelled', 'rpc_cancelled', 'wait_cancelled', 'kill_cancelled') else 0)
     (cfg / 'groups/nekobox.json').write_text(json.dumps(settings))
-    if mode in ('pending_start', 'pending_stop'):
+    if mode in ('pending_start', 'pending_stop', 'stale_exit_restart', 'owned_core_timeout', 'mac_stop_failure', 'exit_cancelled', 'rpc_cancelled', 'wait_cancelled', 'kill_cancelled'):
         (cfg / 'groups/pm.json').write_text('{"groups":[0]}')
         (cfg / 'groups/0.json').write_text('{"id":0,"name":"quit test","order":[0]}')
         (cfg / 'profiles/0.json').write_text(json.dumps(dict(type='socks', id=0, gid=0,
@@ -146,9 +281,37 @@ def run_gui(binary, mode, route):
                 evidence = (root / 'gui.log').read_text()
                 assert 'stop=0 released=1 tun_after_stop=1 shutdown=0 tun_after_shutdown=1 dialogs_restored=1' in evidence
                 assert 'MAC_STOP_RECOVERY_OK' in evidence
+            if mode in ('owned_core_timeout', 'stale_exit_restart', 'mac_stop_failure', 'exit_cancelled', 'rpc_cancelled', 'wait_cancelled', 'kill_cancelled'):
+                assert 'REFUSAL_RECOVERY prepare_exit=0 save_blocked=0 saved=1 dialogs=0 ui_open=1 started=1 sampling=1' in (root / 'gui.log').read_text()
+                saved = json.loads((cfg / 'groups/nekobox.json').read_text())
+                assert saved['test_url'] == 'https://shutdown-recovery.invalid/'
+            if mode == 'owned_core_timeout':
+                assert 'first=0 second=0 first_restored=1 second_restored=1' in (root / 'gui.log').read_text()
+                assert 'ACTIVE_CORE_TIMEOUT accepted=0 restored=1 exit_started=1 core_running=1' in (root / 'gui.log').read_text()
+            if mode.rsplit('_', 1)[0] in ('exit', 'wait', 'kill', 'complete'):
+                phase, order = mode.rsplit('_', 1)
+                cancelled = order == 'cancelled'
+                expected = (f'SHUTDOWN_RACE phase={phase} cancel_wins={int(cancelled)} '
+                            f'accepted=0 restored=1 phase_finished={int(not cancelled)} '
+                            f'cancel_before_finished={int(cancelled)}')
+                assert expected in (root / 'gui.log').read_text()
+                if mode == 'exit_cancelled':
+                    assert not (root / 'exit_requests').exists(), 'stale callback issued Exit'
+                elif mode == 'exit_committed':
+                    assert (root / 'exit_requests').read_text() == '1'
+            if mode == 'stale_exit_restart':
+                assert 'STALE_EXIT_AFTER_RESTART=0 accepted=0 restored=1' in (root / 'gui.log').read_text()
+                assert 'OLD_LAUNCH_EXIT_REJECTED=1' in (root / 'gui.log').read_text()
+                assert 'TIMED_OUT_REPLY_ABORTED=1' in (root / 'gui.log').read_text()
+                assert (root / 'auth_rejected_exit').exists()
+            if mode == 'rpc_cancelled':
+                assert 'RPC_ISSUE_RACE accepted=0 restored=1 issued=0 core_running=1' in (root / 'gui.log').read_text()
+                assert not (root / 'exit_requests').exists()
             if mode == 'mac_start_recovery':
                 assert 'MAC_START_RECOVERY_OK' in (root / 'gui.log').read_text()
             core = int((root / 'core.pid').read_text())
+            if mode in ('stale_exit_restart', 'exit_cancelled', 'rpc_cancelled', 'wait_cancelled', 'kill_cancelled'):
+                assert alive(core), 'cancelled shutdown killed the reused core'
             started = time.monotonic()
             gui.send_signal(signal.SIGTERM if route == 'term' else signal.SIGINT)
             # Send additional signals while the slow owned-core wait is active.
@@ -163,6 +326,8 @@ def run_gui(binary, mode, route):
                                   core_alive_at_gui_exit=core_alive, evidence=str(root))), flush=True)
             assert rc == 0 and not core_alive, 'GUI failed to reap its owned core'
             assert elapsed < 3, 'shutdown blocked by a pending operation dialog'
+            if mode in ('stale_exit_restart', 'exit_cancelled', 'rpc_cancelled', 'exit_committed'):
+                assert (root / 'exit_requests').read_text() == ('2' if mode == 'exit_committed' else '1'), 'normal Quit did not issue Exit'
     finally:
         if gui:
             print(startup_diagnostics(root, gui), flush=True)

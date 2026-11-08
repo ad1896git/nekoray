@@ -16,11 +16,11 @@ namespace QtGrpc {
 class Http2GrpcChannelPrivate {
 public:
     Http2GrpcChannelPrivate(const QString &url,
-                            const QString &auth,
+                            std::shared_ptr<NkrW04::RpcAuth> auth,
                             const QString &service)
         : urlBase_("http://" + url),
           serviceName_(service),
-          auth_(auth.toLatin1()) {}
+          auth_(std::move(auth)) {}
 
     QNetworkReply::NetworkError Call(
         const QString &methodName,
@@ -31,6 +31,7 @@ public:
             return QNetworkReply::ProtocolInvalidOperationError;
         }
 
+        const auto launch = auth_->snapshot();
         if (!NekoGui::dataStore->core_running) {
             return QNetworkReply::NetworkError(-1919);
         }
@@ -58,7 +59,7 @@ public:
         request.setRawHeader("grpc-accept-encoding", "identity");
         request.setRawHeader("accept-encoding", "identity,gzip");
         request.setRawHeader("te", "trailers");
-        request.setRawHeader("nekoray_auth", auth_);
+        request.setRawHeader("nekoray_auth", *launch);
 
         const auto encoded = NkrGrpcFrame::encode(args);
         if (encoded.error != NkrGrpcFrame::Error::None) {
@@ -71,6 +72,9 @@ public:
 
         const auto result =
             transport_.send(request, encoded.bytes, timeout_ms);
+        // Late results belong only to the launch that issued them. Reject
+        // them before decoding into the caller's response or publishing success.
+        if (!auth_->isCurrent(launch)) return QNetworkReply::OperationCanceledError;
         if (result.error != QNetworkReply::NoError) return result.error;
 
         const auto decoded =
@@ -87,9 +91,14 @@ public:
             return QNetworkReply::ProtocolUnknownError;
         }
 
-        if (!rsp->ParseFromArray(
+        bool parsed = false;
+        const bool current = auth_->publish(launch, [&] {
+            parsed = rsp->ParseFromArray(
                 decoded.bytes.constData(),
-                static_cast<int>(decoded.bytes.size()))) {
+                static_cast<int>(decoded.bytes.size()));
+        });
+        if (!current) return QNetworkReply::OperationCanceledError;
+        if (!parsed) {
             return QNetworkReply::NetworkError(-114514);
         }
         return QNetworkReply::NoError;
@@ -98,7 +107,7 @@ public:
 private:
     QString urlBase_;
     QString serviceName_;
-    QByteArray auth_;
+    std::shared_ptr<NkrW04::RpcAuth> auth_;
     NkrW04::RpcTransport transport_;
 };
 
@@ -140,10 +149,16 @@ QString rpcFailure(const QString &operation,
 
 Client::Client(std::function<void(const QString &)> onError,
                const QString &target,
-               const QString &token) {
-    this->make_grpc_channel = [=]() {
+               const QString &token)
+    : Client(std::move(onError), target,
+             std::make_shared<NkrW04::RpcAuth>(token.toLatin1())) {}
+
+Client::Client(std::function<void(const QString &)> onError,
+               const QString &target,
+               std::shared_ptr<NkrW04::RpcAuth> auth) {
+    this->make_grpc_channel = [target, auth]() {
         return std::make_unique<QtGrpc::Http2GrpcChannelPrivate>(
-            target, token, "libcore.LibcoreService");
+            target, auth, "libcore.LibcoreService");
     };
     this->default_grpc_channel = make_grpc_channel();
     this->onError = std::move(onError);
