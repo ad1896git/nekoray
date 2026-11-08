@@ -407,7 +407,7 @@ if(UNIX)
 endif()
 
 if(UNIX AND NOT NKR_NO_GRPC)
-    foreach(mode IN ITEMS wait pre_spawn refuse)
+    foreach(mode IN ITEMS wait pre_spawn refuse many different_appdata)
         if(mode STREQUAL "pre_spawn")
             set(stale_core_binary tst_coordinated_gui)
         else()

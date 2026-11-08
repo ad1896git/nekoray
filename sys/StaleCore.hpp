@@ -15,6 +15,7 @@ struct Identity {
 };
 struct Record {
     Identity process;
+    Identity owner; // GUI pid/start, observation only; never a signal target.
     QByteArray token;
     int port = 0;
     QString config;
@@ -35,7 +36,7 @@ struct Operations {
     std::function<int(int)> listener;
 };
 bool wait(const QString &path, const std::atomic_bool &cancelled,
-          Operations operations = {}, int boundMs = 12000);
+          Operations operations = {}, int boundMs = 12000, QString *refusal = nullptr);
 std::shared_ptr<std::atomic_bool> start(QObject *context, const QString &path,
-                                      std::function<void(bool)> completed);
+                                      std::function<void(bool, QString)> completed);
 }

@@ -462,12 +462,14 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
         startup->deleteLater();
     });
     NekoGui_sys::StaleCore::start(this, NekoGui_sys::StaleCore::recordPath(),
-        [this, startup](bool ready) {
+        [this, startup](bool ready, const QString &refusal) {
             if (ready) startup->start();
             else {
                 startup->deleteLater();
-                MW_show_log("[Error] Previous core exit could not be confirmed; startup refused.");
-                MessageBoxWarning(tr("Error"), tr("The previous core has not exited. Wait for it to exit and restart NekoBox."));
+                const auto message = refusal.isEmpty()
+                    ? tr("The previous core has not exited. Wait for it to exit and restart NekoBox.") : refusal;
+                MW_show_log("[Error] Startup refused: " + message);
+                MessageBoxWarning(tr("Error"), message);
             }
         });
 

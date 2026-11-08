@@ -158,6 +158,7 @@ namespace NekoGui_sys {
         const auto launch = NekoGui::dataStore->core_token->startLaunch();
         launchToken_ = *launch;
         StaleCore::Record record;
+        record.owner = StaleCore::observe(QCoreApplication::applicationPid());
         record.token = launchToken_;
         record.port = NekoGui::dataStore->core_port;
         record.config = QDir::currentPath();

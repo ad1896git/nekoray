@@ -3,6 +3,8 @@
 #include <QFile>
 #include <QDir>
 #include <QElapsedTimer>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include "sys/StaleCore.hpp"
 #ifdef Q_OS_UNIX
 #include <unistd.h>
@@ -117,6 +119,62 @@ private slots:
         // StaleCore's operation surface has no signal API. The still-running
         // test executable above was the unrelated/reused-PID target.
     }
+    void guiOwnerIdentity_data() {
+        QTest::addColumn<QString>("kind");
+        QTest::addColumn<bool>("refuse");
+        QTest::newRow("live-sibling") << QString("live") << true;
+        QTest::newRow("dead-owner") << QString("dead") << false;
+        QTest::newRow("reused-pid") << QString("reused") << false;
+        QTest::newRow("this-gui") << QString("self") << false;
+        QTest::newRow("legacy-no-owner") << QString("legacy") << false;
+        QTest::newRow("incomplete-owner") << QString("incomplete") << false;
+    }
+    void guiOwnerIdentity() {
+        QFETCH(QString, kind);
+        QFETCH(bool, refuse);
+        QTemporaryDir root;
+        const auto path = root.filePath(".core-launch.json");
+        auto value = record(root.path());
+        value.owner = {kind == "self" ? QCoreApplication::applicationPid() : 456, "gui-start", {}};
+        QVERIFY(write(path, value));
+        if (kind == "legacy" || kind == "incomplete") {
+            QFile file(path);
+            QVERIFY(file.open(QIODevice::ReadOnly));
+            auto object = QJsonDocument::fromJson(file.readAll()).object();
+            file.close();
+            if (kind == "legacy") object.remove("owner");
+            else object["owner"] = QJsonObject{{"pid", "456"}};
+            QVERIFY(file.open(QIODevice::WriteOnly | QIODevice::Truncate));
+            file.write(QJsonDocument(object).toJson());
+        }
+        QFile file(path);
+        QVERIFY(file.open(QIODevice::ReadOnly));
+        const auto original = file.readAll(); file.close();
+        Record loaded;
+        QVERIFY(read(path, loaded));
+        if (kind != "legacy" && kind != "incomplete") {
+            QCOMPARE(loaded.owner.pid, value.owner.pid);
+            QCOMPARE(loaded.owner.start, value.owner.start);
+        }
+        int requests = 0;
+        Operations operations;
+        operations.observeProcess = [&](qint64 pid) {
+            if (pid != value.owner.pid || kind == "dead") return Identity{};
+            return Identity{pid, kind == "reused" ? "new-gui-start" : "gui-start", {}};
+        };
+        operations.exit = [&](const Record &) { ++requests; };
+        operations.listener = [](int) { return 0; };
+        std::atomic_bool cancelled{false};
+        QString refusal;
+        QCOMPARE(wait(path, cancelled, operations, 40, &refusal), !refuse);
+        QCOMPARE(requests, refuse ? 0 : 1);
+        QCOMPARE(QFile::exists(path), refuse);
+        if (refuse) {
+            QVERIFY(refusal.contains("Another NekoBox GUI is using this configuration"));
+            QVERIFY(file.open(QIODevice::ReadOnly));
+            QCOMPARE(file.readAll(), original);
+        } else QVERIFY(refusal.isEmpty());
+    }
     void selfExitAndRefusal() {
         for (bool exits : {true, false}) {
             QTemporaryDir root;
@@ -153,7 +211,7 @@ private slots:
         QTemporaryDir root;
         int regular = 0, tun = 0;
         QObject context;
-        start(&context, root.filePath("no-record"), [&](bool ready) {
+        start(&context, root.filePath("no-record"), [&](bool ready, const QString &) {
             QVERIFY(ready);
             QCOMPARE(QThread::currentThread(), qApp->thread());
             ++regular; ++tun;

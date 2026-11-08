@@ -66,9 +66,11 @@ def regression(binary, mode="auth"):
     (cfg / 'groups/nekobox.json').write_text(json.dumps(dict(
         remember_enable=False, remember_id=-1, spmode2=[], sub_auto_update=0,
         inbound_address='127.0.0.1', language=1, traffic_loop_interval=0)))
+    if mode == 'different_appdata':
+        shutil.copytree(root / 'appdata', root / 'other-appdata')
     env = os.environ.copy()
     env.update(NKR_QUIT_TEST_ROOT=str(root), NKR_STALE_MODE=mode,
-               NKR_QUIT_TEST_MODE='stale_exit_restart' if mode == 'auth' else 'idle',
+               NKR_QUIT_TEST_MODE='stale_exit_restart' if mode in ('auth', 'many', 'different_appdata') else 'idle',
                QT_QPA_PLATFORM=env.get('NKR_QUIT_TEST_QPA', 'offscreen'))
     for key in ('HOME', 'CFFIXED_USER_HOME', 'XDG_CONFIG_HOME', 'XDG_CACHE_HOME', 'XDG_DATA_HOME', 'TMPDIR'):
         path = root / key
@@ -107,10 +109,26 @@ def regression(binary, mode="auth"):
             print('QUIT_DURING_GATE_OK no replacement started', flush=True)
         for index in range(1 if mode == 'pre_spawn' else 2):
             (root / 'core.status').unlink(missing_ok=True)
+            if mode == 'many' and index == 1:
+                incumbent = (cfg / '.core-launch.json').read_bytes()
+            appdata = root / ('other-appdata' if mode == 'different_appdata' and index == 1 else 'appdata')
             with (root / ('gui%d.log' % index)).open('w') as log:
-                gui = subprocess.Popen([str(executable), '-appdata', str(root / 'appdata')],
+                gui = subprocess.Popen([str(executable), '-appdata', str(appdata)] +
+                                       (['-many'] if mode in ('many', 'different_appdata') and index == 1 else []),
                                        env=env, stdout=log, stderr=subprocess.STDOUT)
             guis.append(gui)
+            if mode == 'many' and index == 1:
+                record = cfg / '.core-launch.json'
+                until(lambda: 'Startup refused:' in (root / 'gui1.log').read_text() or
+                      len(launches()) > 1 or gui.poll() is not None, 8)
+                assert fixture.alive(launches()[0]['pid']), 'FU-H: same-config -many exited a live GUI core'
+                assert len(launches()) == 1, 'FU-H: same-config -many must refuse a second core'
+                assert record.read_bytes() == incumbent, 'refusal must preserve the incumbent record exactly'
+                assert not (root / 'exit_requests').exists(), 'live owner must never receive Exit'
+                assert 'Another NekoBox GUI is using this configuration' in (root / 'gui1.log').read_text()
+                assert guis[0].poll() is None, 'incumbent GUI must remain alive'
+                print('LIVE_OWNER_REFUSED incumbent core and record preserved; no Exit sent', flush=True)
+                break
             if mode == 'refuse' and index == 1:
                 until(lambda: 'Startup refused:' in (root / 'gui1.log').read_text(), 16)
                 assert len(launches()) == 1, 'refused gate must not launch a replacement'
@@ -121,14 +139,23 @@ def regression(binary, mode="auth"):
             assert gui.poll() is None, (root / ('gui%d.log' % index)).read_text()
             until(lambda: (root / 'core.status').exists() and
                   (root / 'core.status').read_text() == 'listening')
-            if index == 0 and mode != 'pre_spawn':
+            if index == 0 and mode not in ('pre_spawn', 'many', 'different_appdata'):
                 gui.kill()  # SIGKILL only the GUI, as in KI-2.
                 gui.wait(timeout=5)
                 assert fixture.alive(launches()[0]['pid']), 'old core must survive GUI SIGKILL'
         observed = launches()
         print(json.dumps(dict(launches=observed, mode=mode,
                               elapsed=time.monotonic() - began)), flush=True)
-        if mode == 'auth':
+        if mode == 'different_appdata':
+            assert len(observed) == 2 and observed[1]['old_alive'], 'separate appdata must allow both cores'
+            assert all(gui.poll() is None for gui in guis)
+            assert all(fixture.alive(row['pid']) for row in observed)
+            assert not (root / 'exit_requests').exists(), 'separate appdata must not send recovery Exit'
+            for index, directory in enumerate(('appdata', 'other-appdata')):
+                record = json.loads((root / directory / 'config/.core-launch.json').read_text())
+                assert int(record['owner']['pid']) == guis[index].pid and record['owner']['start']
+            print('DIFFERENT_APPDATA_OK both GUIs and cores alive; independent owner records', flush=True)
+        elif mode == 'auth':
             assert not observed[1]['old_alive'], 'FU-H: replacement core started while stale core was alive'
             assert time.monotonic() - began < 8, 'authenticated Exit should beat the 10s parent poll'
             assert (root / 'exit_requests').exists(), 'the old core must receive authenticated Exit'
@@ -153,6 +180,8 @@ def regression(binary, mode="auth"):
         until(lambda: all(not fixture.alive(row['pid']) for row in launches()), 15)
         if mode != 'refuse' and launches():
             assert not (cfg / '.core-launch.json').exists(), 'clean stop must remove its own launch record'
+            if mode == 'different_appdata':
+                assert not (root / 'other-appdata/config/.core-launch.json').exists()
 
 
 if __name__ == '__main__':

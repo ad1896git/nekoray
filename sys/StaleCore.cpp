@@ -1,6 +1,7 @@
 #include "StaleCore.hpp"
 #include "rpc/RpcTransport.hpp"
 
+#include <QCoreApplication>
 #include <QDir>
 #include <QElapsedTimer>
 #include <QFile>
@@ -93,6 +94,12 @@ bool read(const QString &path, Record &record) {
         value.port < 1 || value.port > 65535 || value.process.pid < 0 || value.process.pid > INT_MAX ||
         (value.process.pid > 0 && (value.process.start.isEmpty() || value.process.executable.isEmpty())))
         return false;
+    const auto owner = object["owner"].toObject();
+    value.owner = {owner["pid"].toString().toLongLong(), owner["start"].toString(), {}};
+    // Legacy/missing/incomplete owner metadata retains the authenticated,
+    // bounded recovery path; it must not invalidate an otherwise valid record.
+    if (value.owner.pid <= 0 || value.owner.pid > INT_MAX || value.owner.start.isEmpty())
+        value.owner = {};
     record = value;
     return true;
 }
@@ -102,7 +109,8 @@ bool write(const QString &path, const Record &record) {
     const QJsonObject object{{"version", 1}, {"token", QString::fromLatin1(record.token)},
         {"port", record.port}, {"config", record.config},
         {"pid", QString::number(record.process.pid)}, {"start", record.process.start},
-        {"exe", record.process.executable}};
+        {"exe", record.process.executable},
+        {"owner", QJsonObject{{"pid", QString::number(record.owner.pid)}, {"start", record.owner.start}}}};
     QSaveFile file(path);
     file.setDirectWriteFallback(false);
     if (!file.open(QIODevice::WriteOnly) ||
@@ -162,8 +170,9 @@ void exit(const Record &record) {
 }
 }
 
-bool wait(const QString &path, const std::atomic_bool &cancelled, Operations operations, int boundMs) {
+bool wait(const QString &path, const std::atomic_bool &cancelled, Operations operations, int boundMs, QString *refusal) {
 #ifdef Q_OS_UNIX
+    if (refusal) refusal->clear();
     Record record;
     if (!read(path, record)) {
         if (QFile::exists(path)) {
@@ -177,6 +186,15 @@ bool wait(const QString &path, const std::atomic_bool &cancelled, Operations ope
     QElapsedTimer timer;
     timer.start();
     if (cancelled.load()) return false;
+    if (record.owner.pid && record.owner.pid != QCoreApplication::applicationPid()) {
+        const auto owner = operations.observeProcess(record.owner.pid);
+        if (owner.pid == record.owner.pid && owner.start == record.owner.start) {
+            if (refusal) *refusal = QCoreApplication::translate("MainWindow",
+                "Another NekoBox GUI is using this configuration. Close it or use a different -appdata directory, then restart NekoBox.");
+            qWarning("Startup refused: Another NekoBox GUI is using this configuration");
+            return false; // Preserve the incumbent record and core; do not send Exit.
+        }
+    }
     qInfo("Startup: waiting for previous core launch");
     operations.exit(record);
     do {
@@ -199,18 +217,21 @@ bool wait(const QString &path, const std::atomic_bool &cancelled, Operations ope
              int(same(record.process, observed)), operations.listener(record.port));
     return false;
 #else
-    Q_UNUSED(path); Q_UNUSED(operations); Q_UNUSED(boundMs);
+    Q_UNUSED(path); Q_UNUSED(operations); Q_UNUSED(boundMs); Q_UNUSED(refusal);
     return !cancelled.load();
 #endif
 }
 
 std::shared_ptr<std::atomic_bool> start(QObject *context, const QString &path,
-                                      std::function<void(bool)> completed) {
+                                      std::function<void(bool, QString)> completed) {
     auto cancelled = std::make_shared<std::atomic_bool>(false);
     QObject::connect(context, &QObject::destroyed, [cancelled] { cancelled->store(true); });
     auto result = std::make_shared<bool>(false);
-    auto *worker = QThread::create([path, cancelled, result] { *result = wait(path, *cancelled); });
-    QObject::connect(worker, &QThread::finished, context, [completed, result] { completed(*result); });
+    auto refusal = std::make_shared<QString>();
+    auto *worker = QThread::create([path, cancelled, result, refusal] {
+        *result = wait(path, *cancelled, {}, 12000, refusal.get());
+    });
+    QObject::connect(worker, &QThread::finished, context, [completed, result, refusal] { completed(*result, *refusal); });
     QObject::connect(worker, &QThread::finished, worker, &QObject::deleteLater);
     worker->start();
     return cancelled;
