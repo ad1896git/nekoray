@@ -1304,6 +1304,10 @@ void MainWindow::on_menu_export_config_triggered() {
     if (ent->bean->DisplayCoreType() != software_core_name) return;
 
     auto result = BuildConfig(ent, false, true);
+    if (!result->error.isEmpty()) {
+        MessageBoxWarning(tr("Error"), result->error);
+        return;
+    }
     QString config_core = QJsonObject2QString(result->coreConfig, false);
     QApplication::clipboard()->setText(config_core);
 
@@ -1316,10 +1320,18 @@ void MainWindow::on_menu_export_config_triggered() {
     auto ret = msg.exec();
     if (ret == 2) {
         result = BuildConfig(ent, false, false);
+        if (!result->error.isEmpty()) {
+            MessageBoxWarning(tr("Error"), result->error);
+            return;
+        }
         config_core = QJsonObject2QString(result->coreConfig, false);
         QApplication::clipboard()->setText(config_core);
     } else if (ret == 3) {
         result = BuildConfig(ent, true, false);
+        if (!result->error.isEmpty()) {
+            MessageBoxWarning(tr("Error"), result->error);
+            return;
+        }
         config_core = QJsonObject2QString(result->coreConfig, false);
         QApplication::clipboard()->setText(config_core);
     }

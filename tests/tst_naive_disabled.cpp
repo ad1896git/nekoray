@@ -1,7 +1,13 @@
 #include <QtTest>
 #include <QComboBox>
+#include <QClipboard>
 #include <QFile>
+#include <QMessageBox>
+#include <QScopedValueRollback>
+#include <QTableWidget>
 #include <QTemporaryDir>
+#include <QTemporaryFile>
+#include <QTimer>
 
 #include "db/ConfigBuilder.hpp"
 #include "db/Database.hpp"
@@ -9,6 +15,7 @@
 #include "fmt/NaiveBean.hpp"
 #include "sub/SubscriptionCommit.hpp"
 #include "ui/edit/dialog_edit_profile.h"
+#include "ui/mainwindow.h"
 
 using namespace NekoGui;
 
@@ -110,6 +117,8 @@ private slots:
         QVERIFY(types);
         QVERIFY(types->findData("socks") >= 0);
         QCOMPARE(types->findData("naive"), -1);
+        // Drain the editor's queued resize while the dialog is still alive.
+        QTest::qWait(1);
     }
 
     void importsAndClonesCannotCreateProfiles() {
@@ -189,6 +198,91 @@ private slots:
         const auto reloaded = manager->GetProfile(0);
         QVERIFY(reloaded);
         QCOMPARE(reloaded->ToJsonBytes(), json);
+    }
+
+    void exportBuildErrorsPreserveClipboard() {
+        // The builder checks asset paths even for an export. Empty fixtures
+        // suffice here: no core is launched to read them; remove only our files.
+        QTemporaryFile geoip(QApplication::applicationDirPath() + "/geoip.XXXXXX");
+        QTemporaryFile geosite(QApplication::applicationDirPath() + "/geosite.XXXXXX");
+        const auto asset = [](QTemporaryFile &file, const QString &name) {
+            const auto path = QApplication::applicationDirPath() + "/" + name;
+            return QFileInfo::exists(path) || (file.open() && file.rename(path));
+        };
+        QVERIFY(asset(geoip, "geoip.db"));
+        QVERIFY(asset(geosite, "geosite.db"));
+        auto legacy = naive();
+        legacy->id = 0;
+        legacy->gid = 0;
+        legacy->fn = "profiles/0.json";
+        QVERIFY(legacy->SaveChecked().ok);
+        QVERIFY(manager->LoadManager());
+        auto socks = ProfileManager::NewProxyEntity("socks");
+        QVERIFY(manager->AddProfile(socks, 0));
+        auto chain = ProfileManager::NewProxyEntity("chain");
+        chain->ChainBean()->list = {socks->id};
+        QVERIFY(manager->AddProfile(chain, 0));
+
+        // Leave the core dispatcher stopped: exercise the real window/slot,
+        // without launching a core or starting the gRPC traffic worker.
+        QThread stoppedCoreThread;
+        QScopedValueRollback<QThread *> dispatcher(DS_cores, &stoppedCoreThread);
+        QScopedValueRollback<QWidget *> mainWindowGuard(mainwindow);
+        store->flag_tray = true;
+        MainWindow window;
+        auto *table = window.findChild<QTableWidget *>("proxyListTable");
+        QVERIFY(table);
+        const QString sentinel = "clipboard must survive failed export";
+        const QString disabled = "Naive is disabled in this build";
+
+        // Initial export: Naive at either chain end, or as group front proxy.
+        // Retry paths: initially valid export, then core/test rebuild fails.
+        // Finally verify that an ordinary successful export still copies JSON.
+        for (int mode = 0; mode < 6; ++mode) {
+            const auto selected = mode == 2 ? socks : chain;
+            manager->GetGroup(0)->front_proxy_id = mode == 2 ? legacy->id : -1;
+            chain->ChainBean()->list = mode == 0 ? QList<int>{legacy->id, socks->id}
+                                      : mode == 1 ? QList<int>{socks->id, legacy->id}
+                                                  : QList<int>{socks->id};
+            window.refresh_proxy_list();
+            table->clearSelection();
+            bool found = false;
+            for (int row = 0; row < table->rowCount(); ++row) {
+                QVERIFY(table->item(row, 0));
+                if (table->item(row, 0)->data(114514).toInt() == selected->id) {
+                    table->selectRow(row);
+                    found = true;
+                    break;
+                }
+            }
+            QVERIFY(found);
+            QApplication::clipboard()->setText(sentinel);
+            QStringList messages;
+            QTimer dialogs;
+            connect(&dialogs, &QTimer::timeout, &window, [&] {
+                auto *box = qobject_cast<QMessageBox *>(QApplication::activeModalWidget());
+                if (!box) return;
+                messages += box->text();
+                if ((mode == 3 || mode == 4) && messages.size() == 1) {
+                    chain->ChainBean()->list = {socks->id, legacy->id};
+                    QApplication::clipboard()->setText(sentinel);
+                    box->done(mode == 3 ? 2 : 3);
+                } else {
+                    box->done(0);
+                }
+            });
+            dialogs.start(1);
+            QVERIFY(QMetaObject::invokeMethod(&window, "on_menu_export_config_triggered", Qt::DirectConnection));
+            dialogs.stop();
+            if (mode == 5) {
+                QCOMPARE(messages, QStringList{"Config copied"});
+                const auto config = QString2QJsonObject(QApplication::clipboard()->text());
+                QVERIFY(config.contains("outbounds"));
+                continue;
+            }
+            QCOMPARE(QApplication::clipboard()->text(), sentinel);
+            QCOMPARE(messages, mode < 3 ? QStringList{disabled} : QStringList({"Config copied", disabled}));
+        }
     }
 };
 
