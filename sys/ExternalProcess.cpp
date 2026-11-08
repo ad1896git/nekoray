@@ -1,4 +1,5 @@
 #include "ExternalProcess.hpp"
+#include "StaleCore.hpp"
 #include "main/NekoGui.hpp"
 
 #include <QTimer>
@@ -75,6 +76,17 @@ namespace NekoGui_sys {
         ExternalProcess::program = core_path;
         ExternalProcess::arguments = args;
 
+        connect(this, &QProcess::started, this, [this] {
+            StaleCore::Record record;
+            const auto path = StaleCore::recordPath();
+            if (StaleCore::read(path, record) && record.token == launchToken_) {
+                record.process = StaleCore::observe(processId());
+                if (!StaleCore::write(path, record))
+                    MW_show_log("[Error] Cannot update core launch identity; startup recovery will wait its full bound.");
+            }
+        });
+        connect(this, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished), this,
+                [this] { StaleCore::removeOwned(StaleCore::recordPath(), launchToken_); });
         connect(this, &QProcess::readyReadStandardOutput, this, [&]() {
             auto log = readAllStandardOutput();
             if (!NekoGui::dataStore->core_running) {
@@ -144,6 +156,18 @@ namespace NekoGui_sys {
         // Rotate before every launch, including Restart and crash recovery.
         // An old queued RPC retains its old token and cannot target this core.
         const auto launch = NekoGui::dataStore->core_token->startLaunch();
+        launchToken_ = *launch;
+        StaleCore::Record record;
+        record.owner = StaleCore::observe(QCoreApplication::applicationPid());
+        record.token = launchToken_;
+        record.port = NekoGui::dataStore->core_port;
+        record.config = QDir::currentPath();
+        if (!StaleCore::write(StaleCore::recordPath(), record)) {
+            failed_to_start = true;
+            MW_show_log("[Error] Cannot save core launch ownership; core was not started.");
+            MW_dialog_message("ExternalProcess", "CoreCrashed");
+            return;
+        }
         show_stderr = false;
         // cwd: same as GUI, at ./config
         ExternalProcess::Start();
@@ -155,6 +179,11 @@ namespace NekoGui_sys {
         restarting = true;
         QProcess::kill();
         QProcess::waitForFinished(500);
+        if (state() != QProcess::NotRunning) {
+            MW_show_log("[Error] Previous owned core has not exited; restart refused.");
+            restarting = false;
+            return;
+        }
         ExternalProcess::started = false;
         Start();
         restarting = false;

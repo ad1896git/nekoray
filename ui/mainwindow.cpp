@@ -4,6 +4,7 @@
 #include "db/traffic/TrafficLooper.hpp"
 #include "./ui_mainwindow.h"
 #include "mainwindow.h"
+#include "sys/StaleCore.hpp"
 
 #include "fmt/Preset.hpp"
 #include "db/ProfileFilter.hpp"
@@ -421,29 +422,56 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
     args.push_back(Int2String(NekoGui::dataStore->core_port));
     if (NekoGui::dataStore->flag_debug) args.push_back("-debug");
 
-    // Start core
-    runOnUiThread(
-        [=] {
-            core_process = new NekoGui_sys::CoreProcess(core_path, args);
-            // Remember last started
-            if (NekoGui::dataStore->remember_enable && NekoGui::dataStore->remember_id >= 0) {
-                core_process->start_profile_when_core_is_up = NekoGui::dataStore->remember_id;
-            }
-            // Setup
-            core_process->Start();
-            setup_grpc();
-        },
-        DS_cores);
+    // Keep RPC actions safe while recovery is pending. The transport refuses
+    // calls until core_running, and its auth snapshots follow launch rotation.
+    setup_grpc();
 
-    // Remember system proxy
-    if (NekoGui::dataStore->remember_enable || NekoGui::dataStore->flag_restart_tun_on) {
-        if (NekoGui::dataStore->remember_spmode.contains("system_proxy")) {
-            neko_set_spmode_system_proxy(true, false);
+    // One gate covers normal startup and remembered Tun restoration. Blocking
+    // RPC/wait work runs on its own worker, leaving UI and shutdown responsive.
+    auto *startup = new QTimer(this);
+    startup->setInterval(50);
+    connect(startup, &QTimer::timeout, this, [this, core_path, args, startup] {
+        // A refused quit restores prepare_exit; activation then resumes. An
+        // accepted quit destroys this timer without activating either path.
+        if (NekoGui::dataStore->prepare_exit) return;
+        startup->stop();
+        coreStartupReady_ = true;
+        // Start core
+        runOnUiThread(
+            [=] {
+                core_process = new NekoGui_sys::CoreProcess(core_path, args);
+                // Remember last started
+                if (NekoGui::dataStore->remember_enable && NekoGui::dataStore->remember_id >= 0) {
+                    core_process->start_profile_when_core_is_up = NekoGui::dataStore->remember_id;
+                }
+                // Setup
+                core_process->Start();
+            },
+            DS_cores);
+
+        // Remember system proxy
+        if (NekoGui::dataStore->remember_enable || NekoGui::dataStore->flag_restart_tun_on) {
+            if (NekoGui::dataStore->remember_spmode.contains("system_proxy")) {
+                neko_set_spmode_system_proxy(true, false);
+            }
+            if (NekoGui::dataStore->remember_spmode.contains("vpn") || NekoGui::dataStore->flag_restart_tun_on) {
+                neko_set_spmode_vpn(true, false);
+            }
         }
-        if (NekoGui::dataStore->remember_spmode.contains("vpn") || NekoGui::dataStore->flag_restart_tun_on) {
-            neko_set_spmode_vpn(true, false);
-        }
-    }
+
+        startup->deleteLater();
+    });
+    NekoGui_sys::StaleCore::start(this, NekoGui_sys::StaleCore::recordPath(),
+        [this, startup](bool ready, const QString &refusal) {
+            if (ready) startup->start();
+            else {
+                startup->deleteLater();
+                const auto message = refusal.isEmpty()
+                    ? tr("The previous core has not exited. Wait for it to exit and restart NekoBox.") : refusal;
+                MW_show_log("[Error] Startup refused: " + message);
+                MessageBoxWarning(tr("Error"), message);
+            }
+        });
 
     connect(qApp, &QGuiApplication::commitDataRequest, this, &MainWindow::on_commitDataRequest);
 
@@ -740,6 +768,7 @@ void MainWindow::neko_set_spmode_system_proxy(bool enable, bool save) {
 }
 
 void MainWindow::neko_set_spmode_vpn(bool enable, bool save) {
+    if (enable && !coreStartupReady_) return;
 #ifdef Q_OS_LINUX
     if (tun_capability_job) {
         if (!enable) tun_capability_job->cancel();

@@ -167,6 +167,7 @@ set(PROJECT_SOURCES
 
         sub/GroupUpdater.cpp
 
+        sys/StaleCore.cpp
         sys/ExternalProcess.cpp
         sys/AutoRun.cpp
 

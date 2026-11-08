@@ -44,6 +44,7 @@ find_package(Qt${QT_VERSION_MAJOR} REQUIRED COMPONENTS Test)
 add_executable(tst_external_credentials
     tst_external_credentials.cpp
     ${PROJECT_SOURCE_DIR}/sys/ExternalProcess.cpp
+    ${PROJECT_SOURCE_DIR}/sys/StaleCore.cpp
 )
 set_target_properties(tst_external_credentials PROPERTIES
     AUTOMOC ON
@@ -56,6 +57,7 @@ target_include_directories(tst_external_credentials PRIVATE
 target_link_libraries(tst_external_credentials PRIVATE
     Qt${QT_VERSION_MAJOR}::Core
     Qt${QT_VERSION_MAJOR}::Widgets
+    Qt${QT_VERSION_MAJOR}::Network
     Qt${QT_VERSION_MAJOR}::Test
 )
 add_test(NAME external_credentials COMMAND tst_external_credentials)
@@ -386,3 +388,40 @@ target_link_libraries(tst_shutdown_dialogs PRIVATE Qt${QT_VERSION_MAJOR}::Widget
 add_test(NAME coordinated_quit_pending_dialogs COMMAND tst_shutdown_dialogs)
 set_tests_properties(coordinated_quit_pending_dialogs PROPERTIES
     TIMEOUT 5 ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
+if(UNIX AND NOT NKR_NO_GRPC)
+    add_test(NAME stale_core_overlap
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/test_stale_core_overlap.py"
+            $<TARGET_FILE:nekobox>)
+    set_tests_properties(stale_core_overlap PROPERTIES TIMEOUT 45 RUN_SERIAL TRUE)
+endif()
+
+if(UNIX)
+    add_executable(tst_stale_core tst_stale_core.cpp ${PROJECT_SOURCE_DIR}/sys/StaleCore.cpp)
+    set_target_properties(tst_stale_core PROPERTIES AUTOMOC ON CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
+    target_include_directories(tst_stale_core PRIVATE ${PROJECT_SOURCE_DIR})
+    target_link_libraries(tst_stale_core PRIVATE Qt${QT_VERSION_MAJOR}::Core Qt${QT_VERSION_MAJOR}::Network Qt${QT_VERSION_MAJOR}::Test)
+    target_compile_definitions(tst_stale_core PRIVATE NKR_STALE_SOURCE="${PROJECT_SOURCE_DIR}/sys/StaleCore.cpp")
+    add_test(NAME stale_core_ownership COMMAND tst_stale_core)
+    set_tests_properties(stale_core_ownership PROPERTIES TIMEOUT 15)
+endif()
+
+if(UNIX AND NOT NKR_NO_GRPC)
+    foreach(mode IN ITEMS wait pre_spawn refuse many different_appdata)
+        if(mode STREQUAL "pre_spawn")
+            set(stale_core_binary tst_coordinated_gui)
+        else()
+            set(stale_core_binary nekobox)
+        endif()
+        add_test(NAME stale_core_${mode}
+            COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/test_stale_core_overlap.py"
+                $<TARGET_FILE:${stale_core_binary}> ${mode})
+        set_tests_properties(stale_core_${mode} PROPERTIES TIMEOUT 45 RUN_SERIAL TRUE)
+    endforeach()
+    if(APPLE)
+        add_test(NAME stale_core_unknown_owner
+            COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/test_stale_core_overlap.py"
+                $<TARGET_FILE:nekobox> unknown_owner)
+        set_tests_properties(stale_core_unknown_owner PROPERTIES TIMEOUT 45 RUN_SERIAL TRUE)
+    endif()
+endif()

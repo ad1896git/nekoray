@@ -1,10 +1,25 @@
 // Compile the real entry point, including signal and native quit registration.
 // The probe arranges pending operations and fake launchers; cleanup is production code.
 #include "ui/mainwindow.h"
+#include "main/TerminationSignals.hpp"
+#include <cstdio>
 
+// Observe real signal registration without adding a production hook. A worker
+// can log gate progress before MainWindow construction and handler setup finish.
+class ProbeTerminationSignals final : public TerminationSignals {
+public:
+    ProbeTerminationSignals(QObject *parent, std::function<void()> quit)
+        : TerminationSignals(parent, std::move(quit)) {
+        std::puts("SIGNAL_HANDLERS_READY");
+        std::fflush(stdout);
+    }
+};
+
+#define TerminationSignals ProbeTerminationSignals
 #define main NkrProductionMain
 #include "../main/main.cpp"
 #undef main
+#undef TerminationSignals
 
 #include "ui/widget/MessageBoxTimer.h"
 #include "db/traffic/TrafficLooper.hpp"
@@ -13,7 +28,6 @@
 #include <QElapsedTimer>
 #include "rpc/gRPC.h"
 #include "sys/ExternalProcess.hpp"
-#include <cstdio>
 #include <thread>
 
 namespace {
