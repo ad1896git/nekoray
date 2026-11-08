@@ -42,7 +42,7 @@ popd
 ####
 
 if [ ! -d "libneko" ]; then
-  git clone --no-checkout "$NKR_SRC_UPSTREAM/libneko.git"
+  git clone --no-checkout "$NKR_SRC_LIBNEKO/libneko.git"
 fi
 pushd libneko
 git checkout "$COMMIT_LIBNEKO"

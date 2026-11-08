@@ -418,6 +418,10 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
 
     QStringList args;
     args.push_back("nekobox");
+    // main.cpp has selected the installed or portable config directory. Pass
+    // it explicitly so core log placement never depends on its working directory.
+    args.push_back("-data-dir");
+    args.push_back(QDir::currentPath());
     args.push_back("-port");
     args.push_back(Int2String(NekoGui::dataStore->core_port));
     if (NekoGui::dataStore->flag_debug) args.push_back("-debug");

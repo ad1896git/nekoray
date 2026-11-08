@@ -22,9 +22,9 @@ Pre-built packages are published on this fork's [Releases](https://github.com/ad
 
 ## 依赖与版本 / Dependencies
 
-核心依赖固定到具体 commit，见 [`libs/get_source_env.sh`](libs/get_source_env.sh)：sing-box 和 sing-quic 使用本仓库所有者的 fork，libneko 和 quic-go 分别来自上游和 sagernet。
+核心依赖固定到具体 commit，见 [`libs/get_source_env.sh`](libs/get_source_env.sh)：sing-box、sing-quic 和 libneko 使用本仓库所有者的 fork，quic-go 来自 sagernet。
 
-The core dependencies are pinned to specific commits in [`libs/get_source_env.sh`](libs/get_source_env.sh). sing-box and sing-quic come from this owner's forks; libneko and quic-go come from upstream.
+The core dependencies are pinned to specific commits in [`libs/get_source_env.sh`](libs/get_source_env.sh). sing-box, sing-quic and libneko come from this owner's forks; quic-go comes from sagernet.
 
 ## 项目主页 & 文档 / Homepage & Documents
 

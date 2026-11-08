@@ -37,10 +37,7 @@ var configureInstanceLog = func(i *box.Box) {
 func setupCore() {
 	boxmain.SetDisableColor(true)
 	//
-	if err := prepareLogFile("./neko.log"); err != nil {
-		log.Printf("prepare core log file: %v", err)
-	}
-	if err := neko_log.SetupLog(50*1024, "./neko.log"); err != nil {
+	if err := setupRunLog(*logDataDir); err != nil {
 		log.Printf("set up core log: %v", err)
 	}
 	//

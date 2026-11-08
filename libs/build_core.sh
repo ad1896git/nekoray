@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Build nekobox_core from the pinned sources by default: sing-box and sing-quic
-# from the ad1896git forks, libneko from MatsuriDayo, and patched quic-go from sagernet.
+# from the ad1896git forks, libneko from ad1896git, and patched quic-go from sagernet.
 # NKR_SRC_BASE overrides the fork base for sing-box and sing-quic (mirrors supported).
 # NKR_SRC_DIR holds sing-box, sing-quic, quic-go and libneko; default: repository parent.
 # Versioned modules use the Go module cache; offline builds also need it populated.
@@ -89,7 +89,7 @@ prepare_source sing-box "$COMMIT_SING_BOX" "$src_base"
 prepare_source sing-quic "$COMMIT_SING_QUIC" "$src_base"
 prepare_source quic-go "$COMMIT_QUIC_GO" "$NKR_SRC_QUIC_GO" \
     "$repo_dir/libs/patches/quic-go-v0.47.0-beta.2-congestion-lock.patch"
-prepare_source libneko "$COMMIT_LIBNEKO" "$NKR_SRC_UPSTREAM"
+prepare_source libneko "$COMMIT_LIBNEKO" "$NKR_SRC_LIBNEKO"
 
 GOOS=${GOOS:-$(go env GOHOSTOS)}
 GOARCH=${GOARCH:-$(go env GOHOSTARCH)}
@@ -133,7 +133,7 @@ verify_module_pin() {
 }
 verify_module_pin github.com/sagernet/sing-box "$COMMIT_SING_BOX" github.com/ad1896git/sing-box
 verify_module_pin github.com/sagernet/sing-quic "$COMMIT_SING_QUIC" github.com/ad1896git/sing-quic
-verify_module_pin github.com/matsuridayo/libneko "$COMMIT_LIBNEKO" github.com/matsuridayo/libneko
+verify_module_pin github.com/matsuridayo/libneko "$COMMIT_LIBNEKO" github.com/ad1896git/libneko
 go build -mod=readonly -modfile="$work_dir/go.mod" -o "$out_dir/$binary" -trimpath \
     -ldflags "-w -s $checklinkname_flag -X github.com/matsuridayo/libneko/neko_common.Version_neko=$VERSION" \
     -tags 'with_clash_api,with_gvisor,with_quic,with_wireguard,with_utls,with_ech'
