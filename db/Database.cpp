@@ -271,6 +271,9 @@ namespace NekoGui {
     bool ProfileManager::AddProfile(const std::shared_ptr<ProxyEntity> &ent, int gid) {
         NekoGui_concurrency::RequireUiThread();
         if (!ent || ent->id >= 0 || !ent->bean) return false;
+        // Reject new Naive profiles (including imports/clones); loading existing
+        // profiles still uses NewProxyEntity so their stored data stays intact.
+        if (ent->type == "naive") return false;
         const int newId = NewProfileID();
         if (newId < 0) return false;
         const int previousId = ent->id;

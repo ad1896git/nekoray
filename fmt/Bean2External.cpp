@@ -35,12 +35,7 @@ namespace NekoGui_fmt {
     // 2: Direct External
 
     int NaiveBean::NeedExternal(bool isFirstProfile) {
-        if (isFirstProfile) {
-            if (NekoGui::dataStore->spmode_vpn) {
-                return 1;
-            }
-            return 2;
-        }
+        // Keep legacy profiles loadable, but route every start to the rejection below.
         return 1;
     }
 
@@ -74,41 +69,8 @@ namespace NekoGui_fmt {
     }
 
     ExternalBuildResult NaiveBean::BuildExternal(int mapping_port, int socks_port, int external_stat) {
-        ExternalBuildResult result{NekoGui::dataStore->extraCore->Get("naive")};
-
-        auto is_direct = external_stat == 2;
-        auto domain_address = sni.isEmpty() ? serverAddress : sni;
-        auto connect_address = is_direct ? serverAddress : "127.0.0.1";
-        auto connect_port = is_direct ? serverPort : mapping_port;
-        domain_address = WrapIPV6Host(domain_address);
-        connect_address = WrapIPV6Host(connect_address);
-
-        auto proxy_url = QUrl();
-        proxy_url.setScheme(protocol);
-        proxy_url.setUserName(username);
-        proxy_url.setPassword(password);
-        proxy_url.setPort(connect_port);
-        proxy_url.setHost(domain_address);
-
-        if (!disable_log) result.arguments += "--log";
-        result.arguments += "--listen=socks://127.0.0.1:" + Int2String(socks_port);
-        result.arguments += "--proxy=" + proxy_url.toString(QUrl::FullyEncoded);
-        if (domain_address != connect_address)
-            result.arguments += "--host-resolver-rules=MAP " + domain_address + " " + connect_address;
-        if (insecure_concurrency > 0) result.arguments += "--insecure-concurrency=" + Int2String(insecure_concurrency);
-        if (!extra_headers.trimmed().isEmpty()) result.arguments += "--extra-headers=" + extra_headers;
-        if (!certificate.trimmed().isEmpty()) {
-            QString TempFile;
-            if (!WriteTempFile(result, "naive_" + GetRandomString(10) + ".crt",
-                               certificate.toUtf8(), TempFile))
-                return result;
-            result.env += "SSL_CERT_FILE=" + TempFile;
-        }
-
-        auto config_export = QStringList{result.program};
-        config_export += result.arguments;
-        result.config_export = QStringList2Command(config_export);
-
+        ExternalBuildResult result;
+        result.error = QObject::tr("Naive is disabled in this build");
         return result;
     }
 
