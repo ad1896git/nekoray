@@ -485,7 +485,7 @@ if (NKR_BUILD_TESTS)
         )
     endif ()
 
-    foreach(_name IN ITEMS persistence subscription_commit renumber w19)
+    foreach(_name IN ITEMS persistence subscription_commit renumber w19 naive_disabled)
         add_executable(tst_${_name} tests/tst_${_name}.cpp
             res/neko.qrc res/theme/feiyangqingyun/qss.qrc)
         set_target_properties(tst_${_name} PROPERTIES
@@ -499,6 +499,7 @@ if (NKR_BUILD_TESTS)
     target_compile_definitions(tst_renumber PRIVATE NKR_RENUMBER_SOURCE_DIR="${PROJECT_SOURCE_DIR}")
     set_tests_properties(w19 PROPERTIES TIMEOUT 45 LABELS "W19")
     set_tests_properties(persistence PROPERTIES TIMEOUT 90)
+    set_tests_properties(naive_disabled PROPERTIES TIMEOUT 30 LABELS "F22")
     set_tests_properties(subscription_commit PROPERTIES TIMEOUT 180 LABELS "W01;W08;W16")
     # Exhaustive recovery is one QtTest function; its default five-minute
     # watchdog must not preempt CTest's checked crash-matrix timeout.
