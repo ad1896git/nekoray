@@ -324,6 +324,9 @@ endif ()
 # The probe only arranges pending profile timers; shutdown is production code.
 if(UNIX AND NOT NKR_NO_GRPC)
     find_package(Python3 REQUIRED COMPONENTS Interpreter)
+    add_test(NAME coordinated_gui_startup_diagnostics
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/test_coordinated_gui_diagnostics.py" -v)
+    set_tests_properties(coordinated_gui_startup_diagnostics PROPERTIES TIMEOUT 70)
     add_executable(tst_coordinated_gui coordinated_gui_probe.cpp
         "${PROJECT_SOURCE_DIR}/res/neko.qrc"
         "${PROJECT_SOURCE_DIR}/res/theme/feiyangqingyun/qss.qrc")
