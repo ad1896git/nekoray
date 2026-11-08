@@ -18,6 +18,10 @@
 #include <climits>
 #include <memory>
 
+#ifdef NKR_SHUTDOWN_TEST_HOOKS
+void ShutdownTestHook(const char *stage);
+#endif
+
 namespace NkrW04 {
 
 struct WireReply {
@@ -112,6 +116,7 @@ public:
                    qint64 timeoutMs) {
         struct State {
             Completion<WireReply> completion;
+            std::mutex issueMutex;
             QElapsedTimer elapsed;
             qint64 timeout = 0;
 
@@ -137,7 +142,24 @@ public:
                     return;
                 }
 
+#ifdef NKR_SHUTDOWN_TEST_HOOKS
+                ShutdownTestHook("before_rpc_issue_lock");
+#endif
+                // Timeout abandons completion, then crosses this same barrier
+                // before returning. A queued send cannot post after that return.
+                // Only the nonblocking post is protected, never network I/O.
+                std::unique_lock<std::mutex> issueLock(state->issueMutex);
+                if (state->completion.abandoned()) {
+#ifdef NKR_SHUTDOWN_TEST_HOOKS
+                    ShutdownTestHook("rpc_issue_skipped");
+#endif
+                    return;
+                }
                 auto *reply = manager->post(request, body);
+#ifdef NKR_SHUTDOWN_TEST_HOOKS
+                ShutdownTestHook("rpc_issued");
+#endif
+                issueLock.unlock();
                 const auto metadata = std::make_shared<ReplyMetadata>();
                 QObject::connect(reply, &QNetworkReply::metaDataChanged, reply,
                                  [reply, metadata] {
@@ -198,6 +220,7 @@ public:
         const qint64 waitMs = timeoutMs > 0
                                  ? qMax<qint64>(1, state->remaining()) : 0;
         if (!state->completion.wait(waitMs, result)) {
+            std::lock_guard<std::mutex> issueBarrier(state->issueMutex);
             result.error = QNetworkReply::TimeoutError;
         }
         return result;

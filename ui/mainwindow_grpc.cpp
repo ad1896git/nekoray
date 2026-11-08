@@ -438,37 +438,60 @@ bool MainWindow::coordinatedShutdown() {
     auto done = std::make_shared<QSemaphore>();
     auto stopped = std::make_shared<std::atomic_bool>(false);
     auto cancelled = std::make_shared<std::atomic_bool>(false);
-    auto killMutex = std::make_shared<std::mutex>();
-    runOnUiThread([this, done, stopped, cancelled, killMutex] {
-        // If the core thread was busy past our deadline, do not run an old
-        // shutdown after the UI has resumed. An Exit RPC already in progress
-        // can cross that deadline too; recheck before touching the process.
+    auto commitMutex = std::make_shared<std::mutex>();
+    runOnUiThread([this, done, stopped, cancelled, commitMutex] {
+        // Each phase checks cancellation under the same mutex as the UI's
+        // restore barrier. A phase already committed finishes before admission
+        // reopens; a cancelled callback cannot begin another side effect.
         if (cancelled->load()) return;
-        stop_core_daemon();
-        if (cancelled->load()) return;
-        if (core_process && core_process->state() != QProcess::NotRunning) {
-            if (!core_process->waitForFinished(500) && !cancelled->load()) {
-                SHUTDOWN_TEST_HOOK("before_kill_lock");
-                // Hand off the irreversible kill atomically with UI timeout.
-                // Cancellation wins here, or the UI waits for this bounded
-                // kill/wait before reopening profile-start admission.
-                std::lock_guard<std::mutex> killLock(*killMutex);
-                if (!cancelled->load()) {
-                    SHUTDOWN_TEST_HOOK("kill_committed");
-                    core_process->kill();
-                    core_process->waitForFinished(500);
-                    SHUTDOWN_TEST_HOOK("kill_finished");
-                }
-            }
+        SHUTDOWN_TEST_HOOK("before_exit_lock");
+        {
+            std::lock_guard<std::mutex> commitLock(*commitMutex);
+            if (cancelled->load()) return;
+            SHUTDOWN_TEST_HOOK("exit_committed");
+            stop_core_daemon(); // Client::Exit has a 500 ms deadline.
+            SHUTDOWN_TEST_HOOK("exit_finished");
         }
-        stopped->store(!core_process || core_process->state() == QProcess::NotRunning);
-        done->release();
+        if (cancelled->load()) return;
+        SHUTDOWN_TEST_HOOK("before_wait_lock");
+        bool finished = true;
+        {
+            std::lock_guard<std::mutex> commitLock(*commitMutex);
+            if (cancelled->load()) return;
+            SHUTDOWN_TEST_HOOK("wait_committed");
+            // waitForFinished can synchronously emit stateChanged/finished.
+            // Keep those callbacks inside the restore barrier as well.
+            if (core_process && core_process->state() != QProcess::NotRunning)
+                finished = core_process->waitForFinished(500);
+            SHUTDOWN_TEST_HOOK("wait_finished");
+        }
+        if (!finished && !cancelled->load()) {
+            SHUTDOWN_TEST_HOOK("before_kill_lock");
+            std::lock_guard<std::mutex> commitLock(*commitMutex);
+            if (cancelled->load()) return;
+            SHUTDOWN_TEST_HOOK("kill_committed");
+            core_process->kill();
+            core_process->waitForFinished(500);
+            SHUTDOWN_TEST_HOOK("kill_finished");
+        }
+        SHUTDOWN_TEST_HOOK("before_complete_lock");
+        {
+            std::lock_guard<std::mutex> commitLock(*commitMutex);
+            if (cancelled->load()) return;
+            SHUTDOWN_TEST_HOOK("complete_committed");
+            stopped->store(!core_process || core_process->state() == QProcess::NotRunning);
+            done->release();
+            SHUTDOWN_TEST_HOOK("complete_finished");
+        }
     }, DS_cores);
     if (!WaitForShutdown(*done, 2000) || !stopped->load()) {
+        // Close phase admission BEFORE waiting for the current commit. This
+        // prevents the core thread from chaining multiple 500 ms phases while
+        // the UI waits for the mutex. Only the current phase can delay restore.
+        cancelled->store(true);
         SHUTDOWN_TEST_HOOK("before_cancel_lock");
         {
-            std::lock_guard<std::mutex> killLock(*killMutex);
-            cancelled->store(true);
+            std::lock_guard<std::mutex> restoreBarrier(*commitMutex);
         }
         SHUTDOWN_TEST_HOOK("after_cancel_lock");
         qWarning("Owned core did not stop within the shutdown deadline");

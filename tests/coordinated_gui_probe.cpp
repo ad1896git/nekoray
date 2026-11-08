@@ -17,32 +17,63 @@
 namespace {
 struct ShutdownRace {
     bool cancelWins;
+    QByteArray phase;
+    std::atomic_bool phaseFinished{false};
+    std::atomic_bool cancelledBeforePhaseFinished{false};
     QSemaphore entered, release, cancelAttempt;
     std::atomic_bool killFinished{false};
-    std::atomic_bool cancelledBeforeKillFinished{false};
+    std::atomic_bool cancelAttempted{false};
+    std::atomic_int lateCommits{0};
+    QSemaphore issueEntered, issueRelease, issueDrained;
+    std::atomic_bool rpcIssued{false};
+    QElapsedTimer handoff;
+    qint64 handoffMs = -1;
 };
 std::atomic<ShutdownRace *> shutdownRace{nullptr};
 }
 
 // Only the probe's copy of mainwindow_grpc.cpp calls these hooks. Semaphores
-// model preemption at the last check and at an already-committed kill.
+// model preemption before each commit and while a commit owns the handoff.
 void ShutdownTestHook(const char *stage) {
     auto *race = shutdownRace.load();
     if (!race) return;
     const QByteArray point(stage);
-    if ((race->cancelWins && point == "before_kill_lock") ||
-        (!race->cancelWins && point == "kill_committed")) {
+    if (race->phase == "rpc") {
+        if (point == "exit_committed") {
+            race->entered.release();
+            if (!race->release.tryAcquire(1, 10000)) qFatal("Exit was not released");
+            return;
+        }
+        if (point == "before_rpc_issue_lock") {
+            race->issueEntered.release();
+            if (!race->issueRelease.tryAcquire(1, 10000)) qFatal("RPC issue was not released");
+            return;
+        }
+        if (point == "rpc_issued" || point == "rpc_issue_skipped") {
+            race->rpcIssued.store(point == "rpc_issued");
+            race->issueDrained.release();
+            return;
+        }
+    }
+    if (point.endsWith("_committed") && race->cancelAttempted.load())
+        ++race->lateCommits;
+    if ((race->cancelWins && point == "before_" + race->phase + "_lock") ||
+        (!race->cancelWins && point == race->phase + "_committed")) {
         race->entered.release();
-        if (!race->release.tryAcquire(1, 10000)) qFatal("kill seam was not released");
-    } else if (point == "kill_finished") {
-        race->killFinished.store(true);
+        if (!race->release.tryAcquire(1, 10000)) qFatal("shutdown seam was not released");
+    } else if (point == race->phase + "_finished") {
+        race->phaseFinished.store(true);
+        if (point == "kill_finished") race->killFinished.store(true);
     } else if (point == "before_cancel_lock") {
-        if (!race->entered.available()) qFatal("deadline missed the kill seam");
+        if (!race->entered.available()) qFatal("deadline missed the shutdown seam");
         if (!NekoGui::dataStore->prepare_exit || !ShutdownDialogs::suppressed)
             qFatal("shutdown admission reopened before cancellation");
+        race->handoff.start();
+        race->cancelAttempted.store(true);
         race->cancelAttempt.release();
     } else if (point == "after_cancel_lock") {
-        race->cancelledBeforeKillFinished.store(!race->killFinished.load());
+        race->handoffMs = race->handoff.elapsed();
+        race->cancelledBeforePhaseFinished.store(!race->phaseFinished.load());
     }
 }
 
@@ -84,9 +115,10 @@ static void checkRefusalRecovery(MainWindow *window) {
         qFatal("refused shutdown did not restore a usable application");
 }
 
-static void checkKillCancellation(MainWindow *window, bool cancelWins) {
+static void checkShutdownCancellation(MainWindow *window, const QByteArray &phase, bool cancelWins) {
     ShutdownRace race;
     race.cancelWins = cancelWins;
+    race.phase = phase;
     shutdownRace.store(&race);
     std::thread releaseCommitted;
     if (!cancelWins) {
@@ -102,30 +134,69 @@ static void checkKillCancellation(MainWindow *window, bool cancelWins) {
                           !ShutdownDialogs::suppressed;
     if (releaseCommitted.joinable()) releaseCommitted.join();
     if (cancelWins) {
-        // The core thread remains stopped after its old final cancellation
-        // check while the UI refuses shutdown and starts using this core again.
-        checkRefusalRecovery(window);
+        // Resume admission and reuse the live core before releasing the old
+        // callback. Completion tests instead observe its private publications:
+        // the preceding kill has already reaped the process in that phase.
+        if (phase != "complete") checkRefusalRecovery(window);
         race.release.release();
     }
     auto drained = std::make_shared<QSemaphore>();
     runOnUiThread([drained] { drained->release(); }, DS_cores);
     if (!waitUntil([drained] { return drained->available() > 0; }))
-        qFatal("kill seam did not drain");
+        qFatal("shutdown seam did not drain");
     shutdownRace.store(nullptr);
-    if (race.killFinished.load() &&
+    if ((phase == "complete" || (phase == "kill" && race.killFinished.load())) &&
         !waitUntil([] { return !NekoGui::dataStore->core_running; }))
         qFatal("owned core did not report its exit");
     const bool running = NekoGui::dataStore->core_running;
-    std::printf("KILL_RACE cancel_wins=%d accepted=%d restored=%d kill_finished=%d "
-                "cancel_before_kill_finished=%d core_running=%d\n",
-                cancelWins, accepted, restored, race.killFinished.load(),
-                race.cancelledBeforeKillFinished.load(), running);
+    std::printf("SHUTDOWN_RACE phase=%s cancel_wins=%d accepted=%d restored=%d "
+                "phase_finished=%d cancel_before_finished=%d core_running=%d\n",
+                phase.constData(), cancelWins, accepted, restored,
+                race.phaseFinished.load(), race.cancelledBeforePhaseFinished.load(), running);
+    std::printf("RESTORE_HANDOFF_MS=%lld\n", static_cast<long long>(race.handoffMs));
     std::fflush(stdout);
-    if (accepted || !restored ||
-        (cancelWins && (race.killFinished.load() || !running)) ||
-        (!cancelWins && (!race.killFinished.load() || running ||
-                        race.cancelledBeforeKillFinished.load())))
-        qFatal("shutdown cancellation and kill were not atomic");
+    const bool shouldRun = phase != "complete" && (phase != "kill" || cancelWins);
+    if (accepted || !restored || running != shouldRun || race.lateCommits.load() ||
+        (cancelWins && race.phaseFinished.load()) ||
+        (!cancelWins && (!race.phaseFinished.load() || race.cancelledBeforePhaseFinished.load())))
+        qFatal("shutdown cancellation and phase commit were not atomic");
+}
+
+static void checkRpcIssueCancellation(MainWindow *window) {
+    ShutdownRace race;
+    race.phase = "rpc";
+    race.cancelWins = false;
+    shutdownRace.store(&race);
+    // Begin Exit at the UI deadline, then preempt its network thread after the
+    // old abandonment/deadline checks. The caller times out with post still
+    // pending. No sleep determines either ordering.
+    std::thread releaseExit([&race] {
+        if (!race.cancelAttempt.tryAcquire(1, 10000)) qFatal("UI did not cancel Exit");
+        race.release.release();
+    });
+    const bool accepted = window->coordinatedShutdown();
+    releaseExit.join();
+    const bool restored = !NekoGui::dataStore->prepare_exit &&
+                          !NekoGui::dataStore->save_control_no_save &&
+                          !ShutdownDialogs::suppressed;
+    if (!waitUntil([&race] { return race.issueEntered.available() > 0; }))
+        qFatal("network issue seam was not reached");
+    auto drained = std::make_shared<QSemaphore>();
+    runOnUiThread([drained] { drained->release(); }, DS_cores);
+    if (!waitUntil([drained] { return drained->available() > 0; })) qFatal("Exit did not time out");
+    race.issueRelease.release();
+    if (!waitUntil([&race] { return race.issueDrained.available() > 0; }))
+        qFatal("network issue seam did not drain");
+    if (race.rpcIssued.load())
+        (void)waitUntil([] { return !NekoGui::dataStore->core_running; });
+    shutdownRace.store(nullptr);
+    std::printf("RPC_ISSUE_RACE accepted=%d restored=%d issued=%d core_running=%d handoff_ms=%lld\n",
+                accepted, restored, race.rpcIssued.load(), NekoGui::dataStore->core_running,
+                static_cast<long long>(race.handoffMs));
+    std::fflush(stdout);
+    if (accepted || !restored || race.rpcIssued.load() || !NekoGui::dataStore->core_running)
+        qFatal("expired RPC posted Exit after shutdown recovery");
+    checkRefusalRecovery(window);
 }
 
 static void checkOwnedCoreTimeout(MainWindow *window) {
@@ -399,9 +470,19 @@ static void installProbe() {
         auto *window = GetMainWindow();
         if (!window || !NekoGui::dataStore->core_running) return;
         const auto mode = qEnvironmentVariable("NKR_QUIT_TEST_MODE");
-        if (mode == "kill_cancelled" || mode == "kill_committed") {
+        if (mode == "rpc_cancelled") {
             poll->stop();
-            checkKillCancellation(window, mode == "kill_cancelled");
+            checkRpcIssueCancellation(window);
+            std::puts("QUIT_PROBE_READY");
+            std::fflush(stdout);
+            return;
+        }
+        const auto parts = mode.toLatin1().split('_');
+        if (parts.size() == 2 &&
+            (parts[0] == "exit" || parts[0] == "wait" || parts[0] == "kill" || parts[0] == "complete") &&
+            (parts[1] == "cancelled" || parts[1] == "committed")) {
+            poll->stop();
+            checkShutdownCancellation(window, parts[0], parts[1] == "cancelled");
             std::puts("QUIT_PROBE_READY");
             std::fflush(stdout);
             return;

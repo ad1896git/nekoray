@@ -329,6 +329,7 @@ if(UNIX AND NOT NKR_NO_GRPC)
     set_tests_properties(coordinated_gui_startup_diagnostics PROPERTIES TIMEOUT 70)
     add_executable(tst_coordinated_gui coordinated_gui_probe.cpp
         "${PROJECT_SOURCE_DIR}/ui/mainwindow_grpc.cpp"
+        "${PROJECT_SOURCE_DIR}/rpc/gRPC.cpp"
         "${PROJECT_SOURCE_DIR}/res/neko.qrc"
         "${PROJECT_SOURCE_DIR}/res/theme/feiyangqingyun/qss.qrc")
     # Compile this translation unit with scheduling hooks only in the probe.
@@ -353,12 +354,18 @@ if(UNIX AND NOT NKR_NO_GRPC)
         COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/test_coordinated_gui.py"
             $<TARGET_FILE:tst_coordinated_gui> owned_core_timeout term)
     set_tests_properties(coordinated_gui_owned_core_timeout PROPERTIES TIMEOUT 25 RUN_SERIAL TRUE)
-    foreach(order IN ITEMS cancelled committed)
-        add_test(NAME coordinated_gui_kill_${order}
-            COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/test_coordinated_gui.py"
-                $<TARGET_FILE:tst_coordinated_gui> kill_${order} term)
-        set_tests_properties(coordinated_gui_kill_${order} PROPERTIES TIMEOUT 25 RUN_SERIAL TRUE)
+    foreach(phase IN ITEMS exit wait kill complete)
+        foreach(order IN ITEMS cancelled committed)
+            add_test(NAME coordinated_gui_${phase}_${order}
+                COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/test_coordinated_gui.py"
+                    $<TARGET_FILE:tst_coordinated_gui> ${phase}_${order} term)
+            set_tests_properties(coordinated_gui_${phase}_${order} PROPERTIES TIMEOUT 25 RUN_SERIAL TRUE)
+        endforeach()
     endforeach()
+    add_test(NAME coordinated_gui_rpc_cancelled
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/test_coordinated_gui.py"
+            $<TARGET_FILE:tst_coordinated_gui> rpc_cancelled term)
+    set_tests_properties(coordinated_gui_rpc_cancelled PROPERTIES TIMEOUT 25 RUN_SERIAL TRUE)
     foreach(mode IN ITEMS idle pending_start pending_stop)
         foreach(route IN ITEMS term int)
             add_test(NAME coordinated_gui_${mode}_${route}
