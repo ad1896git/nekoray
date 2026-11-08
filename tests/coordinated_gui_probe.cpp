@@ -11,6 +11,8 @@
 #include "main/ShutdownDialogs.hpp"
 #include "main/UiSnapshot.hpp"
 #include <QElapsedTimer>
+#include "rpc/gRPC.h"
+#include "sys/ExternalProcess.hpp"
 #include <cstdio>
 #include <thread>
 
@@ -26,6 +28,7 @@ struct ShutdownRace {
     std::atomic_int lateCommits{0};
     QSemaphore issueEntered, issueRelease, issueDrained;
     std::atomic_bool rpcIssued{false};
+    std::atomic_bool rpcAborted{false};
     QElapsedTimer handoff;
     qint64 handoffMs = -1;
 };
@@ -38,20 +41,30 @@ void ShutdownTestHook(const char *stage) {
     auto *race = shutdownRace.load();
     if (!race) return;
     const QByteArray point(stage);
-    if (race->phase == "rpc") {
+    if (race->phase == "rpc" || race->phase == "post") {
+        if (point == "rpc_aborted") {
+            race->rpcAborted.store(true);
+            return;
+        }
         if (point == "exit_committed") {
             race->entered.release();
             if (!race->release.tryAcquire(1, 10000)) qFatal("Exit was not released");
             return;
         }
-        if (point == "before_rpc_issue_lock") {
+        if (point == "after_rpc_unlock" && race->phase == "post") {
+            race->issueEntered.release();
+            if (!race->issueRelease.tryAcquire(1, 10000)) qFatal("post was not released");
+            race->issueDrained.release();
+            return;
+        }
+        if (point == "before_rpc_issue_lock" && race->phase == "rpc") {
             race->issueEntered.release();
             if (!race->issueRelease.tryAcquire(1, 10000)) qFatal("RPC issue was not released");
             return;
         }
         if (point == "rpc_issued" || point == "rpc_issue_skipped") {
             race->rpcIssued.store(point == "rpc_issued");
-            race->issueDrained.release();
+            if (race->phase == "rpc") race->issueDrained.release();
             return;
         }
     }
@@ -196,6 +209,74 @@ static void checkRpcIssueCancellation(MainWindow *window) {
     std::fflush(stdout);
     if (accepted || !restored || race.rpcIssued.load() || !NekoGui::dataStore->core_running)
         qFatal("expired RPC posted Exit after shutdown recovery");
+    checkRefusalRecovery(window);
+}
+
+struct CoreRestartProbe {
+    static void restart(MainWindow *window, std::atomic<qint64> &oldPid, std::atomic<qint64> &newPid) {
+        oldPid.store(window->core_process->processId());
+        window->core_process->Restart();
+        newPid.store(window->core_process->processId());
+    }
+};
+
+// Preempt after QNAM::post returns, before its internal queued network start.
+// Restart on the same port while Exit's caller has already timed out.
+static void checkStaleExitAfterRestart(MainWindow *window) {
+    ShutdownRace race;
+    race.phase = "post";
+    race.cancelWins = false;
+    shutdownRace.store(&race);
+    std::thread releaseExit([&race] {
+        if (!race.cancelAttempt.tryAcquire(1, 10000)) qFatal("UI did not cancel Exit");
+        race.release.release();
+    });
+    const bool accepted = window->coordinatedShutdown();
+    releaseExit.join();
+    if (!race.issueEntered.available()) qFatal("post seam was not reached");
+    const bool restored = !NekoGui::dataStore->prepare_exit &&
+                          !NekoGui::dataStore->save_control_no_save &&
+                          !ShutdownDialogs::suppressed;
+    const auto root = qEnvironmentVariable("NKR_QUIT_TEST_ROOT");
+    QFile oldTokenFile(root + "/launch_token");
+    if (!oldTokenFile.open(QIODevice::ReadOnly)) qFatal("missing old launch token");
+    const auto oldToken = QString::fromLatin1(oldTokenFile.readAll());
+    // This second request deliberately survives transport cancellation. The
+    // server must reject it by launch identity alone, even without a deadline.
+    NekoGui_rpc::Client staleClient([](const QString &) {},
+        "127.0.0.1:" + QString::number(NekoGui::dataStore->core_port), oldToken);
+    auto restarted = std::make_shared<QSemaphore>();
+    auto oldPid = std::make_shared<std::atomic<qint64>>(0);
+    auto newPid = std::make_shared<std::atomic<qint64>>(0);
+    runOnUiThread([window, restarted, oldPid, newPid] {
+        CoreRestartProbe::restart(window, *oldPid, *newPid);
+        restarted->release();
+    }, DS_cores);
+    if (!waitUntil([&] { return restarted->available() > 0 && NekoGui::dataStore->core_running; }))
+        qFatal("restart did not become ready");
+    race.issueRelease.release();
+    if (!waitUntil([&] { return race.issueDrained.available() > 0; }))
+        qFatal("post seam did not drain");
+    // Allow the old request either to be cancelled or to reach authentication.
+    const bool staleKilled = waitUntil([] { return !NekoGui::dataStore->core_running; }, 700);
+    if (!race.rpcAborted.load()) qFatal("timed-out reply was not aborted");
+    shutdownRace.store(nullptr);
+    std::printf("STALE_EXIT_AFTER_RESTART=%d accepted=%d restored=%d old_pid=%lld new_pid=%lld\n",
+                staleKilled, accepted, restored,
+                static_cast<long long>(oldPid->load()), static_cast<long long>(newPid->load()));
+    std::fflush(stdout);
+    if (accepted || !restored || oldPid->load() == newPid->load() || staleKilled)
+        qFatal("stale Exit killed the restarted core");
+    QFile::remove(root + "/auth_rejected_exit");
+    staleClient.Exit();
+    if (!waitUntil([&] { return QFile::exists(root + "/auth_rejected_exit"); }) ||
+        !NekoGui::dataStore->core_running)
+        qFatal("new core accepted the previous launch token");
+    QFile newTokenFile(root + "/launch_token");
+    if (!newTokenFile.open(QIODevice::ReadOnly) || newTokenFile.readAll() == oldToken.toLatin1())
+        qFatal("restart reused authentication token");
+    std::puts("OLD_LAUNCH_EXIT_REJECTED=1");
+    std::puts("TIMED_OUT_REPLY_ABORTED=1");
     checkRefusalRecovery(window);
 }
 
@@ -470,6 +551,13 @@ static void installProbe() {
         auto *window = GetMainWindow();
         if (!window || !NekoGui::dataStore->core_running) return;
         const auto mode = qEnvironmentVariable("NKR_QUIT_TEST_MODE");
+        if (mode == "stale_exit_restart") {
+            poll->stop();
+            checkStaleExitAfterRestart(window);
+            std::puts("QUIT_PROBE_READY");
+            std::fflush(stdout);
+            return;
+        }
         if (mode == "rpc_cancelled") {
             poll->stop();
             checkRpcIssueCancellation(window);

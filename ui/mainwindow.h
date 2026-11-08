@@ -170,6 +170,7 @@ private:
     // A failed stop remains pending until an authorized reset succeeds.
     std::shared_ptr<bool> macVpnStopFailed_;
     friend struct MacVpnShutdownProbe;
+    friend struct CoreRestartProbe;
     void AttachMacVPNProcess(
         NekoGui_runtime::VpnProcess *process,
         const std::shared_ptr<NekoGui_sys::ExternalTempFiles> &files);

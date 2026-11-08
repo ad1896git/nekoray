@@ -51,6 +51,8 @@ public:
     int rejectedRequests = 0;
     int requests = 0;
     int responses = 0;
+    std::function<void()> beforeResponse;
+    QByteArray responsePayload;
 
     Peer() {
         QObject::connect(
@@ -119,15 +121,16 @@ public:
                                         return;
                                     }
                                     if (respond) {
+                                        if (beforeResponse) beforeResponse();
                                         // HPACK static-table :status = 200.
                                         socket->write(frame(
                                             1, 4, stream,
                                             QByteArray(1, char(0x88))));
 
-                                        // Uncompressed empty protobuf message.
+                                        // Uncompressed protobuf message.
                                         socket->write(frame(
                                             0, 0, stream,
-                                            QByteArray(5, '\0')));
+                                            NkrGrpcFrame::encode(responsePayload).bytes));
 
                                         // Literal grpc-status: 0 trailer.
                                         const QByteArray trailers(
@@ -436,6 +439,44 @@ private slots:
             QVERIFY2(results[i].ok, Cases[i].operation);
             QVERIFY2(results[i].empty, Cases[i].operation);
         }
+    }
+
+    void repliesFromRetiredLaunchAreRejected_data() {
+        QTest::addColumn<int>("index");
+        for (int index : {1, 2, 3, 4, 5, 6})
+            QTest::newRow(qPrintable(QString("%1-%2").arg(Cases[index].operation).arg(index))) << index;
+    }
+
+    void repliesFromRetiredLaunchAreRejected() {
+        QFETCH(int, index);
+        Peer peer;
+        peer.respond = true;
+        QVERIFY(peer.server.listen(QHostAddress::LocalHost));
+        auto auth = std::make_shared<NkrW04::RpcAuth>();
+        auth->startLaunch();
+        // Receipt proves this request already captured its launch. Rotate
+        // before returning a successful, nonempty response from that launch.
+        peer.beforeResponse = [auth] { auth->startLaunch(); };
+        // Field 1: a string for control/list/test replies; varint for stats.
+        peer.responsePayload = index == 3 ? QByteArray::fromHex("082a")
+                                          : QByteArray::fromHex("0a036f6c64");
+        Messages messages;
+        NekoGui_rpc::Client client(
+            [&](const QString &message) { messages.append(message); },
+            QStringLiteral("127.0.0.1:%1").arg(peer.server.serverPort()), auth);
+        const auto stale = runCalls(client, {index}, 3000);
+        QCOMPARE(peer.responses, 1);
+        QVERIFY(stale[0].empty);
+        if (Cases[index].hasRpcOK) QVERIFY(!stale[0].ok);
+
+        // The same client must snapshot the new launch on its next call.
+        peer.beforeResponse = {};
+        peer.responsePayload.clear();
+        messages.clear();
+        const auto fresh = runCalls(client, {index}, 3000);
+        QCOMPARE(peer.responses, 2);
+        QVERIFY(fresh[0].ok);
+        QVERIFY(messages.snapshot().isEmpty());
     }
 
     void stalledCallsAndSubsequentSuccess() {

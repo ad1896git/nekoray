@@ -366,6 +366,10 @@ if(UNIX AND NOT NKR_NO_GRPC)
         COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/test_coordinated_gui.py"
             $<TARGET_FILE:tst_coordinated_gui> rpc_cancelled term)
     set_tests_properties(coordinated_gui_rpc_cancelled PROPERTIES TIMEOUT 25 RUN_SERIAL TRUE)
+    add_test(NAME coordinated_gui_stale_exit_restart
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/test_coordinated_gui.py"
+            $<TARGET_FILE:tst_coordinated_gui> stale_exit_restart term)
+    set_tests_properties(coordinated_gui_stale_exit_restart PROPERTIES TIMEOUT 25 RUN_SERIAL TRUE)
     foreach(mode IN ITEMS idle pending_start pending_stop)
         foreach(route IN ITEMS term int)
             add_test(NAME coordinated_gui_${mode}_${route}

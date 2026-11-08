@@ -140,10 +140,14 @@ namespace NekoGui_sys {
     }
 
     void CoreProcess::Start() {
+        if (started) return;
+        // Rotate before every launch, including Restart and crash recovery.
+        // An old queued RPC retains its old token and cannot target this core.
+        const auto launch = NekoGui::dataStore->core_token->startLaunch();
         show_stderr = false;
         // cwd: same as GUI, at ./config
         ExternalProcess::Start();
-        write((NekoGui::dataStore->core_token + "\n").toUtf8());
+        write(*launch + "\n");
     }
 
     void CoreProcess::Restart() {

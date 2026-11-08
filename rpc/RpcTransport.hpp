@@ -10,6 +10,7 @@
 #include <QNetworkReply>
 #include <QNetworkRequest>
 #include <QThread>
+#include <QPointer>
 #include <QTimer>
 #if QT_VERSION >= QT_VERSION_CHECK(6, 8, 0)
 #include <QHttpHeaders>
@@ -117,6 +118,8 @@ public:
         struct State {
             Completion<WireReply> completion;
             std::mutex issueMutex;
+            // Accessed only on the network thread, including queued aborts.
+            QPointer<QNetworkReply> reply;
             QElapsedTimer elapsed;
             qint64 timeout = 0;
 
@@ -146,8 +149,9 @@ public:
                 ShutdownTestHook("before_rpc_issue_lock");
 #endif
                 // Timeout abandons completion, then crosses this same barrier
-                // before returning. A queued send cannot post after that return.
-                // Only the nonblocking post is protected, never network I/O.
+                // before returning. QNAM may start I/O later, so abandonment
+                // also aborts the reply on its owner thread. Launch tokens fence
+                // any bytes that have already escaped cancellation.
                 std::unique_lock<std::mutex> issueLock(state->issueMutex);
                 if (state->completion.abandoned()) {
 #ifdef NKR_SHUTDOWN_TEST_HOOKS
@@ -156,10 +160,14 @@ public:
                     return;
                 }
                 auto *reply = manager->post(request, body);
+                state->reply = reply;
 #ifdef NKR_SHUTDOWN_TEST_HOOKS
                 ShutdownTestHook("rpc_issued");
 #endif
                 issueLock.unlock();
+#ifdef NKR_SHUTDOWN_TEST_HOOKS
+                ShutdownTestHook("after_rpc_unlock");
+#endif
                 const auto metadata = std::make_shared<ReplyMetadata>();
                 QObject::connect(reply, &QNetworkReply::metaDataChanged, reply,
                                  [reply, metadata] {
@@ -206,7 +214,18 @@ public:
                                  reply, finished);
 
                 // Covers a reply already completed before connecting.
-                if (reply->isFinished()) finished();
+                if (reply->isFinished()) {
+                    finished();
+                } else if (state->completion.abandoned() ||
+                           (state->timeout > 0 && state->remaining() == 0)) {
+                    // post() can have returned before the caller's deadline,
+                    // with Qt's internal network start still queued.
+                    reply->setProperty("nkrTimedOut", true);
+                    reply->abort();
+#ifdef NKR_SHUTDOWN_TEST_HOOKS
+                    ShutdownTestHook("rpc_aborted");
+#endif
+                }
             },
             Qt::QueuedConnection);
 
@@ -220,7 +239,20 @@ public:
         const qint64 waitMs = timeoutMs > 0
                                  ? qMax<qint64>(1, state->remaining()) : 0;
         if (!state->completion.wait(waitMs, result)) {
-            std::lock_guard<std::mutex> issueBarrier(state->issueMutex);
+            {
+                std::lock_guard<std::mutex> issueBarrier(state->issueMutex);
+            }
+            // Never touch QNetworkReply from the waiting caller's thread.
+            // QPointer also makes an abort queued after finished/delete harmless.
+            QMetaObject::invokeMethod(manager, [state] {
+                if (state->reply && !state->reply->isFinished()) {
+                    state->reply->setProperty("nkrTimedOut", true);
+                    state->reply->abort();
+#ifdef NKR_SHUTDOWN_TEST_HOOKS
+                    ShutdownTestHook("rpc_aborted");
+#endif
+                }
+            }, Qt::QueuedConnection);
             result.error = QNetworkReply::TimeoutError;
         }
         return result;

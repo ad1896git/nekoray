@@ -65,7 +65,9 @@ server = socket.socket()
 server.bind(('127.0.0.1', 0))
 server.listen()
 core = subprocess.Popen([str(Path(__file__).with_name('nekobox_core')),
-                         '-port', str(server.getsockname()[1])])
+                         '-port', str(server.getsockname()[1])], stdin=subprocess.PIPE)
+core.stdin.write(b'diagnostics-token\\n')
+core.stdin.close()
 assert core.wait(timeout=5) != 0
 time.sleep(60)
 '''
@@ -88,8 +90,11 @@ time.sleep(60)
         core.chmod(0o755)
         env = dict(os.environ, NKR_QUIT_TEST_ROOT=str(root), NKR_QUIT_TEST_MODE='idle')
         with (root / 'stdout').open('w') as log:
-            proc = subprocess.Popen([str(core), '-port', '0'], env=env, stdout=log, stderr=subprocess.STDOUT)
+            proc = subprocess.Popen([str(core), '-port', '0'], env=env, stdout=log,
+                                    stderr=subprocess.STDOUT, stdin=subprocess.PIPE)
             try:
+                proc.stdin.write(b'diagnostics-token\n')
+                proc.stdin.close()
                 deadline = time.monotonic() + 5
                 while 'grpc server listening' not in (root / 'stdout').read_text():
                     self.assertIsNone(proc.poll())
