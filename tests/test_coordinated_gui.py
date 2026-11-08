@@ -5,6 +5,7 @@ No real proxy, TUN or system proxy is enabled; the macOS stop probe uses an
 unprivileged fake launcher and readiness probe. All config and HOME paths are
 inside the CTest build tree. Every child is waited for, including failure paths.
 """
+import contextlib
 import json
 import os
 from pathlib import Path
@@ -17,6 +18,7 @@ import sys
 import tempfile
 import threading
 import time
+import traceback
 
 
 def frame(kind, flags, stream, payload=b''):
@@ -26,9 +28,11 @@ def frame(kind, flags, stream, payload=b''):
 def fake_core():
     root = Path(os.environ['NKR_QUIT_TEST_ROOT'])
     (root / 'core.pid').write_text(str(os.getpid()))
+    (root / 'core.status').write_text('starting')
     server = socket.socket()
     server.bind(('127.0.0.1', int(sys.argv[sys.argv.index('-port') + 1])))
     server.listen()
+    (root / 'core.status').write_text('listening')
     print('grpc server listening', flush=True)
 
     def serve(conn):
@@ -81,9 +85,26 @@ def alive(pid):
         return False
 
 
+def startup_diagnostics(root, gui):
+    def read(name, default=''):
+        try:
+            return (root / name).read_text(errors='replace')
+        except FileNotFoundError:
+            return default
+
+    pid_text = read('core.pid').strip()
+    pid = int(pid_text) if pid_text.isdecimal() else None
+    return json.dumps(dict(evidence=str(root), gui_exit_code=gui.poll(),
+                           core_pid=pid, core_alive=bool(pid and alive(pid)),
+                           core_status=read('core.status', 'not started'),
+                           core_stderr=read('core.stderr')))
+
+
 def run_gui(binary, mode, route):
     # Keep evidence on failure; temporary files live under the test build tree.
     root = Path(tempfile.mkdtemp(prefix='quit-gui-', dir=Path.cwd()))
+    print(json.dumps(dict(event='fixture_start', mode=mode, route=route,
+                          evidence=str(root))), flush=True)
     executable = root / 'nekobox'
     shutil.copy2(binary, executable)
     fake = root / 'nekobox_core'
@@ -118,8 +139,8 @@ def run_gui(binary, mode, route):
                                    env=env, stdout=log, stderr=subprocess.STDOUT)
             deadline = time.monotonic() + 15
             while 'QUIT_PROBE_READY' not in (root / 'gui.log').read_text():
-                assert gui.poll() is None, f'GUI exited during startup: {gui.returncode}'
-                assert time.monotonic() < deadline, 'probe readiness timeout'
+                assert gui.poll() is None, 'GUI exited during startup: ' + startup_diagnostics(root, gui)
+                assert time.monotonic() < deadline, 'probe readiness timeout: ' + startup_diagnostics(root, gui)
                 time.sleep(.01)
             if mode == 'mac_stop_failure':
                 evidence = (root / 'gui.log').read_text()
@@ -141,6 +162,8 @@ def run_gui(binary, mode, route):
             assert rc == 0 and not core_alive, 'GUI failed to reap its owned core'
             assert elapsed < 3, 'shutdown blocked by a pending operation dialog'
     finally:
+        if gui:
+            print(startup_diagnostics(root, gui), flush=True)
         if gui and gui.poll() is None:
             gui.kill()
             gui.wait(timeout=5)
@@ -158,6 +181,13 @@ def run_gui(binary, mode, route):
 
 if __name__ == '__main__':
     if Path(sys.argv[0]).name == 'nekobox_core':
-        fake_core()
+        root = Path(os.environ['NKR_QUIT_TEST_ROOT'])
+        with (root / 'core.stderr').open('w', buffering=1) as stderr, contextlib.redirect_stderr(stderr):
+            try:
+                fake_core()
+            except Exception:
+                (root / 'core.status').write_text('failed')
+                traceback.print_exc()
+                sys.exit(1)
     else:
         run_gui(Path(sys.argv[1]).resolve(), sys.argv[2], sys.argv[3])
