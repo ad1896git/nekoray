@@ -286,5 +286,13 @@ private slots:
     }
 };
 
-QTEST_MAIN(NaiveDisabledTest)
+int main(int argc, char **argv) {
+    // The Qt 5 Linux CI already provides Xvfb for real-window tests: its
+    // offscreen system-tray backend cannot construct a MainWindow safely.
+    const auto platform = qgetenv("NKR_QUIT_TEST_QPA");
+    if (!platform.isEmpty()) qputenv("QT_QPA_PLATFORM", platform);
+    QApplication application(argc, argv);
+    NaiveDisabledTest test;
+    return QTest::qExec(&test, argc, argv);
+}
 #include "tst_naive_disabled.moc"
