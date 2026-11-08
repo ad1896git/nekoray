@@ -511,11 +511,12 @@ bool MainWindow::coordinatedShutdown() {
 
 void MainWindow::stop_core_daemon() {
 #ifndef NKR_NO_GRPC
-    NekoGui_rpc::defaultClient->Exit();
+    if (NekoGui_rpc::defaultClient) NekoGui_rpc::defaultClient->Exit();
 #endif
 }
 
 void MainWindow::neko_start(int _id) {
+    if (!coreStartupReady_) return;
     if (NekoGui::dataStore->prepare_exit) return;
 
     auto ents = get_now_selected_list();

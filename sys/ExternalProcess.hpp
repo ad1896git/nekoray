@@ -40,6 +40,7 @@ namespace NekoGui_sys {
         int start_profile_when_core_is_up = -1;
 
     private:
+        QByteArray launchToken_;
         bool show_stderr = false;
         bool failed_to_start = false;
         bool restarting = false;
