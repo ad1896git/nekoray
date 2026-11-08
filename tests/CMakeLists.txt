@@ -328,8 +328,13 @@ if(UNIX AND NOT NKR_NO_GRPC)
         COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/test_coordinated_gui_diagnostics.py" -v)
     set_tests_properties(coordinated_gui_startup_diagnostics PROPERTIES TIMEOUT 70)
     add_executable(tst_coordinated_gui coordinated_gui_probe.cpp
+        "${PROJECT_SOURCE_DIR}/ui/mainwindow_grpc.cpp"
         "${PROJECT_SOURCE_DIR}/res/neko.qrc"
         "${PROJECT_SOURCE_DIR}/res/theme/feiyangqingyun/qss.qrc")
+    # Compile this translation unit with scheduling hooks only in the probe.
+    # Its definitions replace the uninstrumented object in the static runtime.
+    set_target_properties(tst_coordinated_gui PROPERTIES AUTOUIC ON)
+    target_compile_definitions(tst_coordinated_gui PRIVATE NKR_SHUTDOWN_TEST_HOOKS)
     if(APPLE)
         enable_language(OBJCXX)
         target_sources(tst_coordinated_gui PRIVATE "${PROJECT_SOURCE_DIR}/main/MacQuitHandler.mm")
@@ -348,6 +353,12 @@ if(UNIX AND NOT NKR_NO_GRPC)
         COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/test_coordinated_gui.py"
             $<TARGET_FILE:tst_coordinated_gui> owned_core_timeout term)
     set_tests_properties(coordinated_gui_owned_core_timeout PROPERTIES TIMEOUT 25 RUN_SERIAL TRUE)
+    foreach(order IN ITEMS cancelled committed)
+        add_test(NAME coordinated_gui_kill_${order}
+            COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/test_coordinated_gui.py"
+                $<TARGET_FILE:tst_coordinated_gui> kill_${order} term)
+        set_tests_properties(coordinated_gui_kill_${order} PROPERTIES TIMEOUT 25 RUN_SERIAL TRUE)
+    endforeach()
     foreach(mode IN ITEMS idle pending_start pending_stop)
         foreach(route IN ITEMS term int)
             add_test(NAME coordinated_gui_${mode}_${route}

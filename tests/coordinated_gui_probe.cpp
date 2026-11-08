@@ -12,6 +12,39 @@
 #include "main/UiSnapshot.hpp"
 #include <QElapsedTimer>
 #include <cstdio>
+#include <thread>
+
+namespace {
+struct ShutdownRace {
+    bool cancelWins;
+    QSemaphore entered, release, cancelAttempt;
+    std::atomic_bool killFinished{false};
+    std::atomic_bool cancelledBeforeKillFinished{false};
+};
+std::atomic<ShutdownRace *> shutdownRace{nullptr};
+}
+
+// Only the probe's copy of mainwindow_grpc.cpp calls these hooks. Semaphores
+// model preemption at the last check and at an already-committed kill.
+void ShutdownTestHook(const char *stage) {
+    auto *race = shutdownRace.load();
+    if (!race) return;
+    const QByteArray point(stage);
+    if ((race->cancelWins && point == "before_kill_lock") ||
+        (!race->cancelWins && point == "kill_committed")) {
+        race->entered.release();
+        if (!race->release.tryAcquire(1, 10000)) qFatal("kill seam was not released");
+    } else if (point == "kill_finished") {
+        race->killFinished.store(true);
+    } else if (point == "before_cancel_lock") {
+        if (!race->entered.available()) qFatal("deadline missed the kill seam");
+        if (!NekoGui::dataStore->prepare_exit || !ShutdownDialogs::suppressed)
+            qFatal("shutdown admission reopened before cancellation");
+        race->cancelAttempt.release();
+    } else if (point == "after_cancel_lock") {
+        race->cancelledBeforeKillFinished.store(!race->killFinished.load());
+    }
+}
 
 static bool waitUntil(const std::function<bool()> &ready, int timeoutMs = 3000) {
     QElapsedTimer timer;
@@ -49,6 +82,50 @@ static void checkRefusalRecovery(MainWindow *window) {
     if (store->prepare_exit || store->save_control_no_save || !saved ||
         ShutdownDialogs::suppressed || !uiResponding || !started || !sampling)
         qFatal("refused shutdown did not restore a usable application");
+}
+
+static void checkKillCancellation(MainWindow *window, bool cancelWins) {
+    ShutdownRace race;
+    race.cancelWins = cancelWins;
+    shutdownRace.store(&race);
+    std::thread releaseCommitted;
+    if (!cancelWins) {
+        releaseCommitted = std::thread([&race] {
+            if (!race.cancelAttempt.tryAcquire(1, 10000))
+                qFatal("UI did not attempt cancellation");
+            race.release.release();
+        });
+    }
+    const bool accepted = window->coordinatedShutdown();
+    const bool restored = !NekoGui::dataStore->prepare_exit &&
+                          !NekoGui::dataStore->save_control_no_save &&
+                          !ShutdownDialogs::suppressed;
+    if (releaseCommitted.joinable()) releaseCommitted.join();
+    if (cancelWins) {
+        // The core thread remains stopped after its old final cancellation
+        // check while the UI refuses shutdown and starts using this core again.
+        checkRefusalRecovery(window);
+        race.release.release();
+    }
+    auto drained = std::make_shared<QSemaphore>();
+    runOnUiThread([drained] { drained->release(); }, DS_cores);
+    if (!waitUntil([drained] { return drained->available() > 0; }))
+        qFatal("kill seam did not drain");
+    shutdownRace.store(nullptr);
+    if (race.killFinished.load() &&
+        !waitUntil([] { return !NekoGui::dataStore->core_running; }))
+        qFatal("owned core did not report its exit");
+    const bool running = NekoGui::dataStore->core_running;
+    std::printf("KILL_RACE cancel_wins=%d accepted=%d restored=%d kill_finished=%d "
+                "cancel_before_kill_finished=%d core_running=%d\n",
+                cancelWins, accepted, restored, race.killFinished.load(),
+                race.cancelledBeforeKillFinished.load(), running);
+    std::fflush(stdout);
+    if (accepted || !restored ||
+        (cancelWins && (race.killFinished.load() || !running)) ||
+        (!cancelWins && (!race.killFinished.load() || running ||
+                        race.cancelledBeforeKillFinished.load())))
+        qFatal("shutdown cancellation and kill were not atomic");
 }
 
 static void checkOwnedCoreTimeout(MainWindow *window) {
@@ -322,6 +399,13 @@ static void installProbe() {
         auto *window = GetMainWindow();
         if (!window || !NekoGui::dataStore->core_running) return;
         const auto mode = qEnvironmentVariable("NKR_QUIT_TEST_MODE");
+        if (mode == "kill_cancelled" || mode == "kill_committed") {
+            poll->stop();
+            checkKillCancellation(window, mode == "kill_cancelled");
+            std::puts("QUIT_PROBE_READY");
+            std::fflush(stdout);
+            return;
+        }
         if (mode == "owned_core_timeout") {
             poll->stop();
             checkOwnedCoreTimeout(window);
