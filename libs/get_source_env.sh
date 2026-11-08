@@ -1,6 +1,6 @@
 # When updating these three pins, also update their pseudo-version replacements
 # and checksums in go/cmd/nekobox_core/go.{mod,sum}; build_core.sh checks the pair.
-export COMMIT_SING_BOX="8bd0e6be17a44ccfcb55c7812f1b389f1b3b80c1"
+export COMMIT_SING_BOX="2f78dbe673e241f2273f54701a981c25a9baf04e"
 export COMMIT_SING_QUIC="9c9fdac85d4bfbfa0336ea1c1154b384c84c259d"
 export COMMIT_LIBNEKO="45e350171b7b623860dd60ebce61a8e7c78de87e"
 
