@@ -441,7 +441,8 @@ jobs:
           python3 tests/test_w07_teardown.py tests/test_linux_vpn_script.py res/vpn/vpn-run-root.sh
 
   w07-ubuntu-g3:
-    runs-on: ubuntu-22.04
+    # Ubuntu 24.04 polkit supports the scoped JavaScript rule below.
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     env:
       GOTOOLCHAIN: local

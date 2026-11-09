@@ -191,6 +191,7 @@ def main():
         (evidence / 'pkexec-no-agent.txt').write_text(
             'rc=%d\n%s%s' % (probe.returncode, probe.stdout, probe.stderr))
         assert not state.exists()
+        policy.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
         policy.write_text('''polkit.addRule(function(action, subject) {
     if (action.id == "org.freedesktop.policykit.exec" &&
         (action.lookup("program") == "/bin/bash" || action.lookup("program") == "/usr/bin/bash") &&
