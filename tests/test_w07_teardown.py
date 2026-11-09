@@ -48,7 +48,7 @@ os.kill(pid, signal.SIGSTOP)
 ''').body
     for i, n in enumerate(body):
         if isinstance(n, ast.Try):
-            body[i:i] = pause
+            n.body.extend(pause)
             break
     else:
         raise AssertionError('gate regression finally not found')
