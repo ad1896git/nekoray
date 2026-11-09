@@ -193,7 +193,7 @@ def main():
         assert not state.exists()
         policy.write_text('''polkit.addRule(function(action, subject) {
     if (action.id == "org.freedesktop.policykit.exec" &&
-        action.lookup("program") == "/bin/bash" &&
+        (action.lookup("program") == "/bin/bash" || action.lookup("program") == "/usr/bin/bash") &&
         (subject.user == "nkrg3a" || subject.user == "nkrg3b")) {
         return polkit.Result.YES;
     }

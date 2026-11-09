@@ -469,13 +469,18 @@ jobs:
         run: NKR_CORE_OUT_DIR="$RUNNER_TEMP/w07-core" bash libs/build_core.sh
       - name: Real Ubuntu helper evidence (desktop cases explicitly NOT_RUN)
         run: |
-          mkdir -p "$RUNNER_TEMP/w07-evidence"
           sudo --preserve-env=GITHUB_ACTIONS python3 tests/w07_ubuntu_g3.py \
             res/vpn/vpn-run-root.sh "$RUNNER_TEMP/w07-core/nekobox_core" \
-            "$RUNNER_TEMP/w07-evidence"
+            "/tmp/nkr-w07-g3-${{ github.run_id }}"
+      - name: Package inspectable evidence without the private installation
+        if: always()
+        run: |
+          sudo tar -C "/tmp/nkr-w07-g3-${{ github.run_id }}" \
+            --exclude='./install*' -czf "$RUNNER_TEMP/w07-evidence.tar.gz" .
+          sudo chmod 644 "$RUNNER_TEMP/w07-evidence.tar.gz"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: always()
         with:
           name: w07-real-ubuntu-evidence
-          path: ${{ runner.temp }}/w07-evidence
+          path: ${{ runner.temp }}/w07-evidence.tar.gz
           if-no-files-found: error
