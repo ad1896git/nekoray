@@ -21,7 +21,7 @@ import (
 	"github.com/sagernet/sing-quic/hysteria"
 	"github.com/sagernet/sing-quic/hysteria2"
 	"github.com/sagernet/sing-quic/tuic"
-	"github.com/sagernet/sing/common/buf"
+	"github.com/sagernet/sing/common"
 	"github.com/sagernet/sing/common/logger"
 	M "github.com/sagernet/sing/common/metadata"
 	N "github.com/sagernet/sing/common/network"
@@ -105,16 +105,21 @@ func (nk04Echo) NewPacketConnection(ctx context.Context, c N.PacketConn, _ M.Met
 	// ReadPacket when the bounded fixture context expires or is canceled.
 	stop := context.AfterFunc(ctx, func() { _ = c.Close() })
 	defer stop()
+	// Use the datagram API: the buffer reader treats an empty payload as EOF,
+	// and a default pooled packet buffer is smaller than TUIC's wire maximum.
+	packet, ok := common.Cast[net.PacketConn](c)
+	if !ok {
+		return fmt.Errorf("echo fixture has no datagram API: %T", c)
+	}
+	payload := make([]byte, 65536)
 	for {
-		b := buf.NewPacket()
-		dst, err := c.ReadPacket(b)
+		n, dst, err := packet.ReadFrom(payload)
 		if err != nil {
-			b.Release()
 			return err
 		}
-		if err := c.WritePacket(b, dst); err != nil {
+		if _, err := packet.WriteTo(payload[:n], dst); err != nil {
 			return err
-		} // consumes b
+		}
 	}
 }
 
@@ -216,9 +221,6 @@ func nk04Socket(t *testing.T, hopping bool) net.PacketConn {
 	t.Helper()
 	p, err := net.ListenPacket("udp4", "127.0.0.1:0")
 	if err != nil {
-		if hopping {
-			t.Skipf("cannot bind loopback hop port 127.0.0.1:0: %v", err)
-		}
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = p.Close() })
@@ -590,8 +592,7 @@ func nk04HopRelay(t *testing.T, f *nk04Fixture, fronts []net.PacketConn) (string
 	return fmt.Sprintf("%d-%d,%d-%d", a, a, b, b), changed
 }
 func TestNK04Hysteria2PortHopping(t *testing.T) {
-	// Bind the hop listeners first so a host that forbids them reports the
-	// requested, reason-bearing skip rather than failing during server setup.
+	// Every socket setup error fails acceptance; all listeners bind loopback :0.
 	fronts := []net.PacketConn{nk04Socket(t, true), nk04Socket(t, true)}
 	f := nk04Server(t, "hysteria2", "", false)
 	ports, changed := nk04HopRelay(t, f, fronts)

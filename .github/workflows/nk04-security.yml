@@ -1,0 +1,64 @@
+name: NK04 security acceptance
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  security-matrix:
+    name: nk04-${{ matrix.row }}
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        row: [default, default_race, debug, debug_race, low_memory, low_memory_race, debug_low_memory, debug_low_memory_race]
+    env:
+      GOTOOLCHAIN: local
+      GOWORK: 'off'
+      GOFLAGS: ''
+      CGO_ENABLED: '1'
+      GOPATH: ${{ runner.temp }}/nk04/gopath
+      GOCACHE: ${{ runner.temp }}/nk04/gocache
+      GOMODCACHE: ${{ runner.temp }}/nk04/gomodcache
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-go@0a12ed9d6a96ab950c8f026ed9f722fe0da7ef32 # v5.0.2
+        with:
+          go-version: '1.22.12'
+          check-latest: false
+          cache: false
+      - name: Fetch exact source pins and congestion patch
+        run: bash libs/get_source.sh
+      - name: Verify final pins and patch
+        run: |
+          source libs/get_source_env.sh
+          test "$COMMIT_SING_BOX" = 2f78dbe673e241f2273f54701a981c25a9baf04e
+          test "$COMMIT_LIBNEKO" = 45e350171b7b623860dd60ebce61a8e7c78de87e
+          test "$COMMIT_SING_QUIC" = 201474163bfe177adc3d0e20fa935ecbbf2e74b1
+          for entry in "sing-box:$COMMIT_SING_BOX" "sing-quic:$COMMIT_SING_QUIC" "libneko:$COMMIT_LIBNEKO" "quic-go:$COMMIT_QUIC_GO"; do
+            test "$(git -C "../${entry%%:*}" rev-parse HEAD)" = "${entry#*:}"
+          done
+          git -C ../quic-go apply --reverse --check "$PWD/libs/patches/quic-go-v0.47.0-beta.2-congestion-lock.patch"
+      - name: Download modules before hermetic tests
+        working-directory: go/cmd/nekobox_core
+        run: |
+          mkdir -p "$RUNNER_TEMP/nk04"
+          cp go.mod "$RUNNER_TEMP/nk04/download.mod"
+          cp go.sum "$RUNNER_TEMP/nk04/download.sum"
+          go mod download -modfile="$RUNNER_TEMP/nk04/download.mod" all
+      - name: Test fail-closed result classifier
+        run: python3 -m unittest discover -s tests -p test_nk04_matrix.py -v
+      - name: Required PASS row
+        run: python3 tests/run_nk04_matrix.py --row '${{ matrix.row }}' --output "$RUNNER_TEMP/nk04/results"
+      - name: Check manifests remain unchanged
+        run: git diff --exit-code -- go/cmd/nekobox_core/go.mod go/cmd/nekobox_core/go.sum go/grpc_server/go.mod go/grpc_server/go.sum
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: nk04-${{ matrix.row }}
+          path: ${{ runner.temp }}/nk04/results
+          if-no-files-found: error
