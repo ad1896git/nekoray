@@ -1,3 +1,199 @@
+diff --git a/connection.go b/connection.go
+index 370968b..374ef7d 100644
+--- a/connection.go
++++ b/connection.go
+@@ -1710,6 +1710,7 @@ func (s *connection) restoreTransportParameters(params *wire.TransportParameters
+ 	}
+ 
+ 	s.peerParams = params
++	s.packer.SetMaxDatagramFrameSize(params.MaxDatagramFrameSize)
+ 	s.connIDGenerator.SetMaxActiveConnIDs(params.ActiveConnectionIDLimit)
+ 	s.connFlowController.UpdateSendWindow(params.InitialMaxData)
+ 	s.streamsMap.UpdateLimits(params)
+@@ -1737,6 +1738,7 @@ func (s *connection) handleTransportParameters(params *wire.TransportParameters)
+ 	}
+ 
+ 	s.peerParams = params
++	s.packer.SetMaxDatagramFrameSize(params.MaxDatagramFrameSize)
+ 	// On the client side we have to wait for handshake completion.
+ 	// During a 0-RTT connection, we are only allowed to use the new transport parameters for 1-RTT packets.
+ 	if s.perspective == protocol.PerspectiveServer {
+@@ -2299,11 +2301,12 @@ func (s *connection) SendDatagram(p []byte) error {
+ 	f := &wire.DatagramFrame{DataLenPresent: true}
+ 	// The payload size estimate is conservative.
+ 	// Under many circumstances we could send a few more bytes.
+-	maxDataLen := utils.Max(
++	maxDataLen := utils.Min(
+ 		f.MaxDataLen(s.peerParams.MaxDatagramFrameSize, s.version),
+ 		protocol.ByteCount(s.maxPayloadSizeEstimate.Load()),
+ 	)
+-	if protocol.ByteCount(len(p)) > maxDataLen {
++	// MaxDataLen returns zero both when an empty payload fits and when no frame fits.
++	if protocol.ByteCount(len(p)) > maxDataLen || f.Length(s.version) > s.peerParams.MaxDatagramFrameSize {
+ 		return &DatagramTooLargeError{
+ 			MaxDatagramPayloadSize: int64(maxDataLen),
+ 		}
+diff --git a/ech/connection.go b/ech/connection.go
+index 93bee48..1b678bf 100644
+--- a/ech/connection.go
++++ b/ech/connection.go
+@@ -1713,6 +1713,7 @@ func (s *connection) restoreTransportParameters(params *wire.TransportParameters
+ 	}
+ 
+ 	s.peerParams = params
++	s.packer.SetMaxDatagramFrameSize(params.MaxDatagramFrameSize)
+ 	s.connIDGenerator.SetMaxActiveConnIDs(params.ActiveConnectionIDLimit)
+ 	s.connFlowController.UpdateSendWindow(params.InitialMaxData)
+ 	s.streamsMap.UpdateLimits(params)
+@@ -1740,6 +1741,7 @@ func (s *connection) handleTransportParameters(params *wire.TransportParameters)
+ 	}
+ 
+ 	s.peerParams = params
++	s.packer.SetMaxDatagramFrameSize(params.MaxDatagramFrameSize)
+ 	// On the client side we have to wait for handshake completion.
+ 	// During a 0-RTT connection, we are only allowed to use the new transport parameters for 1-RTT packets.
+ 	if s.perspective == protocol.PerspectiveServer {
+@@ -2302,11 +2304,12 @@ func (s *connection) SendDatagram(p []byte) error {
+ 	f := &wire.DatagramFrame{DataLenPresent: true}
+ 	// The payload size estimate is conservative.
+ 	// Under many circumstances we could send a few more bytes.
+-	maxDataLen := utils.Max(
++	maxDataLen := utils.Min(
+ 		f.MaxDataLen(s.peerParams.MaxDatagramFrameSize, s.version),
+ 		protocol.ByteCount(s.maxPayloadSizeEstimate.Load()),
+ 	)
+-	if protocol.ByteCount(len(p)) > maxDataLen {
++	// MaxDataLen returns zero both when an empty payload fits and when no frame fits.
++	if protocol.ByteCount(len(p)) > maxDataLen || f.Length(s.version) > s.peerParams.MaxDatagramFrameSize {
+ 		return &DatagramTooLargeError{
+ 			MaxDatagramPayloadSize: int64(maxDataLen),
+ 		}
+diff --git a/ech/packet_packer.go b/ech/packet_packer.go
+index 0ee0bf6..f103446 100644
+--- a/ech/packet_packer.go
++++ b/ech/packet_packer.go
+@@ -26,6 +26,7 @@ type packer interface {
+ 	PackMTUProbePacket(ping ackhandler.Frame, size protocol.ByteCount, v protocol.Version) (shortHeaderPacket, *packetBuffer, error)
+ 
+ 	SetToken([]byte)
++	SetMaxDatagramFrameSize(protocol.ByteCount)
+ }
+ 
+ type sealer interface {
+@@ -135,6 +136,9 @@ type packetPacker struct {
+ 	numNonAckElicitingAcks int
+ 
+ 	peekTimes int
++
++	// Updated and read only by the connection run loop, including after 0-RTT rejection.
++	maxDatagramFrameSize protocol.ByteCount
+ }
+ 
+ const DatagramFrameMaxPeekTimes = 10
+@@ -172,6 +176,10 @@ func newPacketPacker(
+ 	}
+ }
+ 
++func (p *packetPacker) SetMaxDatagramFrameSize(size protocol.ByteCount) {
++	p.maxDatagramFrameSize = size
++}
++
+ // PackConnectionClose packs a packet that closes the connection with a transport error.
+ func (p *packetPacker) PackConnectionClose(e *qerr.TransportError, maxPacketSize protocol.ByteCount, v protocol.Version) (*coalescedPacket, error) {
+ 	var reason string
+@@ -611,8 +619,20 @@ func (p *packetPacker) composeNextPacket(maxFrameSize protocol.ByteCount, onlyAc
+ 	}
+ 
+ 	if p.datagramQueue != nil {
+-		if f := p.datagramQueue.Peek(); f != nil {
++		// Bound the scan so concurrent producers cannot keep the run loop busy.
++		for i := 0; i < maxDatagramSendQueueLen; i++ {
++			f := p.datagramQueue.Peek()
++			if f == nil {
++				break
++			}
+ 			size := f.Length(v)
++			// A queued frame may have used restored 0-RTT parameters. Recheck
++			// the current peer limit before packing, even if the path has room.
++			if size > p.maxDatagramFrameSize {
++				p.datagramQueue.Pop()
++				p.peekTimes = 0
++				continue
++			}
+ 			if size <= maxFrameSize-pl.length { // DATAGRAM frame fits
+ 				pl.frames = append(pl.frames, ackhandler.Frame{Frame: f})
+ 				pl.length += size
+@@ -634,6 +654,7 @@ func (p *packetPacker) composeNextPacket(maxFrameSize protocol.ByteCount, onlyAc
+ 				p.datagramQueue.Pop()
+ 				p.peekTimes = 0
+ 			}
++			break
+ 		}
+ 	}
+ 
+diff --git a/packet_packer.go b/packet_packer.go
+index a651368..5a43caf 100644
+--- a/packet_packer.go
++++ b/packet_packer.go
+@@ -26,6 +26,7 @@ type packer interface {
+ 	PackMTUProbePacket(ping ackhandler.Frame, size protocol.ByteCount, v protocol.Version) (shortHeaderPacket, *PacketBuffer, error)
+ 
+ 	SetToken([]byte)
++	SetMaxDatagramFrameSize(protocol.ByteCount)
+ }
+ 
+ type sealer interface {
+@@ -135,6 +136,9 @@ type packetPacker struct {
+ 	numNonAckElicitingAcks int
+ 
+ 	peekTimes int
++
++	// Updated and read only by the connection run loop, including after 0-RTT rejection.
++	maxDatagramFrameSize protocol.ByteCount
+ }
+ 
+ const DatagramFrameMaxPeekTimes = 10
+@@ -172,6 +176,10 @@ func newPacketPacker(
+ 	}
+ }
+ 
++func (p *packetPacker) SetMaxDatagramFrameSize(size protocol.ByteCount) {
++	p.maxDatagramFrameSize = size
++}
++
+ // PackConnectionClose packs a packet that closes the connection with a transport error.
+ func (p *packetPacker) PackConnectionClose(e *qerr.TransportError, maxPacketSize protocol.ByteCount, v protocol.Version) (*coalescedPacket, error) {
+ 	var reason string
+@@ -611,8 +619,20 @@ func (p *packetPacker) composeNextPacket(maxFrameSize protocol.ByteCount, onlyAc
+ 	}
+ 
+ 	if p.datagramQueue != nil {
+-		if f := p.datagramQueue.Peek(); f != nil {
++		// Bound the scan so concurrent producers cannot keep the run loop busy.
++		for i := 0; i < maxDatagramSendQueueLen; i++ {
++			f := p.datagramQueue.Peek()
++			if f == nil {
++				break
++			}
+ 			size := f.Length(v)
++			// A queued frame may have used restored 0-RTT parameters. Recheck
++			// the current peer limit before packing, even if the path has room.
++			if size > p.maxDatagramFrameSize {
++				p.datagramQueue.Pop()
++				p.peekTimes = 0
++				continue
++			}
+ 			if size <= maxFrameSize-pl.length { // DATAGRAM frame fits
+ 				pl.frames = append(pl.frames, ackhandler.Frame{Frame: f})
+ 				pl.length += size
+@@ -634,6 +654,7 @@ func (p *packetPacker) composeNextPacket(maxFrameSize protocol.ByteCount, onlyAc
+ 				p.datagramQueue.Pop()
+ 				p.peekTimes = 0
+ 			}
++			break
+ 		}
+ 	}
+ 
 diff --git a/internal/ackhandler/sent_packet_handler.go b/internal/ackhandler/sent_packet_handler.go
 index 028d92d5..0ac42042 100644
 --- a/internal/ackhandler/sent_packet_handler.go
