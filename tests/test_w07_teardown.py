@@ -48,11 +48,10 @@ os.kill(pid, signal.SIGSTOP)
 ''').body
     for i, n in enumerate(body):
         if isinstance(n, ast.Try):
-            n.body.extend(pause)
+            n.body.extend(pause + ast.parse("raise AssertionError('injected failure after gate stop')").body)
             break
     else:
         raise AssertionError('gate regression finally not found')
-    body += ast.parse("raise AssertionError('injected failure after gate stop')").body
     run.body = body
     ast.fix_missing_locations(tree)
     with tempfile.TemporaryDirectory(prefix='w07-teardown-controller-') as temp:

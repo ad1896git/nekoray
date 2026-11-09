@@ -1,10 +1,424 @@
-name: W07 teardown and Ubuntu evidence
+name: Nekoray tests
+
+# Remote CI only for major releases (tags v*) and manual runs. Routine checks run
+# locally with .pipeline/ci_local.sh.
 on:
   workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
 permissions:
   contents: read
+
+defaults:
+  run:
+    shell: bash
+
 jobs:
-  teardown:
+  linux-qt6:
+    name: linux-qt6
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Go for build-script source tests
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22.12'
+          check-latest: false
+          cache: false
+
+      - name: Install build and Qt runtime dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake ninja-build libglib2.0-bin desktop-file-utils \
+            libgl1-mesa-dev libgstreamer-gl1.0-0 libpulse-dev \
+            libxcb-glx0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 \
+            libxcb-randr0 libxcb-render-util0 libxcb-render0 \
+            libxcb-shape0 libxcb-shm0 libxcb-sync1 libxcb-util1 \
+            libxcb-xfixes0 libxcb-xinerama0 libxcb1 \
+            libxkbcommon-dev libxkbcommon-x11-0 libxcb-xkb-dev \
+            libxcb-cursor0
+
+      - name: Install Qt 6.7.3
+        uses: jurplel/install-qt-action@v4.3.1
+        with:
+          version: '6.7.3'
+          host: linux
+          target: desktop
+          arch: linux_gcc_64
+          dir: ${{ runner.temp }}/nkr-sdk
+          install-deps: 'false'
+          cache: 'false'
+          aqtversion: '==3.3.0'
+
+      - name: Verify SDK and tools
+        run: |
+          /usr/bin/cmake --version
+          /usr/bin/ctest --version
+          "$QT_ROOT_DIR/bin/qmake" -query QT_VERSION
+          test "$("$QT_ROOT_DIR/bin/qmake" -query QT_VERSION)" = "6.7.3"
+          for component in Core Widgets Network Svg LinguistTools Test; do
+            test -f "$QT_ROOT_DIR/lib/cmake/Qt6${component}/Qt6${component}Config.cmake"
+          done
+
+      - name: Build protobuf for RPC tests
+        run: |
+          git clone --depth 1 --branch v21.4 \
+            --recurse-submodules --shallow-submodules \
+            https://github.com/protocolbuffers/protobuf.git \
+            "$RUNNER_TEMP/nkr-pr10-protobuf-src"
+          /usr/bin/cmake \
+            -S "$RUNNER_TEMP/nkr-pr10-protobuf-src" \
+            -B "$RUNNER_TEMP/nkr-pr10-protobuf-build" \
+            -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+            -DBUILD_SHARED_LIBS=OFF \
+            -Dprotobuf_BUILD_TESTS=OFF \
+            -Dprotobuf_WITH_ZLIB=OFF \
+            -DCMAKE_INSTALL_PREFIX="$RUNNER_TEMP/nkr-pr10-protobuf-prefix"
+          /usr/bin/cmake --build \
+            "$RUNNER_TEMP/nkr-pr10-protobuf-build" --parallel 2
+          /usr/bin/cmake --install \
+            "$RUNNER_TEMP/nkr-pr10-protobuf-build"
+
+      - name: Configure
+        env:
+          NKR_BUILD_DIR: ${{ runner.temp }}/nkr-pr0-qt6
+        run: |
+          /usr/bin/cmake -S "$GITHUB_WORKSPACE" -B "$NKR_BUILD_DIR" -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_PREFIX_PATH="$QT_ROOT_DIR" \
+            -DQt6_DIR="$QT_ROOT_DIR/lib/cmake/Qt6" \
+            -DQT_VERSION_MAJOR=6 \
+            -DNKR_NO_EXTERNAL=OFF \
+            -DNKR_NO_GRPC=OFF \
+            -DNKR_NO_YAML=ON \
+            -DNKR_NO_ZXING=ON \
+            -DNKR_NO_QHOTKEY=ON \
+            -DNKR_LIBS="$RUNNER_TEMP/nkr-pr10-protobuf-prefix" \
+            -DNKR_BUILD_TESTS=ON
+
+      - name: Build
+        env:
+          NKR_BUILD_DIR: ${{ runner.temp }}/nkr-pr0-qt6
+        run: /usr/bin/cmake --build "$NKR_BUILD_DIR" --parallel 2
+
+      - name: Run tests
+        env:
+          NKR_BUILD_DIR: ${{ runner.temp }}/nkr-pr0-qt6
+        run: |
+          /usr/bin/ctest --test-dir "$NKR_BUILD_DIR" \
+            --output-on-failure --no-tests=error --verbose
+
+  linux-qt5:
+    name: linux-qt5
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Go for build-script source tests
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22.12'
+          check-latest: false
+          cache: false
+
+      - name: Install build and Qt runtime dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake ninja-build libglib2.0-bin desktop-file-utils xvfb xauth \
+            libgl1-mesa-dev libgstreamer-gl1.0-0 libpulse-dev \
+            libxcb-glx0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 \
+            libxcb-randr0 libxcb-render-util0 libxcb-render0 \
+            libxcb-shape0 libxcb-shm0 libxcb-sync1 libxcb-util1 \
+            libxcb-xfixes0 libxcb-xinerama0 libxcb1 \
+            libxkbcommon-dev libxkbcommon-x11-0 libxcb-xkb-dev
+
+      - name: Install Qt 5.12.12
+        uses: jurplel/install-qt-action@v4.3.1
+        with:
+          version: '5.12.12'
+          host: linux
+          target: desktop
+          arch: gcc_64
+          dir: ${{ runner.temp }}/nkr-sdk
+          install-deps: 'false'
+          cache: 'false'
+          aqtversion: '==3.3.0'
+
+      - name: Verify SDK and tools
+        run: |
+          /usr/bin/cmake --version
+          /usr/bin/ctest --version
+          "$QT_ROOT_DIR/bin/qmake" -query QT_VERSION
+          test "$("$QT_ROOT_DIR/bin/qmake" -query QT_VERSION)" = "5.12.12"
+          for component in Core Widgets Network Svg LinguistTools Test; do
+            test -f "$QT_ROOT_DIR/lib/cmake/Qt5${component}/Qt5${component}Config.cmake"
+          done
+
+      - name: Build protobuf for RPC tests
+        run: |
+          git clone --depth 1 --branch v21.4 \
+            --recurse-submodules --shallow-submodules \
+            https://github.com/protocolbuffers/protobuf.git \
+            "$RUNNER_TEMP/nkr-pr10-protobuf-src"
+          /usr/bin/cmake \
+            -S "$RUNNER_TEMP/nkr-pr10-protobuf-src" \
+            -B "$RUNNER_TEMP/nkr-pr10-protobuf-build" \
+            -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+            -DBUILD_SHARED_LIBS=OFF \
+            -Dprotobuf_BUILD_TESTS=OFF \
+            -Dprotobuf_WITH_ZLIB=OFF \
+            -DCMAKE_INSTALL_PREFIX="$RUNNER_TEMP/nkr-pr10-protobuf-prefix"
+          /usr/bin/cmake --build \
+            "$RUNNER_TEMP/nkr-pr10-protobuf-build" --parallel 2
+          /usr/bin/cmake --install \
+            "$RUNNER_TEMP/nkr-pr10-protobuf-build"
+
+      - name: Configure
+        env:
+          NKR_BUILD_DIR: ${{ runner.temp }}/nkr-pr0-qt5
+        run: |
+          /usr/bin/cmake -S "$GITHUB_WORKSPACE" -B "$NKR_BUILD_DIR" -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_PREFIX_PATH="$QT_ROOT_DIR" \
+            -DQt5_DIR="$QT_ROOT_DIR/lib/cmake/Qt5" \
+            -DQT_VERSION_MAJOR=5 \
+            -DNKR_NO_EXTERNAL=OFF \
+            -DNKR_NO_GRPC=OFF \
+            -DNKR_NO_YAML=ON \
+            -DNKR_NO_ZXING=ON \
+            -DNKR_NO_QHOTKEY=ON \
+            -DNKR_LIBS="$RUNNER_TEMP/nkr-pr10-protobuf-prefix" \
+            -DNKR_BUILD_TESTS=ON
+
+      - name: Build
+        env:
+          NKR_BUILD_DIR: ${{ runner.temp }}/nkr-pr0-qt5
+        run: /usr/bin/cmake --build "$NKR_BUILD_DIR" --parallel 2
+
+      - name: Run tests
+        env:
+          NKR_BUILD_DIR: ${{ runner.temp }}/nkr-pr0-qt5
+          # Qt 5 Linux system-tray integration requires an X server.
+          NKR_QUIT_TEST_QPA: xcb
+        run: |
+          xvfb-run -a /usr/bin/ctest --test-dir "$NKR_BUILD_DIR" \
+            --output-on-failure --no-tests=error --verbose
+
+  linux-w07-repeat:
+    # The W07 sandbox once failed only on some runs; repeat it on two bash
+    # versions so a timing-dependent regression shows up here.
+    name: linux-w07-repeat (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, ubuntu-24.04]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run W07 sandbox repeatedly
+        run: |
+          bash --version | head -n 1
+          python3 --version
+          for round in 1 2 3 4 5; do
+            echo "::group::W07 sandbox round $round"
+            timeout 300 python3 tests/test_linux_vpn_script.py \
+              res/vpn/vpn-run-root.sh
+            echo "::endgroup::"
+          done
+
+  linux-go:
+    name: linux-go
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    env:
+      GOTOOLCHAIN: local
+      CGO_ENABLED: '0'
+      GOWORK: 'off'
+      GOFLAGS: ''
+      NKR_GO_TAGS: with_clash_api,with_gvisor,with_quic,with_wireguard,with_utls,with_ech
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Go 1.22.12
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22.12'
+          check-latest: false
+          cache: false
+
+      - name: Fetch pinned Go dependencies
+        run: bash ./libs/get_source.sh
+
+      - name: Verify dependency revisions
+        run: |
+          source libs/get_source_env.sh
+          test "$(git -C ../sing-box rev-parse HEAD)" = "$COMMIT_SING_BOX"
+          test "$(git -C ../sing-quic rev-parse HEAD)" = "$COMMIT_SING_QUIC"
+          test "$(git -C ../quic-go rev-parse HEAD)" = "$COMMIT_QUIC_GO"
+          test "$(git -C ../libneko rev-parse HEAD)" = "$COMMIT_LIBNEKO"
+
+      - name: Test core lifecycle
+        working-directory: go/cmd/nekobox_core
+        run: |
+          go version
+          go test -mod=readonly -tags "$NKR_GO_TAGS" \
+            -count=1 -timeout=90s -v .
+
+      - name: Build core
+        run: |
+          NKR_CORE_OUT_DIR="$RUNNER_TEMP/core" bash libs/build_core.sh
+
+      # Add test files only after build_core's clean-source verification.
+      - name: Test patched QUIC datagram bounds
+        run: |
+          for test_file in tests/quic-go/*_test.go; do
+            cp "$test_file" ../quic-go/
+            sed 's|"crypto/tls"|"github.com/sagernet/cloudflare-tls"|' \
+              "$test_file" > "../quic-go/ech/$(basename "$test_file")"
+          done
+          cd ../quic-go
+          go test -count=1 -timeout=60s -v ./...
+
+      - name: Check dependency manifests remain unchanged
+        run: |
+          git diff --exit-code -- \
+            go/cmd/nekobox_core/go.mod \
+            go/cmd/nekobox_core/go.sum \
+            go/grpc_server/go.mod \
+            go/grpc_server/go.sum
+
+  linux-go-race:
+    # KI-1: the NK04 TUIC tests once raced in quic-go congestion control.
+    # Exercise the patched quic-go build under -race with the NK04 regressions.
+    name: linux-go-race
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    env:
+      GOTOOLCHAIN: local
+      CGO_ENABLED: '1'
+      GOWORK: 'off'
+      GOFLAGS: ''
+      NKR_GO_TAGS: with_clash_api,with_gvisor,with_quic,with_wireguard,with_utls,with_ech
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Go 1.22.12
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22.12'
+          check-latest: false
+          cache: false
+
+      - name: Fetch pinned Go dependencies
+        run: bash ./libs/get_source.sh
+
+      - name: Verify dependency revisions and quic-go patch
+        run: |
+          source libs/get_source_env.sh
+          test "$(git -C ../sing-box rev-parse HEAD)" = "$COMMIT_SING_BOX"
+          test "$(git -C ../sing-quic rev-parse HEAD)" = "$COMMIT_SING_QUIC"
+          test "$(git -C ../quic-go rev-parse HEAD)" = "$COMMIT_QUIC_GO"
+          test "$(git -C ../libneko rev-parse HEAD)" = "$COMMIT_LIBNEKO"
+          # The reverse check passes only if the patch is applied.
+          git -C ../quic-go apply --reverse --check \
+            "$GITHUB_WORKSPACE/libs/patches/quic-go-v0.47.0-beta.2-congestion-lock.patch"
+
+      - name: Race test core (NK04 included)
+        working-directory: go/cmd/nekobox_core
+        run: |
+          go version
+          set +o pipefail
+          go test -race -mod=readonly -tags "$NKR_GO_TAGS" \
+            -count=3 -timeout=600s -v . 2>&1 | tee "$RUNNER_TEMP/race.log"
+          status=${PIPESTATUS[0]}
+          if grep -q 'WARNING: DATA RACE' "$RUNNER_TEMP/race.log"; then
+            echo "::error::data race reported"
+            exit 1
+          fi
+          grep -c -- '--- PASS: TestNK04TUICTCP' "$RUNNER_TEMP/race.log"
+          exit "$status"
+
+      - name: Race test patched QUIC datagram bounds
+        run: |
+          for test_file in tests/quic-go/*_test.go; do
+            cp "$test_file" ../quic-go/
+            sed 's|"crypto/tls"|"github.com/sagernet/cloudflare-tls"|' \
+              "$test_file" > "../quic-go/ech/$(basename "$test_file")"
+          done
+          cd ../quic-go
+          go test -race -count=1 -timeout=60s -v ./...
+
+  external-interop:
+    name: external-interop
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    env:
+      NK04_EXTERNAL: '1'
+      GOTOOLCHAIN: local
+      CGO_ENABLED: '0'
+      GOWORK: 'off'
+      GOFLAGS: ''
+      NKR_GO_TAGS: with_clash_api,with_gvisor,with_quic,with_wireguard,with_utls,with_ech
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Go 1.22.12
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22.12'
+          check-latest: false
+          cache: false
+
+      - name: Fetch pinned Go dependencies
+        run: bash ./libs/get_source.sh
+
+      - name: Verify dependency revisions
+        run: |
+          source libs/get_source_env.sh
+          test "$(git -C ../sing-box rev-parse HEAD)" = "$COMMIT_SING_BOX"
+          test "$(git -C ../sing-quic rev-parse HEAD)" = "$COMMIT_SING_QUIC"
+          test "$(git -C ../quic-go rev-parse HEAD)" = "$COMMIT_QUIC_GO"
+          test "$(git -C ../libneko rev-parse HEAD)" = "$COMMIT_LIBNEKO"
+
+      - name: Pull pinned external peers
+        run: |
+          docker pull tobyxdd/hysteria@sha256:4c8c92ba4b9b405c9473d8776b613e4d776141a3fa26ae5084a19c44b49f1e35
+          docker pull tobyxdd/hysteria@sha256:92b06917b2abb940e90ea6dc9215c1b1ceea69fa7edc1374daf3cde36e422740
+          docker pull kilvn/tuic-server@sha256:15c73b7b8d0f6947fde6cf3c4ce14b3735236c306e27c00412530a710f783c61
+          docker pull kilvn/tuic-client@sha256:4c469c277548170c48c9100554f3efa56df9bf9599a78ea5e28acc5fa6988abc
+
+      - name: Test external interoperability
+        working-directory: go/cmd/nekobox_core
+        run: |
+          go test -mod=readonly -tags "$NKR_GO_TAGS" \
+            -count=1 -timeout=600s -v -run '^TestNK04External' .
+
+  w07-teardown:
     strategy:
       fail-fast: false
       matrix:
@@ -13,5 +427,55 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-      - name: Deterministic held-sleep failure teardown
-        run: python3 tests/test_w07_teardown.py tests/test_linux_vpn_script.py res/vpn/vpn-run-root.sh
+      - name: Same regression against base (must fail) then fixed fixture
+        run: |
+          git fetch --depth=1 origin d3d2e90f4aaeb272fdcb63caaf5f50fda516c1f2
+          git show d3d2e90f4aaeb272fdcb63caaf5f50fda516c1f2:tests/test_linux_vpn_script.py > "$RUNNER_TEMP/w07-base.py"
+          if python3 tests/test_w07_teardown.py "$RUNNER_TEMP/w07-base.py" res/vpn/vpn-run-root.sh > "$RUNNER_TEMP/w07-red.log" 2>&1; then
+            cat "$RUNNER_TEMP/w07-red.log"
+            echo '::error::base unexpectedly passed the teardown regression'
+            exit 1
+          fi
+          cat "$RUNNER_TEMP/w07-red.log"
+          grep -F 'held-sleep survived failure teardown' "$RUNNER_TEMP/w07-red.log"
+          python3 tests/test_w07_teardown.py tests/test_linux_vpn_script.py res/vpn/vpn-run-root.sh
+
+  w07-ubuntu-g3:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    env:
+      GOTOOLCHAIN: local
+      GOWORK: 'off'
+      GOENV: 'off'
+      GOFLAGS: ''
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Isolate Go caches
+        run: |
+          echo "GOPATH=$RUNNER_TEMP/w07/gopath" >> "$GITHUB_ENV"
+          echo "GOCACHE=$RUNNER_TEMP/w07/gocache" >> "$GITHUB_ENV"
+          echo "GOMODCACHE=$RUNNER_TEMP/w07/gomodcache" >> "$GITHUB_ENV"
+      - uses: actions/setup-go@0a12ed9d6a96ab950c8f026ed9f722fe0da7ef32
+        with:
+          go-version: '1.22.12'
+          check-latest: false
+          cache: false
+      - name: Install real privilege and firewall tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends pkexec polkitd iptables curl
+          sudo systemctl start polkit
+      - name: Build unchanged pinned core
+        run: NKR_CORE_OUT_DIR="$RUNNER_TEMP/w07-core" bash libs/build_core.sh
+      - name: Real Ubuntu helper evidence (desktop cases explicitly NOT_RUN)
+        run: |
+          mkdir -p "$RUNNER_TEMP/w07-evidence"
+          sudo --preserve-env=GITHUB_ACTIONS python3 tests/w07_ubuntu_g3.py \
+            res/vpn/vpn-run-root.sh "$RUNNER_TEMP/w07-core/nekobox_core" \
+            "$RUNNER_TEMP/w07-evidence"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: w07-real-ubuntu-evidence
+          path: ${{ runner.temp }}/w07-evidence
+          if-no-files-found: error
