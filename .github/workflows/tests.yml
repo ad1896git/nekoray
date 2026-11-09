@@ -292,9 +292,11 @@ jobs:
       # Add test files only after build_core's clean-source verification.
       - name: Test patched QUIC datagram bounds
         run: |
-          cp tests/quic-go/connection_datagram_test.go ../quic-go/
-          sed 's|"crypto/tls"|"github.com/sagernet/cloudflare-tls"|' \
-            tests/quic-go/connection_datagram_test.go > ../quic-go/ech/connection_datagram_test.go
+          for test_file in tests/quic-go/*_test.go; do
+            cp "$test_file" ../quic-go/
+            sed 's|"crypto/tls"|"github.com/sagernet/cloudflare-tls"|' \
+              "$test_file" > "../quic-go/ech/$(basename "$test_file")"
+          done
           cd ../quic-go
           go test -count=1 -timeout=60s -v ./...
 
@@ -361,9 +363,11 @@ jobs:
 
       - name: Race test patched QUIC datagram bounds
         run: |
-          cp tests/quic-go/connection_datagram_test.go ../quic-go/
-          sed 's|"crypto/tls"|"github.com/sagernet/cloudflare-tls"|' \
-            tests/quic-go/connection_datagram_test.go > ../quic-go/ech/connection_datagram_test.go
+          for test_file in tests/quic-go/*_test.go; do
+            cp "$test_file" ../quic-go/
+            sed 's|"crypto/tls"|"github.com/sagernet/cloudflare-tls"|' \
+              "$test_file" > "../quic-go/ech/$(basename "$test_file")"
+          done
           cd ../quic-go
           go test -race -count=1 -timeout=60s -v ./...
 
