@@ -51,6 +51,22 @@ def alive(token):
     return identity(token.split(':')[0]) == token
 
 
+def child_of(pid, ancestor):
+    # runuser/pkexec may add an intermediate process; bind the published
+    # supervisor to this launch rather than an unrelated live state file.
+    for _ in range(8):
+        if pid == ancestor:
+            return True
+        try:
+            data = Path('/proc/%s/stat' % pid).read_text()
+        except (FileNotFoundError, ProcessLookupError):
+            return False
+        pid = int(data[data.rfind(') ') + 2:].split()[1])
+        if pid <= 1:
+            return False
+    return False
+
+
 def main():
     assert os.geteuid() == 0 and os.environ.get('GITHUB_ACTIONS') == 'true'
     assert 'ID=ubuntu' in Path('/etc/os-release').read_text()
@@ -107,8 +123,10 @@ def main():
         assert not (work / 'injected').exists()
         assert not (evidence / 'injected').exists()
 
-    def start():
+    def start(previous=None):
         nonlocal sequence
+        if previous is None and state.exists():
+            previous = record()
         sequence += 1
         p = subprocess.Popen(
             ['runuser', '-u', 'nkrg3a', '--', '/usr/bin/pkexec',
@@ -116,15 +134,60 @@ def main():
              'nekoray-vpn', str(core), str(config), str(work)],
             stdout=log, stderr=subprocess.STDOUT)
         spawned.append(p)
+        observed = {}
+        r = None
         def ready():
+            nonlocal r
+            observed['launcher_returncode'] = p.poll()
             if p.poll() is not None:
-                raise AssertionError('core exited early; see core.log')
-            if not state.exists():
+                raise AssertionError('launcher exited before new instance readiness')
+            try:
+                candidate = record()
+            except FileNotFoundError:
+                observed['state'] = None
                 return False
-            r = record()
-            return bool(r.get('CORE')) and Path('/sys/class/net/nkrg3').exists()
-        until(ready)
-        r = record()
+            observed['state'] = candidate
+            for key in ('SUP', 'CORE'):
+                token = candidate.get(key, '')
+                if not re.fullmatch(r'[0-9]+:[0-9]+', token):
+                    return False
+                observed[key + '_actual'] = identity(token.split(':')[0])
+                if not alive(token) or (previous and token == previous[key]):
+                    return False
+            if (candidate.get('UID') != str(uid) or
+                    not re.fullmatch(r'nekoray-vpn:[0-9a-f-]+', candidate.get('CMT', '')) or
+                    (previous and candidate['CMT'] == previous['CMT'])):
+                return False
+            supervisor = int(candidate['SUP'].split(':')[0])
+            child = int(candidate['CORE'].split(':')[0])
+            if not child_of(supervisor, p.pid):
+                return False
+            try:
+                data = Path('/proc/%s/stat' % child).read_text()
+                if int(data[data.rfind(') ') + 2:].split()[1]) != supervisor:
+                    return False
+                if not os.path.samefile('/proc/%s/exe' % child, core):
+                    return False
+                flags = int(Path('/sys/class/net/nkrg3/flags').read_text(), 16)
+                observed['tun_flags'] = flags
+                if not flags & 1:  # IFF_UP; mere interface existence is stale readiness.
+                    return False
+                if record() != candidate:
+                    return False
+            except (FileNotFoundError, ProcessLookupError):
+                return False
+            r = candidate
+            return True
+        try:
+            until(ready)
+        except AssertionError as error:
+            diagnostic = {'previous': previous, 'last_observed': observed,
+                          'launcher_pid': p.pid, 'error': str(error)}
+            detail = json.dumps(diagnostic, indent=2)
+            (evidence / ('cycle-%02d-readiness-failure.json' % sequence)).write_text(detail)
+            capture('cycle-%02d-readiness-failure' % sequence)
+            raise AssertionError('new instance readiness failed within 10s; '
+                                 'see core.log and readiness-failure snapshots: ' + detail) from error
         assert r['UID'] == str(uid), r
         assert alive(r['SUP']) and alive(r['CORE'])
         tokens.update([r['SUP'], r['CORE']])
@@ -254,8 +317,12 @@ def main():
                 control('--stop')
                 control('--stop')
             else:
-                replacement, new_record = start()
+                replacement, new_record = start(previous=r)
                 assert not alive(r['CORE'])
+                assert new_record['SUP'] != r['SUP'] and new_record['CORE'] != r['CORE']
+                assert new_record['CMT'] != r['CMT']
+                for family in families:
+                    assert r['CMT'] not in firewall(family), 'old instance rules survived replacement'
                 control('--terminate')
                 assert replacement.wait(timeout=10) == 0
             clean()
@@ -270,30 +337,67 @@ def main():
         spawned.append(decoy)
         decoy_token = identity(decoy.pid)
         assert decoy_token
+        until(lambda: decoy.poll() is None and os.path.samefile('/proc/%s/exe' % decoy.pid, core))
         p, r = start()
+        live_snapshot = {family: firewall(family) for family in families}
+        def unchanged():
+            assert record() == r and alive(r['SUP']) and alive(r['CORE'])
+            assert alive(decoy_token), 'same-name decoy was stopped'
+            for family in families:
+                assert firewall(family) == live_snapshot[family], 'live rules changed after refusal'
         duplicate = subprocess.run(
             ['runuser', '-u', 'nkrg3a', '--', '/usr/bin/pkexec', '--disable-internal-agent',
              '/bin/bash', '-c', script, 'nekoray-vpn', str(core), str(config), str(work)],
             stdout=log, stderr=subprocess.STDOUT, timeout=10)
         assert duplicate.returncode == 75
+        unchanged()
+        capture('duplicate-rejected')
         control('--stop', expected=75)
-        assert alive(r['CORE']) and alive(decoy_token)
-        assert record() == r
-        live_snapshot = {family: firewall(family) for family in families}
+        unchanged()
+        capture('live-stop-rejected')
         # No PKEXEC_UID injection: two real accounts traverse real pkexec.
         control('--terminate', user='nkrg3b', expected=77)
-        assert record() == r and alive(r['CORE'])
-        for family in families:
-            assert firewall(family) == live_snapshot[family]
+        unchanged()
+        capture('wrong-requester-terminate-rejected')
         control('--terminate')
         assert p.wait(timeout=10) == 0
         clean()
         assert alive(decoy_token)
+
+        # A genuine direct-root control, with no inherited requester override.
+        p, r = start()
+        run('env', '-u', 'PKEXEC_UID', '/bin/bash', '-c', script,
+            'nekoray-vpn', '--terminate')
+        assert p.wait(timeout=10) == 0
+        clean()
+        assert alive(decoy_token)
+        capture('root-terminate-after')
+
+        for owner in ['nkrg3a', 'root']:
+            p, r = start()
+            live_snapshot = {family: firewall(family) for family in families}
+            os.kill(int(r['SUP'].split(':')[0]), signal.SIGKILL)
+            p.wait(timeout=10)
+            assert alive(r['CORE'])
+            control('--stop', user='nkrg3b', expected=77)
+            assert record() == r and not alive(r['SUP']) and alive(r['CORE'])
+            assert alive(decoy_token)
+            for family in families:
+                assert firewall(family) == live_snapshot[family]
+            capture('wrong-requester-stale-stop-rejected-' + owner)
+            if owner == 'root':
+                run('env', '-u', 'PKEXEC_UID', '/bin/bash', '-c', script,
+                    'nekoray-vpn', '--stop')
+            else:
+                control('--stop')
+            clean()
+            assert alive(decoy_token)
+            capture(owner + '-stale-stop-after')
         decoy.send_signal(signal.SIGINT)
         assert decoy.wait(timeout=10) == 0
         capture('isolation-after')
         summary += ['G3-5 RUN: duplicate=75, live --stop=75; real foreign IPv4/IPv6 rules and same-name real-core decoy survived',
-                    'G3-6 NOT_RUN (desktop session portion): real pkexec accounts A/B tested (B=77, A=0); two desktop login sessions and interactive elevation unavailable']
+                    'G3-6 RUN (helper): real pkexec B terminate/stale-stop=77 without mutation, A terminate/stale-stop=0, direct root terminate/stale-stop=0; desktop login sessions/interactive elevation NOT_RUN']
         print('\n'.join(summary), flush=True)
         (evidence / 'summary.txt').write_text('\n'.join(summary) + '\n')
     finally:
