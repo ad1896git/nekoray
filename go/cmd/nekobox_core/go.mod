@@ -98,7 +98,7 @@ replace github.com/matsuridayo/libneko => github.com/ad1896git/libneko v0.0.0-20
 
 replace github.com/sagernet/sing-box => github.com/ad1896git/sing-box v0.0.0-20261108030513-2f78dbe673e2
 
-replace github.com/sagernet/sing-quic => github.com/ad1896git/sing-quic v0.1.3-0.20261106182924-9c9fdac85d4b
+replace github.com/sagernet/sing-quic => github.com/ad1896git/sing-quic v0.1.3-0.20261109092959-56e36b45e5ec
 
 replace github.com/sagernet/quic-go => ../../../../quic-go
 

@@ -10,8 +10,8 @@ github.com/ad1896git/libneko v0.0.0-20261108075722-45e350171b7b h1:X6H/C5QKnPEhg
 github.com/ad1896git/libneko v0.0.0-20261108075722-45e350171b7b/go.mod h1:q76S4Rne+tTjTtHf8fKr9tlVuYXz9RBG9OKY3gs+Be4=
 github.com/ad1896git/sing-box v0.0.0-20261108030513-2f78dbe673e2 h1:tuIvQw30NvCntBbfy9lQN3bOKciGArmhlA5EpfxqK0I=
 github.com/ad1896git/sing-box v0.0.0-20261108030513-2f78dbe673e2/go.mod h1:N0hPcloZRgl4A+D2ELx7AnMa81kifxu7LDbGlZtHx50=
-github.com/ad1896git/sing-quic v0.1.3-0.20261106182924-9c9fdac85d4b h1:LCs47Dt0uc1U9S0U+YQOGG+nXVXiCSnC7IXytQJbHyw=
-github.com/ad1896git/sing-quic v0.1.3-0.20261106182924-9c9fdac85d4b/go.mod h1:YLV1dUDv8Eyp/8e55O/EvfsrwxOgEDVgDCIoPqmDREE=
+github.com/ad1896git/sing-quic v0.1.3-0.20261109092959-56e36b45e5ec h1:BBQ7QsZ/qYE8VXjm8Rj2VWV4K846geZ2lxxqDFI5HV8=
+github.com/ad1896git/sing-quic v0.1.3-0.20261109092959-56e36b45e5ec/go.mod h1:YLV1dUDv8Eyp/8e55O/EvfsrwxOgEDVgDCIoPqmDREE=
 github.com/ajg/form v1.5.1 h1:t9c7v8JUKu/XxOGBU0yjNpaMloxGEJhUkqFRq0ibGeU=
 github.com/ajg/form v1.5.1/go.mod h1:uL1WgH+h2mgNtvBq0339dVnzXdBETtL2LeUXaIv25UY=
 github.com/andybalholm/brotli v1.0.6 h1:Yf9fFpf49Zrxb9NlQaluyE92/+X7UVHlhMNJN2sxfOI=
