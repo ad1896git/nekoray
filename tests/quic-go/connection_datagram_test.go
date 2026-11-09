@@ -9,6 +9,7 @@ import (
 	"crypto/x509"
 	"errors"
 	"fmt"
+	"io"
 	"math/big"
 	"testing"
 	"time"
@@ -21,6 +22,7 @@ func TestSendDatagramPayloadBounds(t *testing.T) {
 	for _, tc := range []struct {
 		peer, path, want int
 	}{
+		{1, 1200, 0}, // Even the empty length-bearing frame cannot fit.
 		{2, 1200, 0},
 		{3, 1200, 1},
 		{63, 1200, 61},
@@ -44,7 +46,7 @@ func TestSendDatagramPayloadBounds(t *testing.T) {
 					c.maxPayloadSizeEstimate.Store(uint32(tc.path))
 					payload := bytes.Repeat([]byte{0x42}, size)
 					err := c.SendDatagram(payload)
-					if size > tc.want {
+					if tc.peer == 1 || size > tc.want {
 						var tooLarge *DatagramTooLargeError
 						if !errors.As(err, &tooLarge) || tooLarge.MaxDatagramPayloadSize != int64(tc.want) {
 							t.Fatalf("SendDatagram(%d) = %v; want DatagramTooLargeError with maximum %d", size, err, tc.want)
@@ -73,7 +75,8 @@ func TestSendDatagramPayloadBounds(t *testing.T) {
 	}
 }
 
-func TestSendDatagramLowPeerLimitRoundTrip(t *testing.T) {
+func datagramTestPair(t *testing.T, frameLimit int64) (context.Context, Connection, Connection) {
+	t.Helper()
 	public, private, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
@@ -88,28 +91,33 @@ func TestSendDatagramLowPeerLimitRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 	listener, err := ListenAddr("127.0.0.1:0", &tls.Config{
 		Certificates: []tls.Certificate{{Certificate: [][]byte{der}, PrivateKey: private}},
 		NextProtos:   []string{"datagram-limit-test"},
-	}, &Config{EnableDatagrams: true, MaxDatagramFrameSize: 64})
+	}, &Config{EnableDatagrams: true, MaxDatagramFrameSize: frameLimit})
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer listener.Close()
+	t.Cleanup(func() { listener.Close() })
 	client, err := DialAddr(ctx, listener.Addr().String(), &tls.Config{
 		InsecureSkipVerify: true, // Ephemeral certificate on loopback only.
 		NextProtos:         []string{"datagram-limit-test"},
-	}, &Config{EnableDatagrams: true, MaxDatagramFrameSize: 64})
+	}, &Config{EnableDatagrams: true, MaxDatagramFrameSize: frameLimit})
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer client.CloseWithError(0, "test complete")
+	t.Cleanup(func() { client.CloseWithError(0, "test complete") })
 	server, err := listener.Accept(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer server.CloseWithError(0, "test complete")
+	t.Cleanup(func() { server.CloseWithError(0, "test complete") })
+	return ctx, client, server
+}
+
+func TestSendDatagramLowPeerLimitRoundTrip(t *testing.T) {
+	ctx, client, server := datagramTestPair(t, 64)
 	for _, pair := range []struct {
 		name             string
 		sender, receiver Connection
@@ -131,6 +139,50 @@ func TestSendDatagramLowPeerLimitRoundTrip(t *testing.T) {
 				got, err := pair.receiver.ReceiveDatagram(ctx)
 				if err != nil || !bytes.Equal(got, payload) {
 					t.Fatalf("datagram after rejected send: payload=%x err=%v", got, err)
+				}
+				if client.Context().Err() != nil || server.Context().Err() != nil {
+					t.Fatal("connection closed after rejected send")
+				}
+			}
+		})
+	}
+}
+
+// A peer limit of one cannot hold our length-bearing DATAGRAM encoding.
+// Streams must remain usable on the same connection after every rejection.
+func TestSendDatagramFrameOneRoundTrip(t *testing.T) {
+	ctx, client, server := datagramTestPair(t, 1)
+	for _, pair := range []struct {
+		name             string
+		sender, receiver Connection
+	}{{"client", client, server}, {"server", server, client}} {
+		t.Run(pair.name, func(t *testing.T) {
+			for _, size := range []int{0, 1, 255} {
+				var tooLarge *DatagramTooLargeError
+				err := pair.sender.SendDatagram(make([]byte, size))
+				if !errors.As(err, &tooLarge) || tooLarge.MaxDatagramPayloadSize != 0 {
+					t.Fatalf("SendDatagram(%d) = %v; want DatagramTooLargeError with maximum 0", size, err)
+				}
+				stream, err := pair.sender.OpenUniStreamSync(ctx)
+				if err != nil {
+					t.Fatal(err)
+				}
+				stream.SetWriteDeadline(time.Now().Add(5 * time.Second))
+				payload := []byte("stream survives rejected datagram")
+				if _, err := stream.Write(payload); err != nil {
+					t.Fatal(err)
+				}
+				if err := stream.Close(); err != nil {
+					t.Fatal(err)
+				}
+				received, err := pair.receiver.AcceptUniStream(ctx)
+				if err != nil {
+					t.Fatal(err)
+				}
+				received.SetReadDeadline(time.Now().Add(5 * time.Second))
+				got, err := io.ReadAll(received)
+				if err != nil || !bytes.Equal(got, payload) {
+					t.Fatalf("stream after rejected send: payload=%x err=%v", got, err)
 				}
 				if client.Context().Err() != nil || server.Context().Err() != nil {
 					t.Fatal("connection closed after rejected send")

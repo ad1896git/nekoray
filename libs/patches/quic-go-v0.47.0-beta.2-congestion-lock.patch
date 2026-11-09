@@ -1,8 +1,8 @@
 diff --git a/connection.go b/connection.go
-index 370968b..3f5458e 100644
+index 370968b..f351fe0 100644
 --- a/connection.go
 +++ b/connection.go
-@@ -2299,7 +2299,7 @@ func (s *connection) SendDatagram(p []byte) error {
+@@ -2299,11 +2299,12 @@ func (s *connection) SendDatagram(p []byte) error {
  	f := &wire.DatagramFrame{DataLenPresent: true}
  	// The payload size estimate is conservative.
  	// Under many circumstances we could send a few more bytes.
@@ -11,6 +11,31 @@ index 370968b..3f5458e 100644
  		f.MaxDataLen(s.peerParams.MaxDatagramFrameSize, s.version),
  		protocol.ByteCount(s.maxPayloadSizeEstimate.Load()),
  	)
+-	if protocol.ByteCount(len(p)) > maxDataLen {
++	// MaxDataLen returns zero both when an empty payload fits and when no frame fits.
++	if protocol.ByteCount(len(p)) > maxDataLen || f.Length(s.version) > s.peerParams.MaxDatagramFrameSize {
+ 		return &DatagramTooLargeError{
+ 			MaxDatagramPayloadSize: int64(maxDataLen),
+ 		}
+diff --git a/ech/connection.go b/ech/connection.go
+index 93bee48..38f128a 100644
+--- a/ech/connection.go
++++ b/ech/connection.go
+@@ -2302,11 +2302,12 @@ func (s *connection) SendDatagram(p []byte) error {
+ 	f := &wire.DatagramFrame{DataLenPresent: true}
+ 	// The payload size estimate is conservative.
+ 	// Under many circumstances we could send a few more bytes.
+-	maxDataLen := utils.Max(
++	maxDataLen := utils.Min(
+ 		f.MaxDataLen(s.peerParams.MaxDatagramFrameSize, s.version),
+ 		protocol.ByteCount(s.maxPayloadSizeEstimate.Load()),
+ 	)
+-	if protocol.ByteCount(len(p)) > maxDataLen {
++	// MaxDataLen returns zero both when an empty payload fits and when no frame fits.
++	if protocol.ByteCount(len(p)) > maxDataLen || f.Length(s.version) > s.peerParams.MaxDatagramFrameSize {
+ 		return &DatagramTooLargeError{
+ 			MaxDatagramPayloadSize: int64(maxDataLen),
+ 		}
 diff --git a/internal/ackhandler/sent_packet_handler.go b/internal/ackhandler/sent_packet_handler.go
 index 028d92d5..0ac42042 100644
 --- a/internal/ackhandler/sent_packet_handler.go

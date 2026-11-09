@@ -293,6 +293,8 @@ jobs:
       - name: Test patched QUIC datagram bounds
         run: |
           cp tests/quic-go/connection_datagram_test.go ../quic-go/
+          sed 's|"crypto/tls"|"github.com/sagernet/cloudflare-tls"|' \
+            tests/quic-go/connection_datagram_test.go > ../quic-go/ech/connection_datagram_test.go
           cd ../quic-go
           go test -count=1 -timeout=60s -v ./...
 
@@ -360,6 +362,8 @@ jobs:
       - name: Race test patched QUIC datagram bounds
         run: |
           cp tests/quic-go/connection_datagram_test.go ../quic-go/
+          sed 's|"crypto/tls"|"github.com/sagernet/cloudflare-tls"|' \
+            tests/quic-go/connection_datagram_test.go > ../quic-go/ech/connection_datagram_test.go
           cd ../quic-go
           go test -race -count=1 -timeout=60s -v ./...
 
