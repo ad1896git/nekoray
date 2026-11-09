@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"strings"
 	"testing"
 	"time"
 
@@ -142,30 +143,109 @@ func nk04RawTUIC(t *testing.T, f *nk04Fixture) quic.Connection {
 	return c
 }
 
-func TestNK04MatrixMalformedTimeoutReconnect(t *testing.T) {
-	for _, wire := range [][]byte{nil, {0xff, 0xff}, {tuic.Version, 0xff}, {tuic.Version, tuic.CommandAuthenticate, 1}} {
-		t.Run(fmt.Sprintf("wire_%x", wire), func(t *testing.T) {
-			f := nk04Server(t, "tuic", "", false)
-			c := nk04RawTUIC(t, f)
-			if wire != nil {
-				s, err := c.OpenUniStream()
-				nk04OK(t, err)
-				_, err = s.Write(wire)
-				nk04OK(t, err)
-				nk04OK(t, s.Close())
-			}
-			select {
-			case <-c.Context().Done():
-				var app *quic.ApplicationError
-				if !errors.As(context.Cause(c.Context()), &app) || !app.Remote { // mutation: malformed
-					t.Fatalf("peer rejection = %v, want remote application close", context.Cause(c.Context()))
-				}
-			case <-f.ctx.Done():
-				t.Fatal("malformed/unauthenticated peer was not closed")
-			}
+func nk04RequireRemoteRejection(t *testing.T, f *nk04Fixture, c quic.Connection, reason string) {
+	t.Helper()
+	// Independent of both the 10-second fixture and 60-second malformed-case
+	// authentication timer. Neither context cleanup nor idle expiry is rejection.
+	timer := time.NewTimer(3 * time.Second)
+	defer timer.Stop()
+	select {
+	case <-c.Context().Done():
+		var app *quic.ApplicationError
+		if !errors.As(context.Cause(c.Context()), &app) || !app.Remote || app.ErrorCode != 0 || f.ctx.Err() != nil {
+			t.Fatalf("peer rejection = %v, fixture = %v, want remote parser application close", context.Cause(c.Context()), f.ctx.Err())
+		}
+	case <-timer.C:
+		t.Fatal("peer was not rejected before independent rejection deadline")
+	case <-f.ctx.Done():
+		t.Fatal("fixture expired before peer rejection")
+	}
+	select {
+	case message := <-f.parserLog:
+		if !strings.Contains(message, reason) {
+			t.Fatalf("rejection cause = %q, want %q", message, reason)
+		}
+	case <-timer.C:
+		t.Fatal("no parser rejection cause before deadline")
+	case <-f.ctx.Done():
+		t.Fatal("fixture expired before parser rejection cause")
+	}
+}
+
+func TestNK04MatrixAuthTimeoutReconnect(t *testing.T) {
+	f := nk04Server(t, "tuic", "", false)
+	c := nk04RawTUIC(t, f)
+	nk04RequireRemoteRejection(t, f, c, "authentication timeout")
+	if f.echo.tcp.Load() != 0 || f.echo.udp.Load() != 0 {
+		t.Fatal("unauthenticated peer reached application handlers")
+	}
+	good := f.client(t, "secret", "", "", [16]byte{1}, true)
+	nk04OK(t, nk04UDP(f.ctx, good))
+	nk04OK(t, nk04TCP(f.ctx, good))
+}
+
+func TestNK04MatrixMalformedReconnect(t *testing.T) {
+	for _, test := range []struct {
+		name, reason string
+		wire         []byte
+	}{
+		{"invalid_version", "handle uni stream: unknown version 255", []byte{0xff, 0xff}},
+		{"unknown_command", "handle uni stream: unknown command 255", []byte{tuic.Version, 0xff}},
+		{"truncated_auth", "handle uni stream: authentication: read request", []byte{tuic.Version, tuic.CommandAuthenticate, 1}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			// Auth expiry cannot supply a passing close, even at fixture expiry.
+			f := nk04ServerWithAuthTimeout(t, "tuic", "", false, time.Minute)
 			good := f.client(t, "secret", "", "", [16]byte{1}, true)
-			nk04OK(t, nk04UDP(f.ctx, good))
-			nk04OK(t, nk04TCP(f.ctx, good))
+			stream, err := good.DialConn(f.ctx, M.ParseSocksaddr("127.0.0.1:12345"))
+			nk04OK(t, err)
+			defer stream.Close()
+			nk04OK(t, nk04Stream(f.ctx, stream))
+			packet, err := good.(nk04PacketClient).ListenPacket(f.ctx)
+			nk04OK(t, err)
+			defer packet.Close()
+			stop := context.AfterFunc(f.ctx, func() { _ = packet.Close() })
+			defer stop()
+			echoPacket := func() {
+				payload := []byte("NK04 unchanged UDP session")
+				dst := M.ParseSocksaddr("127.0.0.1:12345")
+				n, err := packet.WriteTo(payload, dst)
+				nk04OK(t, err)
+				if n != len(payload) {
+					t.Fatalf("packet write = %d, want %d", n, len(payload))
+				}
+				reply := make([]byte, 128)
+				n, addr, err := packet.ReadFrom(reply)
+				nk04OK(t, err)
+				if !bytes.Equal(reply[:n], payload) || addr.String() != dst.String() {
+					t.Fatal("existing packet session changed")
+				}
+			}
+			echoPacket()
+			assertHandlers := func(want int64) {
+				t.Helper()
+				if tcp, udp := f.echo.tcp.Load(), f.echo.udp.Load(); tcp != want || udp != want {
+					t.Fatalf("handler calls TCP/UDP = %d/%d, want %d/%d; malformed peer must create no application state or forward data", tcp, udp, want, want)
+				}
+			}
+			assertHandlers(1)
+			c := nk04RawTUIC(t, f)
+			s, err := c.OpenUniStream()
+			nk04OK(t, err)
+			_, err = s.Write(test.wire)
+			nk04OK(t, err)
+			nk04OK(t, s.Close())
+			nk04RequireRemoteRejection(t, f, c, test.reason)
+			assertHandlers(1)
+			// Preserve established TCP/UDP sessions, the listener and credentials.
+			// Reusing the exact connections catches state damage masked by reconnect.
+			nk04OK(t, nk04Stream(f.ctx, stream))
+			echoPacket()
+			assertHandlers(1)
+			fresh := f.client(t, "secret", "", "", [16]byte{1}, true)
+			nk04OK(t, nk04UDP(f.ctx, fresh))
+			nk04OK(t, nk04TCP(f.ctx, fresh))
+			assertHandlers(2)
 		})
 	}
 }

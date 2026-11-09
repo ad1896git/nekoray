@@ -24,7 +24,7 @@ TOPS = {'TestNK04' + name for name in (
     'TUICUnknownUUID', 'TUICUDPStream', 'TUICUDPDatagram',
     'Hysteria2ConcurrentUDP', 'Hysteria2PortHopping',
     'MatrixStreamLimit', 'MatrixPacketBoundaries', 'MatrixPacketCancelTimeout',
-    'MatrixMalformedTimeoutReconnect', 'MatrixUDPStreamPeerCloseReconnect')}
+    'MatrixAuthTimeoutReconnect', 'MatrixMalformedReconnect', 'MatrixUDPStreamPeerCloseReconnect')}
 EXPECTED = set(TOPS)
 EXPECTED.update('TestNK04Hysteria2Salamander/' + s for s in ('off', 'on', 'wrong_password'))
 for mode, limit in (('hysteria2', 4096), ('tuic_datagram', 65535), ('tuic_stream', 65535)):
@@ -32,8 +32,8 @@ for mode, limit in (('hysteria2', 4096), ('tuic_datagram', 65535), ('tuic_stream
     EXPECTED.add(parent)
     EXPECTED.update(parent + '/' + str(n) for n in (0, 1, limit - 1, limit, limit + 1))
 EXPECTED.update('TestNK04MatrixPacketCancelTimeout/timeout_' + s for s in ('false', 'true'))
-EXPECTED.update('TestNK04MatrixMalformedTimeoutReconnect/wire_' + s
-                for s in ('', 'ffff', '05ff', '050001'))
+EXPECTED.update('TestNK04MatrixMalformedReconnect/' + s
+                for s in ('invalid_version', 'unknown_command', 'truncated_auth'))
 EXPECTED.update('TestNK04MatrixUDPStreamPeerCloseReconnect/' + s
                 for s in ('peer_close', 'local_client_close'))
 LEAVES = {n for n in EXPECTED if not any(p.startswith(n + '/') for p in EXPECTED)}

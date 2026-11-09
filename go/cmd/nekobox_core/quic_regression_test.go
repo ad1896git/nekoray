@@ -13,6 +13,7 @@ import (
 	"math/big"
 	"net"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -123,6 +124,20 @@ func (nk04Echo) NewPacketConnection(ctx context.Context, c N.PacketConn, _ M.Met
 	}
 }
 
+// Count calls before any data can be forwarded by the echo handler.
+type nk04ObservedEcho struct {
+	tcp, udp atomic.Int64
+}
+
+func (e *nk04ObservedEcho) NewConnection(ctx context.Context, c net.Conn, m M.Metadata) error {
+	e.tcp.Add(1)
+	return (nk04Echo{}).NewConnection(ctx, c, m)
+}
+func (e *nk04ObservedEcho) NewPacketConnection(ctx context.Context, c N.PacketConn, m M.Metadata) error {
+	e.udp.Add(1)
+	return (nk04Echo{}).NewPacketConnection(ctx, c, m)
+}
+
 type nk04Client interface {
 	DialConn(context.Context, M.Socksaddr) (net.Conn, error)
 	CloseWithError(error) error
@@ -141,9 +156,31 @@ type nk04Fixture struct {
 	accepted  chan quic.Connection
 	dialer    *nk04Dialer
 	protocol  string
+	echo      *nk04ObservedEcho
+	parserLog chan string
 }
 
 func nk04Server(t *testing.T, protocol, obfs string, udpDisabled bool) *nk04Fixture {
+	t.Helper()
+	return nk04ServerWithAuthTimeout(t, protocol, obfs, udpDisabled, 2*time.Second)
+}
+
+// Record both levels: truncated input may be classified as EOF by the parser.
+type nk04ParserLogger struct {
+	logger.Logger
+	output chan string
+}
+
+func (l nk04ParserLogger) Debug(args ...any) { l.record(args...) }
+func (l nk04ParserLogger) Error(args ...any) { l.record(args...) }
+func (l nk04ParserLogger) record(args ...any) {
+	select {
+	case l.output <- fmt.Sprint(args...):
+	default:
+	}
+}
+
+func nk04ServerWithAuthTimeout(t *testing.T, protocol, obfs string, udpDisabled bool, authTimeout time.Duration) *nk04Fixture {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	t.Cleanup(cancel)
@@ -166,26 +203,27 @@ func nk04Server(t *testing.T, protocol, obfs string, udpDisabled bool) *nk04Fixt
 	accepted := make(chan quic.Connection, 8)
 	serverTLS := &nk04TLS{config: &tls.Config{Certificates: []tls.Certificate{{Certificate: [][]byte{der}, PrivateKey: private}}, NextProtos: []string{alpn}}, accepted: accepted}
 	f := &nk04Fixture{ctx: ctx, protocol: protocol, accepted: accepted, dialer: &nk04Dialer{},
+		echo: &nk04ObservedEcho{}, parserLog: make(chan string, 16),
 		clientTLS: &nk04TLS{config: &tls.Config{InsecureSkipVerify: true, NextProtos: []string{alpn}}}, // Ephemeral loopback certificate.
 	}
 	var service nk04Service
 	switch protocol {
 	case "hysteria2":
-		s, e := hysteria2.NewService[string](hysteria2.ServiceOptions{Context: ctx, Logger: logger.NOP(), TLSConfig: serverTLS, Handler: nk04Echo{}, SalamanderPassword: obfs, UDPDisabled: udpDisabled, UDPTimeout: 8 * time.Second})
+		s, e := hysteria2.NewService[string](hysteria2.ServiceOptions{Context: ctx, Logger: logger.NOP(), TLSConfig: serverTLS, Handler: f.echo, SalamanderPassword: obfs, UDPDisabled: udpDisabled, UDPTimeout: 8 * time.Second})
 		err = e
 		if e == nil {
 			s.UpdateUsers([]string{"user"}, []string{"secret"})
 			service = s
 		}
 	case "hysteria1":
-		s, e := hysteria.NewService[string](hysteria.ServiceOptions{Context: ctx, Logger: logger.NOP(), TLSConfig: serverTLS, Handler: nk04Echo{}, SendBPS: hysteria.MinSpeedBPS, ReceiveBPS: hysteria.MinSpeedBPS, UDPTimeout: 8 * time.Second})
+		s, e := hysteria.NewService[string](hysteria.ServiceOptions{Context: ctx, Logger: logger.NOP(), TLSConfig: serverTLS, Handler: f.echo, SendBPS: hysteria.MinSpeedBPS, ReceiveBPS: hysteria.MinSpeedBPS, UDPTimeout: 8 * time.Second})
 		err = e
 		if e == nil {
 			s.UpdateUsers([]string{"user"}, []string{"secret"})
 			service = s
 		}
 	case "tuic":
-		s, e := tuic.NewService[string](tuic.ServiceOptions{Context: ctx, Logger: logger.NOP(), TLSConfig: serverTLS, Handler: nk04Echo{}, AuthTimeout: 2 * time.Second, UDPTimeout: 8 * time.Second})
+		s, e := tuic.NewService[string](tuic.ServiceOptions{Context: ctx, Logger: nk04ParserLogger{Logger: logger.NOP(), output: f.parserLog}, TLSConfig: serverTLS, Handler: f.echo, AuthTimeout: authTimeout, UDPTimeout: 8 * time.Second})
 		err = e
 		if e == nil {
 			s.UpdateUsers([]string{"user"}, [][16]byte{{1}}, []string{"secret"})

@@ -7,7 +7,7 @@ sing 0.4.3, sing-box `2f78dbe673e2`, libneko `45e350171b7b`, sing-quic
 `201474163bfe`, and quic-go 0.47.0-beta.2 at `7101329b86a0`, with the existing
 congestion-lock patch verified by reverse application. No manifest is rewritten.
 
-Each row requires exactly **20 top-level tests, 49 test nodes, and 41 leaves**.
+Each row requires exactly **21 top-level tests, 49 test nodes, and 41 leaves**.
 The existing 15 in-process tests cover protocol/authentication/obfuscation,
 TCP-only mode, concurrent UDP, reconnect, and real Hysteria2 port hopping.
 The hopping relay binds ephemeral IPv4 loopback sockets and observes a changed
@@ -19,13 +19,36 @@ and UDP traffic. The new tests add:
 | MatrixStreamLimit | Admit 1,024 live TUIC streams, reject stream 1,025 with StreamLimitReachedError, and exchange data through the first and last admitted streams. |
 | MatrixPacketBoundaries | Hysteria2 (4,096) and TUIC datagram/stream (65,535): zero, one, maximum minus one, maximum, and maximum plus one. Accepted packets echo bytes and destination; overflow returns the exact typed limit and leaves TCP usable. Each size owns an independent fixture/context. |
 | MatrixPacketCancelTimeout | A TUIC UDP-stream read returns closed pipe on explicit cancellation or deadline; subsequent UDP/TCP traffic succeeds. |
-| MatrixMalformedTimeoutReconnect | Unauthenticated timeout, invalid version, unknown command, and truncated authentication close the peer; a new valid client exchanges UDP/TCP on the same listener. |
+| MatrixAuthTimeoutReconnect | A peer sending no authentication is remotely closed for authentication timeout; no application handler is called, and a new valid client exchanges UDP/TCP on the same listener. |
+| MatrixMalformedReconnect | Invalid version, unknown command, and truncated authentication each require remote application close and the corresponding parser error before an independent three-second deadline. No application state is created or data forwarded; established TCP/UDP sessions and fresh-client authentication remain usable. |
 | MatrixUDPStreamPeerCloseReconnect | Establish packet and TCP sessions, observe remote or local transport close on TCP, require the packet read to unblock without independent context cancellation, then reconnect and verify a distinct accepted peer and UDP/TCP traffic. |
 
 The packet echo fixture unwraps the timer wrapper through sing's public
 `common.Cast` to use the transport's datagram API. This avoids the buffer API's
 empty-buffer EOF semantics and the default pooled buffer's smaller capacity.
 It retains the wrapper/context cleanup. It sends no external traffic.
+
+The three malformed-input leaves use a **60-second authentication timeout**,
+longer than both their three-second rejection deadline and ten-second fixture
+context. Authentication expiry cannot satisfy these leaves. Fixture expiry,
+local close, transport/idle timeout, a different parser error, and a silent drop
+all fail. The fixture records the production parser's rejection cause and counts
+TCP/UDP handler entries before any forwarding. Each malformed peer must add
+zero handler calls. The exact established TCP connection and UDP session echo
+again after rejection without creating replacement handlers; a fresh valid
+client then proves the listener and original credentials still work. These are
+checks of observable application/session state, not private implementation
+fields. Panics, races and hangs remain failures under the runner's process and
+test deadlines.
+
+Mutation validation must change parser behavior, not invert a test assertion:
+in a disposable copy of pinned sing-quic, replace each `handleUniStream` error
+return for unknown version, unknown command and truncated authentication with
+`return nil`, one at a time and together. Point only an untracked probe modfile
+at that copy. Each corresponding `MatrixMalformedReconnect` leaf must fail at
+the rejection deadline; the combined mutant must fail all three. Restore the
+copy afterward and retain the exact commands, source diff, module graph and
+raw output. The required matrix itself always uses the unchanged final pins.
 
 All sockets and destinations are loopback; credentials and ephemeral TLS keys
 exist only inside the test process. Dependency downloads precede execution;
