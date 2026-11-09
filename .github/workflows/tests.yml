@@ -417,3 +417,71 @@ jobs:
         run: |
           go test -mod=readonly -tags "$NKR_GO_TAGS" \
             -count=1 -timeout=600s -v -run '^TestNK04External' .
+
+  w07-teardown:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, ubuntu-24.04]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Same regression against base (must fail) then fixed fixture
+        run: |
+          git fetch --depth=1 origin d3d2e90f4aaeb272fdcb63caaf5f50fda516c1f2
+          git show d3d2e90f4aaeb272fdcb63caaf5f50fda516c1f2:tests/test_linux_vpn_script.py > "$RUNNER_TEMP/w07-base.py"
+          if python3 tests/test_w07_teardown.py "$RUNNER_TEMP/w07-base.py" res/vpn/vpn-run-root.sh > "$RUNNER_TEMP/w07-red.log" 2>&1; then
+            cat "$RUNNER_TEMP/w07-red.log"
+            echo '::error::base unexpectedly passed the teardown regression'
+            exit 1
+          fi
+          cat "$RUNNER_TEMP/w07-red.log"
+          grep -F 'held-sleep survived failure teardown' "$RUNNER_TEMP/w07-red.log"
+          python3 tests/test_w07_teardown.py tests/test_linux_vpn_script.py res/vpn/vpn-run-root.sh
+
+  w07-ubuntu-g3:
+    # Ubuntu 24.04 polkit supports the scoped JavaScript rule below.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      GOTOOLCHAIN: local
+      GOWORK: 'off'
+      GOENV: 'off'
+      GOFLAGS: ''
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Isolate Go caches
+        run: |
+          echo "GOPATH=$RUNNER_TEMP/w07/gopath" >> "$GITHUB_ENV"
+          echo "GOCACHE=$RUNNER_TEMP/w07/gocache" >> "$GITHUB_ENV"
+          echo "GOMODCACHE=$RUNNER_TEMP/w07/gomodcache" >> "$GITHUB_ENV"
+      - uses: actions/setup-go@0a12ed9d6a96ab950c8f026ed9f722fe0da7ef32
+        with:
+          go-version: '1.22.12'
+          check-latest: false
+          cache: false
+      - name: Install real privilege and firewall tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends pkexec polkitd iptables curl
+          sudo systemctl start polkit
+      - name: Build unchanged pinned core
+        run: NKR_CORE_OUT_DIR="$RUNNER_TEMP/w07-core" bash libs/build_core.sh
+      - name: Real Ubuntu helper evidence (desktop cases explicitly NOT_RUN)
+        run: |
+          sudo --preserve-env=GITHUB_ACTIONS python3 tests/w07_ubuntu_g3.py \
+            res/vpn/vpn-run-root.sh "$RUNNER_TEMP/w07-core/nekobox_core" \
+            "/tmp/nkr-w07-g3-${{ github.run_id }}"
+      - name: Package inspectable evidence without the private installation
+        if: always()
+        run: |
+          sudo tar -C "/tmp/nkr-w07-g3-${{ github.run_id }}" \
+            --exclude='./install*' -czf "$RUNNER_TEMP/w07-evidence.tar.gz" .
+          sudo chmod 644 "$RUNNER_TEMP/w07-evidence.tar.gz"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: w07-real-ubuntu-evidence
+          path: ${{ runner.temp }}/w07-evidence.tar.gz
+          if-no-files-found: error

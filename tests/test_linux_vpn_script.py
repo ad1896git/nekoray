@@ -26,6 +26,7 @@ BIN.mkdir()
 PROCESSES = []
 IDENTITIES = set()
 LOGS = []
+CASES = []
 
 FAKE_IPTABLES = r'''#!/usr/bin/env python3
 import fcntl
@@ -137,7 +138,13 @@ exec /bin/mv "$@"
 # pre-exec child inside a sleep: the window where bash used to drop SIGINT.
 FAKE_SLEEP = r'''#!/bin/bash
 if [[ "${HOLD_GATE_SLEEP:-0}" = 1 ]]; then
-    printf '%s\n' "$$" >>"$FAKE_STATE/held-sleep"
+    # Publish the full identity before entering the unbounded fixture wait.
+    # Outer failure teardown can discover it even if an assertion interrupts
+    # the controller before it reads the marker.
+    IFS= read -r data </proc/$$/stat
+    rest=${data##*) }
+    read -r -a fields <<<"$rest"
+    printf '%s:%s\n' "$$" "${fields[19]}" >>"$FAKE_STATE/held-sleep"
     while [[ ! -e "$FAKE_STATE/release-sleep" ]]; do /bin/sleep 0.02; done
     exit 0
 fi
@@ -207,6 +214,7 @@ def default_signals():
 class Case:
     def __init__(self, mode="run", **extra):
         self.root = Path(tempfile.mkdtemp(dir=BASE, prefix="case-"))
+        CASES.append(self)
         self.work = self.root / "work 'quoted' `ticks` $(touch injected)"
         self.work.mkdir()
         self.config = self.root / "config 'quoted' $(touch injected).json"
@@ -281,6 +289,18 @@ class Case:
         assert not self.rules("iptables")
         assert not self.rules("ip6tables")
         assert not (self.root / "nekoray-vpn.state").exists()
+
+    def held_sleeps(self):
+        marker = self.root / "held-sleep"
+        identities = marker.read_text().splitlines() if marker.exists() else []
+        for identity in identities:
+            remember(identity)
+        return identities
+
+    def release_sleeps(self):
+        identities = self.held_sleeps()
+        (self.root / "release-sleep").touch()
+        until(lambda: not any(alive(identity) for identity in identities), timeout=2)
 
     def stop(self, process):
         self.run(parameters=["--terminate"])
@@ -524,7 +544,7 @@ def run_tests():
     try:
         assert owner.wait(timeout=8) == 130
     finally:
-        (case.root / "release-sleep").touch()
+        case.release_sleeps()
     assert not alive(child)
     assert not (case.root / "cores").exists()
     case.clean()
@@ -548,28 +568,43 @@ def run_tests():
 try:
     run_tests()
 finally:
-    # Only test-owned processes or captured identities are touched.
+    # Release before removing any fixture directory. Discover identities here
+    # as well as on the normal path: failure may precede reading held-sleep.
+    for case in CASES:
+        case.held_sleeps()
+        (case.root / "release-sleep").touch()
+
+    def signal_owned(sig):
+        for identity in IDENTITIES:
+            if alive(identity):
+                try:
+                    pid = int(identity.split(":")[0])
+                    os.kill(pid, sig)
+                    # A stopped fixture must resume to act on pending TERM.
+                    if sig == signal.SIGTERM:
+                        os.kill(pid, signal.SIGCONT)
+                except ProcessLookupError:
+                    pass
+
+    # Bound the whole teardown, rather than spending a timeout per process.
     for process in PROCESSES:
         if process.poll() is None:
             process.terminate()
-    for identity in IDENTITIES:
-        if alive(identity):
-            try:
-                os.kill(int(identity.split(":")[0]), signal.SIGTERM)
-            except ProcessLookupError:
-                pass
+    signal_owned(signal.SIGTERM)
+    end = time.monotonic() + 2
+    while time.monotonic() < end:
+        children = [process for process in PROCESSES if process.poll() is None]
+        if not children and not any(alive(identity) for identity in IDENTITIES):
+            break
+        time.sleep(0.01)
     for process in PROCESSES:
-        try:
-            process.wait(timeout=2)
-        except subprocess.TimeoutExpired:
+        if process.poll() is None:
             process.kill()
-            process.wait(timeout=2)
-    for identity in IDENTITIES:
-        if alive(identity):
-            try:
-                os.kill(int(identity.split(":")[0]), signal.SIGKILL)
-            except ProcessLookupError:
-                pass
+    signal_owned(signal.SIGKILL)
+    end = time.monotonic() + 2
+    for process in PROCESSES:
+        process.wait(timeout=max(0.01, end - time.monotonic()))
+    until(lambda: not any(alive(identity) for identity in IDENTITIES), timeout=2)
     for output in LOGS:
         output.close()
     ROOT.cleanup()
