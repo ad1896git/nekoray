@@ -20,12 +20,15 @@ jobs:
       GOTOOLCHAIN: local
       GOWORK: 'off'
       GOFLAGS: ''
+      GOENV: 'off'
       CGO_ENABLED: '1'
-      GOPATH: ${{ runner.temp }}/nk04/gopath
-      GOCACHE: ${{ runner.temp }}/nk04/gocache
-      GOMODCACHE: ${{ runner.temp }}/nk04/gomodcache
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Initialize isolated caches
+        run: |
+          echo "GOPATH=$RUNNER_TEMP/nk04/gopath" >> "$GITHUB_ENV"
+          echo "GOCACHE=$RUNNER_TEMP/nk04/gocache" >> "$GITHUB_ENV"
+          echo "GOMODCACHE=$RUNNER_TEMP/nk04/gomodcache" >> "$GITHUB_ENV"
       - uses: actions/setup-go@0a12ed9d6a96ab950c8f026ed9f722fe0da7ef32 # v5.0.2
         with:
           go-version: '1.22.12'
