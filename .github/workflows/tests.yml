@@ -289,6 +289,13 @@ jobs:
         run: |
           NKR_CORE_OUT_DIR="$RUNNER_TEMP/core" bash libs/build_core.sh
 
+      # Add test files only after build_core's clean-source verification.
+      - name: Test patched QUIC datagram bounds
+        run: |
+          cp tests/quic-go/connection_datagram_test.go ../quic-go/
+          cd ../quic-go
+          go test -count=1 -timeout=60s -v ./...
+
       - name: Check dependency manifests remain unchanged
         run: |
           git diff --exit-code -- \
@@ -349,6 +356,12 @@ jobs:
           fi
           grep -c -- '--- PASS: TestNK04TUICTCP' "$RUNNER_TEMP/race.log"
           exit "$status"
+
+      - name: Race test patched QUIC datagram bounds
+        run: |
+          cp tests/quic-go/connection_datagram_test.go ../quic-go/
+          cd ../quic-go
+          go test -race -count=1 -timeout=60s -v ./...
 
   external-interop:
     name: external-interop

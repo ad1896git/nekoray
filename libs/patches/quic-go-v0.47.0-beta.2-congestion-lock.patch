@@ -1,3 +1,16 @@
+diff --git a/connection.go b/connection.go
+index 370968b..3f5458e 100644
+--- a/connection.go
++++ b/connection.go
+@@ -2299,7 +2299,7 @@ func (s *connection) SendDatagram(p []byte) error {
+ 	f := &wire.DatagramFrame{DataLenPresent: true}
+ 	// The payload size estimate is conservative.
+ 	// Under many circumstances we could send a few more bytes.
+-	maxDataLen := utils.Max(
++	maxDataLen := utils.Min(
+ 		f.MaxDataLen(s.peerParams.MaxDatagramFrameSize, s.version),
+ 		protocol.ByteCount(s.maxPayloadSizeEstimate.Load()),
+ 	)
 diff --git a/internal/ackhandler/sent_packet_handler.go b/internal/ackhandler/sent_packet_handler.go
 index 028d92d5..0ac42042 100644
 --- a/internal/ackhandler/sent_packet_handler.go
