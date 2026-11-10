@@ -251,6 +251,9 @@ jobs:
     name: Debian fail-closed lifecycle (${{ matrix.os }})
     needs: publish
     runs-on: ${{ matrix.os }}
+    # Hosted /opt can fail the required ownership/write-permission check. Keep
+    # that production check and test apt/dpkg in a clean matching Ubuntu rootfs.
+    container: ubuntu:${{ matrix.release }}
     timeout-minutes: 20
     permissions:
       contents: read
@@ -258,8 +261,21 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-22.04, ubuntu-24.04]
+        include:
+          - os: ubuntu-22.04
+            release: '22.04'
+          - os: ubuntu-24.04
+            release: '24.04'
     steps:
+      - name: Prepare clean Ubuntu lifecycle environment
+        shell: bash
+        run: |
+          export DEBIAN_FRONTEND=noninteractive
+          apt-get update
+          apt-get install -y --no-install-recommends binutils ca-certificates curl git python3 sudo
+          . /etc/os-release
+          test "$VERSION_ID" = '${{ matrix.release }}'
+          stat -c 'lifecycle ancestor %u:%g %a %n' / /opt
       - uses: actions/checkout@v3
       - name: Download this commit's newly built package
         uses: actions/download-artifact@v4

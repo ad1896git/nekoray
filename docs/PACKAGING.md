@@ -128,7 +128,11 @@ repair commands) from returning to the maintainer scripts.
 
 The build matrix's `deb-upgrade` jobs run
 `bash tests/verify_debian_lifecycle.sh package.deb` on disposable Ubuntu 22.04
-and 24.04 runners. They use the same run's newly built package, verify the exact
+and 24.04 runners in matching clean Ubuntu containers. Hosted runner `/opt` can
+fail the required ancestor check; the container supplies trusted ancestors without
+weakening the
+production refusal or changing host directory ownership/modes. They use the same
+run's newly built package, verify the exact
 upstream 4.0.1 SHA256 before installation, require preinst refusal and a consistent
 old package, then test the documented purge/reinstall remedy. Fresh install,
 actual apt reinstall of a safe tree, safe reconfiguration, numeric ownership and
