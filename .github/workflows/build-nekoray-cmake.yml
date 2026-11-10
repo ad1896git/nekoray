@@ -34,7 +34,7 @@ jobs:
         uses: actions/cache@v3
         with:
           path: artifacts.tgz
-          key: CommonCache-${{ matrix.cross_os }}-${{ matrix.cross_arch }}-${{ hashFiles('libs/*.sh', 'go_status', '*.txt') }}
+          key: CommonCache-${{ matrix.cross_os }}-${{ matrix.cross_arch }}-${{ hashFiles('libs/*.sh', 'libs/collect_go_licenses.py', 'libs/licenses/**', 'go_status', '*.txt') }}
       - name: Install Golang
         if: steps.cache-common.outputs.cache-hit != 'true'
         uses: actions/setup-go@v3
@@ -189,6 +189,28 @@ jobs:
           bash ../libs/package_debian.sh ${{ github.event.inputs.tag }}
           mv nekoray.deb $version_standalone-debian-x64.deb
           sudo rm -rf nekoray
+      - name: Verify Debian installation and capability dependency
+        timeout-minutes: 10
+        run: |
+          python3 tests/test_package_debian.py
+          source libs/env_deploy.sh
+          docker run --rm -v "$PWD/deployment/$version_standalone-debian-x64.deb:/tmp/nekoray.deb:ro" debian:bookworm bash -ec '
+            export DEBIAN_FRONTEND=noninteractive
+            ! dpkg -s libcap2-bin 2>/dev/null | grep -qx "Status: install ok installed"
+            dpkg --unpack /tmp/nekoray.deb
+            if dpkg --configure nekoray > /tmp/missing-deps.log 2>&1; then
+              echo "Unexpected configuration success without dependencies" >&2; exit 1
+            fi
+            grep libcap2-bin /tmp/missing-deps.log
+            apt-get update
+            apt-get -y --no-install-recommends -f install
+            dpkg -s nekoray | grep -qx "Status: install ok installed"
+            getcap /opt/nekoray/nekobox_core | grep "cap_net_admin=ep"
+            test "$(stat -c %a /var/lib/dpkg/info/nekoray.postinst)" = 755
+            test -s /usr/share/doc/nekoray/LICENSE
+            test -s /usr/share/doc/nekoray/copyright
+            test -s /usr/share/doc/nekoray/licenses/go/inventory.json
+          '
       - name: Pack AppImage
         run: |
           source libs/env_deploy.sh

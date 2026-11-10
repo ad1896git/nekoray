@@ -1,0 +1,74 @@
+NekoBox / NekoRay source and third-party notices
+=============================================
+
+Project: https://github.com/ad1896git/nekoray
+License: GNU GPL version 3; full text accompanies this file as LICENSE
+(Debian: /usr/share/doc/nekoray/LICENSE).
+The matching source revision is recorded by the Deployment-<git SHA> CI
+artifact name and in the packaged core's `go version -m` build information.
+Obtain source with `git clone https://github.com/ad1896git/nekoray.git`,
+then `git checkout <git SHA>` and `git submodule update --init --recursive`.
+Build/packaging instructions and dependency inputs are in CMakeLists.txt,
+libs/build_deps_all.sh, libs/build_core.sh and libs/deploy_*.sh.
+This source contains the carried patch, also included under licenses/:
+libs/patches/quic-go-v0.47.0-beta.2-congestion-lock.patch.
+Apply it to quic-go commit 7101329b86a0c801e643fc8ccf730ec89be10663.
+
+Pinned core sources (unchanged by this packaging fix):
+https://github.com/ad1896git/sing-box/tree/2f78dbe673e241f2273f54701a981c25a9baf04e
+https://github.com/ad1896git/sing-quic/tree/201474163bfe177adc3d0e20fa935ecbbf2e74b1
+https://github.com/ad1896git/libneko/tree/45e350171b7b623860dd60ebce61a8e7c78de87e
+https://github.com/sagernet/quic-go/tree/7101329b86a0c801e643fc8ccf730ec89be10663
+Go module versions and their replacement paths are in licenses/go/inventory.json.
+Fetch versioned modules using `go mod download` with the checked-in go.mod/go.sum;
+libs/build_core.sh prepares the pinned sources and patch. Go runtime and standard
+library license/patent notices are in licenses/go/Go-LICENSE and Go-PATENTS.
+The libneko revision has no upstream license document. Its NOTICE states this
+explicitly; no license grant is inferred here. cloudflare-tls's source headers
+refer to a BSD-style LICENSE omitted from that module; common/cloudflare-go.txt
+is the actual LICENSE from its README's cloudflare/go commit
+34129e47042e214121b6bbff0ded4712debed18e. Copyright notices from dependency source
+headers are retained with the collected Go notices.
+
+GUI source inputs: protobuf v21.4 (BSD), yaml-cpp 0.7.0 (MIT), zxing-cpp
+2.0.0 (Apache-2.0), QHotkey submodule 52e25acf (BSD-3-Clause), Qv2ray (GPLv3),
+Nayuki QR generator (MIT), picoproto (Apache-2.0), and embedded Qt-derived code.
+Their original texts/notices appear in licenses/common. Exact upstream URLs
+are the section headings of the text collections; inventory.json in the source
+repository records selected upstream files. Source comment notices are copied
+verbatim from the actual vendored input, without assigning new licenses.
+
+Runtime inputs (platform collections include upstream third-party notices):
+Linux ZIP/AppImage: Qt 5.12.8 qtbase/qtsvg/qtx11extras; ICU 66.1; xcb-util
+0.4.0; fcitx-qt5 1.2.4. These correspond to the files from the runtime archive
+20230202-5.12.8-ubuntu20.04-linux64.zip named in libs/deploy_linux64.sh.
+Debian removes the bundled usr runtime and depends on system Qt packages;
+the Linux collection is retained conservatively as additional documentation.
+Windows: Qt 6.7.2 qtbase/qtsvg/qtimageformats, from the custom SDK named in
+libs/download_qtsdk_win.sh; OpenSSL 3.0.14 (Apache-2.0, identified by the shipped
+libcrypto DLL version string); DirectXShaderCompiler/LLVM dxcompiler.dll and
+dxil.dll (LLVM/NCSA and third-party notices, collected from the upstream
+v1.8.2405 source; this is the notice source, not an assertion of the DLL
+build version). AppImage includes its type2-runtime LICENSE (MIT) from
+the AppImage/type2-runtime repository, recorded in inventory.json.
+SDK build source/recipe:
+https://github.com/MatsuriDayo/nekoray_qt_runtime
+macOS: Qt 6.12.0 qtbase/qtsvg/qtimageformats from the official Qt SDK.
+Qt notices are conservative module-level collections and include notices for
+optional code, not a claim that every listed feature is linked. Qt source tags
+and original paths are recorded in every collection. Qt shared libraries may
+be replaced consistent with their licenses. System libraries/frameworks are
+not redistributed by this package.
+
+Resource inputs: geoip.dat from Loyalsoldier/v2ray-rules-dat, geosite.dat from
+v2fly/domain-list-community, geoip.db from SagerNet/sing-geoip and geosite.db
+from SagerNet/sing-geosite (see licenses/common/geodata-*). These generated
+databases may carry their upstream data-source attribution requirements;
+upstream README and license texts are included, including MaxMind attribution.
+Downloads currently follow upstream latest releases in libs/build_public_res.sh;
+notices do not assert a reproducible database snapshot.
+
+This inventory supplies license and source-access notices. It is not a legal
+opinion, a new relicensing grant, or a source-offer substitute. Preserve all
+accompanying notices when redistributing these packages and provide matching
+corresponding source for the binaries and any modifications.

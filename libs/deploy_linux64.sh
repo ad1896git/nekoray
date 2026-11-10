@@ -6,6 +6,8 @@ DEST=$DEPLOYMENT/linux64
 rm -rf $DEST
 mkdir -p $DEST
 
+bash "$SRC_ROOT/libs/package_licenses.sh" "$DEST" linux
+
 #### copy binary ####
 cp $BUILD/nekobox $DEST
 
