@@ -107,7 +107,7 @@ no code is sourced from the installed tree, and tests enforce identical
 preinst/postrm inspection bytes.
 
 An unsafe upgrade with blocked unwind leaves 4.0.1 Half-Installed
-(`Status: install ok half-installed`). Back up wanted local data, then run this
+(`Status: install reinstreq half-installed`). Back up wanted local data, then run this
 exact remedy from that state:
 
 ```sh

@@ -143,7 +143,7 @@ assert_half_installed() {
     local status
     status=$(dpkg-query -W -f='${Status}' nekoray)
     echo "POST_REFUSAL_DPKG_STATE: Status: $status"
-    test "$status" = 'install ok half-installed'
+    test "$status" = 'install reinstreq half-installed'
 }
 purge_refused_old() {
     # Exact documented command, from the actual failed-unwind state.
