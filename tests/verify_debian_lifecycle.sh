@@ -468,8 +468,9 @@ sudo -u '#1001' -- /usr/bin/rm -- /opt/attacker-cache/retained-core /opt/attacke
 sudo rmdir /opt/attacker-cache /home/nekoray-capability-test
 sudo dpkg --purge nekoray
 assert_purged
-# Remove root-owned /opt so the next exact legacy install recreates its owner.
-sudo rmdir /opt
+# dpkg may already remove empty /opt. Ensure absence before the next legacy
+# install so its archive recreates the original non-root owner.
+if [ -d /opt ]; then sudo rmdir /opt; fi
 
 # Exact upstream archive installed as-is before planting a replacement inode.
 sudo apt-get install -y "$baseline"
