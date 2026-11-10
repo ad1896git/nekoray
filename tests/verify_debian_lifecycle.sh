@@ -45,14 +45,28 @@ assert_installed() {
 }
 
 assert_purged() {
-    local path status
-    for path in /opt/nekoray /usr/share/doc/nekoray /usr/share/applications/nekoray.desktop \
+    local path status kind=${1:-new}
+    for path in /opt/nekoray /usr/share/doc/nekoray \
         /var/lib/dpkg/info/nekoray.preinst /var/lib/dpkg/info/nekoray.postinst /var/lib/dpkg/info/nekoray.postrm; do
         test ! -e "$path" && test ! -L "$path"
     done
     status=$(dpkg-query -W -f='${db:Status-Status}' nekoray 2>/dev/null || true)
     test -z "$status" || test "$status" = not-installed
-    echo 'purge: no packaged prefix, launcher, documentation or maintainer scripts PASS'
+    if [ "$kind" = old ]; then
+        # 4.0.1 creates this file in postinst without tracking it in dpkg.
+        test -s /usr/share/applications/nekoray.desktop
+        sha256sum /usr/share/applications/nekoray.desktop > "$work/launcher-after"
+        cmp "$work/launcher-before" "$work/launcher-after"
+        if dpkg-query -S /usr/share/applications/nekoray.desktop; then
+            echo 'Old launcher unexpectedly tracked after old package purge' >&2
+            return 1
+        fi
+        echo 'old purge: package absent, untracked desktop launcher preserved PASS'
+    else
+        test ! -e /usr/share/applications/nekoray.desktop
+        test ! -L /usr/share/applications/nekoray.desktop
+        echo 'purge: no packaged prefix, launcher, documentation or maintainer scripts PASS'
+    fi
 }
 
 # Capability checks must fail on command errors, not treat failed output as empty.
@@ -163,7 +177,7 @@ for kind in symlink file; do
     assert_sentinel
     sudo unlink /opt
 done
-sudo mkdir -m 0755 /opt
+# Leave /opt absent so the real 4.0.1 archive recreates its original ownership.
 
 # Inspect authenticated old removal entry points BEFORE testing the remedy.
 dpkg-deb -e "$baseline" "$work/old-control"
@@ -192,13 +206,14 @@ assert_half_installed() {
 }
 recover_refused_old() {
     local label=$1 quarantine_uid
-    quarantine_uid=$(bash -e -c "$(recovery_command prepare)")
+    eval "$(recovery_command prepare)"
     test "$quarantine_uid" = 1001
     export quarantine_uid
     test "$(stat -c %u:%g:%a /opt)" = 0:0:755
     test ! -e /opt/nekoray && test ! -L /opt/nekoray
     test -e /opt/nekoray.untrusted || test -L /opt/nekoray.untrusted
     assert_sentinel
+    sha256sum /usr/share/applications/nekoray.desktop > "$work/launcher-before"
     # No old prerm/postrm exists. Trace dpkg's real script routing as well as
     # checking the old-postinst wrapper (where present) remains empty.
     sudo strace -f -s 512 -e trace=execve -o "$work/$label-remove-exec.log" \
@@ -209,7 +224,7 @@ recover_refused_old() {
         return 1
     fi
     echo "OLD_REMOVAL_SCRIPTS: no nekoray maintainer scripts executed ($label)"
-    assert_purged
+    assert_purged old
     test "$(stat -c %u:%g:%a /opt)" = 0:0:755
     assert_sentinel
     bash -e -c "$(recovery_command install)"
@@ -226,6 +241,7 @@ sudo apt-get install -y "$baseline"
 test "$(dpkg-query -W -f='${Status}' nekoray)" = 'install ok installed'
 stat -c 'baseline owner=%u:%g mode=%a %n' /opt /opt/nekoray
 test "$(stat -c %u:%g /opt/nekoray)" = 1001:127
+test "$(stat -c %u:%g /opt)" = 1001:127
 plant_core
 assert_refused upgrade-from-401
 assert_half_installed 4.0.1
@@ -274,6 +290,9 @@ for layout in replacement-core nested-symlink prefix-symlink nonroot-opt; do
         # Preserve the moved test payload for unprivileged cleanup too.
         sudo -u '#1001' -- rm -rf -- "$saved_prefix"
         assert_no_cap "$work/outside-prefix/nekobox_core"
+    elif [ "$layout" = nonroot-opt ]; then
+        test "$(stat -c %u:%g /opt)" = 1001:127
+        echo "ADVERSARIAL_OPT_OWNER: 1001:127"
     fi
     assert_refused "traced-401-$layout"
     assert_half_installed 4.0.1
