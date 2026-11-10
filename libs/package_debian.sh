@@ -16,6 +16,7 @@ mkdir -p nekoray/usr/share/doc/nekoray
 mv nekoray/opt/nekoray/LICENSE nekoray/usr/share/doc/nekoray/LICENSE
 mv nekoray/opt/nekoray/THIRD-PARTY-NOTICES.txt nekoray/usr/share/doc/nekoray/copyright
 mv nekoray/opt/nekoray/licenses nekoray/usr/share/doc/nekoray/licenses
+python3 "$repo/libs/validate_licenses.py" debian nekoray linux
 
 # basic
 cat >nekoray/DEBIAN/control <<-EOF

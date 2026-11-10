@@ -19,6 +19,9 @@ codesign --verify --deep --strict "$app"
 stage=$(mktemp -d "${TMPDIR:-/tmp}/nekobox-dmg.XXXXXXXX")
 trap 'rm -rf "$stage"' EXIT
 ditto "$app" "$stage/$(basename "$app")"
+staged_app="$stage/$(basename "$app")"
+python3 "$repo/libs/validate_licenses.py" native "$staged_app/Contents/Resources" macos
+python3 "$repo/libs/validate_licenses.py" go "$staged_app/Contents/Resources" macos --binary "$staged_app/Contents/MacOS/nekobox_core"
 ln -s /Applications "$stage/Applications"
 hdiutil create -volname "NekoBox-$(cat "$repo/nekoray_version.txt")" \
     -srcfolder "$stage" -format UDZO "$output"

@@ -56,6 +56,10 @@ metadata without executing it: its exact dependency names, replacement sources,
 versions and target OS must match the inventory. Every inventoried legal and
 generated source notice, Go-LICENSE, Go-PATENTS, project LICENSE and native notice
 must exist and be nonempty. Packaging therefore requires Python 3 and Go.
+Notice trees may contain only regular files and directories: all symlinks
+(including in-tree and dangling links) and special files are rejected, even if
+not listed in an inventory. Each format checks the final copied/moved notice
+tree as well as its input; Debian checks the relocated documentation layout.
 
 AUTHORS, PATENTS, COPYRIGHT and NOTICE supplement a module's LICENSE/COPYING;
 they cannot alone satisfy the collector. The two documented exceptions are tied

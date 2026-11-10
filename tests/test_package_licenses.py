@@ -8,6 +8,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import zipfile
 
 from license_fixture import REPO, fixture, run
 sys.path.insert(0, str(REPO / 'libs'))
@@ -51,6 +52,55 @@ with tempfile.TemporaryDirectory(prefix='notice-tests-', dir=REPO / 'build-core'
         # Positive preflight for precisely the tree passed to this entry point.
         run(['python3', str(REPO / 'libs/validate_licenses.py'), 'package', str(payload), platform])
         print('PASS positive preflight:', label, flush=True)
+        # All links are forbidden, even when a target exists inside the tree.
+        # Directory links exercise parent components; unlisted entries must also fail.
+        notice = payload / 'licenses/go/example.com/notice-test/LICENSE'
+        original_notice = notice.read_bytes()
+        external = root / 'external-license.txt'
+        external.write_bytes(original_notice)
+        defects = ['in-tree symlink', 'external symlink', 'dangling symlink']
+        if hasattr(os, 'mkfifo'):
+            defects.append('fifo')
+        for defect in defects:
+            notice.unlink()
+            try:
+                if defect == 'fifo':
+                    os.mkfifo(notice)
+                else:
+                    target = 'AUTHORS' if defect == 'in-tree symlink' else str(external) if defect == 'external symlink' else 'absent-license'
+                    notice.symlink_to(target)
+                result = subprocess.run(command, cwd=root, capture_output=True, text=True, timeout=30)
+                assert result.returncode and 'Notice validation failed:' in result.stderr and ('symlink' in result.stderr or 'regular file' in result.stderr), (label, defect, result)
+                print('PASS', label, 'rejects', defect, '->', result.stderr.strip(), flush=True)
+            finally:
+                notice.unlink()
+                notice.write_bytes(original_notice)
+        module = notice.parent
+        saved_module = module.with_name('saved-notice-test')
+        for target_kind in ('in-tree', 'external', 'dangling'):
+            module.rename(saved_module)
+            external_dir = root / 'external-notices'
+            if target_kind == 'external':
+                shutil.copytree(saved_module, external_dir)
+            try:
+                target = saved_module.name if target_kind == 'in-tree' else str(external_dir) if target_kind == 'external' else 'absent-notices'
+                module.symlink_to(target, target_is_directory=True)
+                result = subprocess.run(command, cwd=root, capture_output=True, text=True, timeout=30)
+                assert result.returncode and 'Notice validation failed:' in result.stderr and 'symlink' in result.stderr, (label, target_kind, result)
+                print('PASS', label, 'rejects', target_kind, 'directory symlink', flush=True)
+            finally:
+                module.unlink()
+                saved_module.rename(module)
+                if external_dir.exists():
+                    shutil.rmtree(external_dir)
+        extra = payload / 'licenses/unlisted-link'
+        extra.symlink_to(external)
+        try:
+            result = subprocess.run(command, cwd=root, capture_output=True, text=True, timeout=30)
+            assert result.returncode and 'Notice validation failed:' in result.stderr and 'unlisted-link' in result.stderr, result
+            print('PASS', label, 'rejects unlisted symlink', flush=True)
+        finally:
+            extra.unlink()
         paths = [payload / 'licenses/go/example.com/notice-test/LICENSE',
                  payload / 'licenses/go/example.com/notice-test/SOURCE-NOTICES.txt',
                  payload / 'licenses/go/Go-LICENSE', payload / 'licenses/go/Go-PATENTS',
@@ -100,6 +150,47 @@ with tempfile.TemporaryDirectory(prefix='notice-tests-', dir=REPO / 'build-core'
         print('PASS', label, 'rejects wrong compiled-module version', flush=True)
 
     assert not any((root / name).exists() for name in ('linux.zip', 'windows.zip', 'fixture.dmg', 'nekoray', 'nekobox.AppDir'))
+    # Inject only after a real copy/move to prove the final staging gate runs.
+    # The original source is complete, so source-only validation cannot pass this test.
+    def staged_rejection(label, command, platform, tool, trigger, staged_notice):
+        case = root / ('staging-' + label.replace('/', '-').replace(' ', '-'))
+        case.mkdir()
+        payload = payloads[platform]
+        shutil.copytree(payload, case / payload.name)
+        shims = case / 'tools'
+        shims.mkdir()
+        shim = shims / tool
+        shim.write_text('#!' + sys.executable + '\n' +
+                        'import pathlib, subprocess, sys\n' +
+                        'subprocess.run([' + repr(shutil.which(tool)) + '] + sys.argv[1:], check=True)\n' +
+                        'if ' + trigger + ':\n' +
+                        '    notice = pathlib.Path(' + staged_notice + ')\n' +
+                        '    notice.unlink()\n' +
+                        '    notice.symlink_to(' + repr(str(root / 'external-license.txt')) + ')\n')
+        shim.chmod(0o755)
+        env = dict(os.environ, PATH=str(shims) + os.pathsep + os.environ['PATH'])
+        result = subprocess.run(command, cwd=case, env=env, capture_output=True, text=True, timeout=180)
+        assert result.returncode and 'Notice validation failed:' in result.stderr and 'symlink' in result.stderr, (label, result)
+        assert not any(case.glob('*.zip')) and not any(case.glob('*.deb')) and not any(case.glob('*.AppImage'))
+        print('PASS', label, 'rejects symlink injected after final staging ->', result.stderr.strip(), flush=True)
+
+    for label in ('linux zip', 'windows zip', 'deb', 'AppImage'):
+        platform = 'windows' if label.startswith('windows') else 'linux'
+        tool = 'cp' if label == 'AppImage' else 'mv'
+        destination = 'nekobox.AppDir' if label == 'AppImage' else 'nekoray/usr/share/doc/nekoray/licenses' if label == 'deb' else 'nekoray'
+        suffix = '/go/example.com/notice-test/LICENSE' if label == 'deb' else '/licenses/go/example.com/notice-test/LICENSE'
+        staged_rejection(label, commands[label], platform, tool, 'sys.argv[-1] == ' + repr(destination), repr(destination + suffix))
+
+    # Exercise real ZIP creation with complete fixtures after all rejection cases.
+    for platform in ('linux', 'windows'):
+        case = root / ('positive-' + platform)
+        case.mkdir()
+        shutil.copytree(payloads[platform], case / payloads[platform].name)
+        output = case / 'complete.zip'
+        run(['bash', str(REPO / 'libs/package_zip.sh'), platform, str(output)], cwd=case, capture_output=True)
+        with zipfile.ZipFile(output) as archive:
+            assert archive.read('nekoray/licenses/go/example.com/notice-test/LICENSE')
+        print('PASS real complete ZIP:', platform, flush=True)
     # Source-side native manifest: remove a listed Qt notice in isolated script copies.
     isolated = root / 'isolated'
     shutil.copytree(REPO / 'libs', isolated / 'libs', ignore=shutil.ignore_patterns('deps', '__pycache__'))
@@ -132,5 +223,8 @@ with tempfile.TemporaryDirectory(prefix='notice-tests-', dir=REPO / 'build-core'
         finally:
             run(['hdiutil', 'detach', str(mount)])
         print('PASS real macOS fixture app signature and read-only DMG notices', flush=True)
+        staged_rejection('macOS app/DMG', commands['macOS app/DMG'], 'macos', 'ditto',
+                         'pathlib.Path(sys.argv[1]).name == "Fixture.app"',
+                         'sys.argv[-1] + "/Contents/Resources/licenses/go/example.com/notice-test/LICENSE"')
 
 print('PASS all five packaging paths reject incomplete collections; complete sets pass', flush=True)

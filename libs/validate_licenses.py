@@ -4,6 +4,7 @@ import argparse
 import json
 from pathlib import Path, PurePosixPath
 import re
+import stat
 import subprocess
 import sys
 
@@ -24,9 +25,28 @@ LIBNEKO_NOTICE = (
 
 
 def require(path):
-    if not path.is_file() or not path.stat().st_size:
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        raise ValueError('Missing or empty required notice: ' + str(path)) from None
+    if not stat.S_ISREG(info.st_mode):
+        raise ValueError('Required notice must be a regular file (no symlinks): ' + str(path))
+    if not info.st_size:
         raise ValueError('Missing or empty required notice: ' + str(path))
     return path
+
+
+def validate_tree(root):
+    """Inspect every entry without following links, including unlisted notices."""
+    mode = root.lstat().st_mode
+    if not stat.S_ISDIR(mode):
+        raise ValueError('Notice tree must be a directory (no symlinks): ' + str(root))
+    for path in sorted(root.iterdir()):
+        mode = path.lstat().st_mode
+        if stat.S_ISDIR(mode):
+            validate_tree(path)
+        elif not stat.S_ISREG(mode):
+            raise ValueError('Notice tree contains a symlink or special file: ' + str(path))
 
 
 def relative(root, name):
@@ -58,7 +78,8 @@ def native_documents(platform):
     return entries, sorted(documents)
 
 
-def validate_native(root, platform, source=False):
+def validate_native(root, platform, source=False, directions='THIRD-PARTY-NOTICES.txt'):
+    validate_tree(root if source else root / 'licenses')
     entries, documents = native_documents(platform)
     if source:
         require(REPO / 'LICENSE')
@@ -67,7 +88,7 @@ def validate_native(root, platform, source=False):
         licenses = root
     else:
         require(root / 'LICENSE')
-        require(root / 'THIRD-PARTY-NOTICES.txt')
+        require(root / directions)
         licenses = root / 'licenses'
         if read_json(licenses / 'runtime-inventory.json') != entries:
             raise ValueError('Runtime notice inventory differs from the source manifest')
@@ -103,6 +124,8 @@ def compiled_modules(binary, platform):
 
 
 def validate_go(root, binary, platform):
+    # Check licenses itself as well as go, so a linked parent cannot bypass this.
+    validate_tree(root.parent)
     modules = compiled_modules(binary, platform)
     inventory = read_json(root / 'inventory.json')
     if not isinstance(inventory, list) or not inventory:
@@ -138,7 +161,7 @@ def validate_package(root, platform):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('mode', choices=('native-source', 'native', 'go', 'package'))
+    parser.add_argument('mode', choices=('native-source', 'native', 'go', 'package', 'debian'))
     parser.add_argument('root', type=Path)
     parser.add_argument('platform', choices=('linux', 'windows', 'macos'))
     parser.add_argument('--binary', type=Path)
@@ -148,6 +171,10 @@ def main():
             validate_native(args.root, args.platform, args.mode == 'native-source')
         elif args.mode == 'go':
             validate_go(args.root / 'licenses/go', args.binary or args.root / 'nekobox_core', args.platform)
+        elif args.mode == 'debian':
+            docs = args.root / 'usr/share/doc/nekoray'
+            validate_native(docs, 'linux', directions='copyright')
+            validate_go(docs / 'licenses/go', args.root / 'opt/nekoray/nekobox_core', 'linux')
         else:
             validate_package(args.root, args.platform)
     except (ValueError, KeyError, TypeError, OSError, subprocess.SubprocessError) as error:

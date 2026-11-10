@@ -11,5 +11,6 @@ case "$platform" in
 esac
 python3 "$repo/libs/validate_licenses.py" package "$payload" "$platform"
 mv "$payload" nekoray
+python3 "$repo/libs/validate_licenses.py" package nekoray "$platform"
 zip -r "$output" nekoray
 rm -rf nekoray
