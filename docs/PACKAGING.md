@@ -40,7 +40,7 @@ setup failure before returning nonzero. This follows Debian policy sections
 6.1/6.4: https://www.debian.org/doc/debian-policy/ch-maintainerscripts.html
 A failed setup must not be represented as configured. The command is
 idempotent, so the administrator can fix the dependency/filesystem issue and
-retry `dpkg --configure nekoray`. Abort recovery actions require no setup.
+retry `dpkg --configure nekoray`. Postinst abort recovery actions require no capability setup; postrm unwind actions inspect safety as described below.
 
 `python3 tests/test_package_debian.py` checks generated script handling with
 harmless command stubs. The release workflow additionally unpacks the actual
@@ -92,17 +92,39 @@ files, special files and nested filesystem boundaries are refused. Inspection
 errors also fail closed. Postinst repeats this read-only assertion before the
 unchanged capability setup, including on `dpkg-reconfigure`.
 
-There is no ownership/mode repair in either script. The upstream 4.0.1 Debian
-package leaves a non-root-owned `/opt/nekoray`, so upgrading it is deliberately
-refused with `nekoray: refusing unsafe pre-existing install:` and an English
-remedy. Run `sudo apt purge nekoray` (or `sudo dpkg --purge nekoray`), then
-reinstall the new Debian package. Alternatively, have an administrator inspect
-and remove `/opt/nekoray` before retrying. Back up any wanted local data before
-purging/removal. Do not make a user-controlled tree pass by recursively changing
-its ownership as root. CI verifies that the refused 4.0.1 upgrade leaves version
-4.0.1 in `install ok installed` state with an empty dpkg audit. Its upstream
-untracked desktop launcher can remain after purge; the new package adopts it as
-a tracked payload file and removes it on its own removal/purge.
+There is no ownership/mode repair in any maintainer script. The upstream 4.0.1
+Debian archive assigns `/opt` and `/opt/nekoray` UID/GID 1001:127, so upgrading
+an unsafe install is deliberately refused with
+`nekoray: refusing unsafe pre-existing install:`. A failed preinst causes dpkg
+to call the new postrm during error unwind. For `abort-upgrade`, `abort-install`
+and `failed-upgrade`, that postrm performs the same read-only inspection as
+preinst (including ancestors, absent-prefix handling and inspection errors).
+It returns nonzero on an unsafe tree, preventing dpkg from continuing into old
+maintainer scripts. This matters because 4.0.1's postinst ignores its action and
+unconditionally runs `setcap` on the old, user-controlled core path. A safe tree
+still returns zero and unwinds normally. The guard is embedded in each script;
+no code is sourced from the installed tree, and tests enforce identical
+preinst/postrm inspection bytes.
+
+An unsafe upgrade with blocked unwind leaves 4.0.1 Half-Installed
+(`Status: install ok half-installed`). Back up wanted local data, then run this
+exact remedy from that state:
+
+```sh
+sudo dpkg --purge nekoray
+```
+
+Then reinstall the new Debian package. The exact authenticated 4.0.1 archive has
+neither a prerm nor a postrm: its purge has no old removal script that could
+perform capability setup or recursive deletion through a planted symlink. CI
+verifies the command succeeds from the actual failed-unwind state before
+installing the new package. If `/opt` itself remains unsafe after purge, an
+administrator must inspect it before retrying; removing just `/opt/nekoray`
+does not fix unsafe ancestor metadata. Do not make a user-controlled tree pass
+by recursively changing its ownership as root. The old untracked desktop
+launcher can remain after purge; the new package adopts it as a tracked payload
+file and removes it on its own removal/purge. Ordinary postrm remove/purge
+actions remain available without a prefix guard.
 
 The checks only read metadata; racing the checks cannot redirect a privileged
 repair because no repair commands exist. A non-root user cannot replace an
@@ -117,9 +139,9 @@ these checks establish ownership/type/write safety, not an exact file inventory
 or file-content authenticity. No GUI, TUN operation or local data migration is
 performed by these checks.
 
-The archive validator requires exact root-owned executable preinst/postinst
-contents matching `libs/debian/`, rejects stale/omitted scripts and forbidden
-repair commands, and rejects unsafe payload ownership/modes. The Python tests
+The archive validator requires exact root-owned executable preinst/postinst/postrm
+contents matching `libs/debian/`, rejects stale/omitted scripts, extra prerm/config entry points and forbidden
+repair commands; postrm must include the full read-only guard and unwind dispatch, and rejects unsafe payload ownership/modes. The Python tests
 use native traversal/mode/link checks in a translated scratch tree, simulate
 numeric root ownership/device boundaries on unprivileged hosts, and verify
 refusal, command failures, a synchronized path replacement and outside sentinel
@@ -133,12 +155,19 @@ fail the required ancestor check; the container supplies trusted ancestors witho
 weakening the
 production refusal or changing host directory ownership/modes. They use the same
 run's newly built package, verify the exact
-upstream 4.0.1 SHA256 before installation, require preinst refusal and a consistent
-old package, then test the documented purge/reinstall remedy. Fresh install,
-actual apt reinstall of a safe tree, safe reconfiguration, numeric ownership and
-modes of every prefix entry, capability, dpkg-tracked launcher, removal/purge,
-and an attacker-owned nested directory with a symlink to an outside sentinel
-are asserted. Package-manager bookkeeping and upstream abort recovery still
-run during refusal; the sentinel, old core/launcher bytes and prefix metadata
-are checked, not every filesystem write made by apt/dpkg. This script changes
-system packages; run it only in a disposable test environment.
+upstream 4.0.1 SHA256 before installation, require preinst and postrm refusal,
+assert the exact Half-Installed state, then execute the documented dpkg
+purge/reinstall remedy. Replacement native core bytes have no capability before
+or after refusal. A test-only repack of 4.0.1 traces its original postinst with a
+configure positive control and proves it is never called during unsafe unwind.
+It also tests an attacker-owned nested directory with a planted symlink, and a
+prefix symlink to an outside native-file sentinel. The sentinel's owner, mode,
+bytes and all xattrs (including security.capability and a planted user xattr)
+must remain unchanged. Fixtures are static; test-only cleanup restores the
+known prefix before purging the prefix-symlink case. No test hook is shipped.
+Fresh install, actual apt reinstall of a safe tree, safe reconfiguration,
+forced failed-upgrade unwind over a safe tree (postrm exit zero), numeric
+ownership and modes of every prefix entry, capability, dpkg-tracked launcher,
+and removal/purge are asserted. Package-manager bookkeeping still runs during
+refusal; these tests do not claim that apt/dpkg makes no writes anywhere.
+This script changes system packages; run it only in a disposable test environment.

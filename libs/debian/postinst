@@ -9,7 +9,7 @@ esac
 
 refuse_unsafe() {
     echo "nekoray: refusing unsafe pre-existing install: $1" >&2
-    echo "Run 'sudo apt purge nekoray' (or 'sudo dpkg --purge nekoray'), then reinstall; or have an administrator inspect and remove /opt/nekoray." >&2
+    echo "Unsafe upgrade recovery is blocked; dpkg may leave nekoray Half-Installed. Run 'sudo dpkg --purge nekoray', then reinstall. If /opt itself remains unsafe, have an administrator inspect it before retrying." >&2
     exit 1
 }
 

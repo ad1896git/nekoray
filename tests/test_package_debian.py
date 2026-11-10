@@ -42,18 +42,21 @@ with tempfile.TemporaryDirectory(dir=repo / 'build-core') as tmp:
     prefix = opt / 'nekoray'
     marker = root / 'setcap-called'
     mutation = root / 'forbidden-mutation'
-    for name in ('preinst', 'postinst'):
+    assert (control / 'postrm').read_text().split('refuse_unsafe() {', 1)[1] == (control / 'preinst').read_text().split('refuse_unsafe() {', 1)[1]
+    for name in ('preinst', 'postinst', 'postrm'):
         script = control / name
         assert stat.S_IMODE(script.stat().st_mode) == 0o755
         text = script.read_text()
         assert text.startswith('#!/bin/sh\nset -e\n')
-        forbidden = {'chown', 'chmod', 'rm', 'mv'} | ({'setcap'} if name == 'preinst' else set())
+        forbidden = {'chown', 'chmod', 'rm', 'mv'} | ({'setcap'} if name != 'postinst' else set())
         assert not any(Path(t).name in forbidden for t in shlex.split(text, comments=True))
         # Translate only the test copies, including both protected ancestors.
         text = text.replace('/opt/nekoray', '__PREFIX__').replace('/opt', str(opt))
         text = text.replace('for ancestor in / ', 'for ancestor in ' + str(sandbox) + ' ')
         script.write_text(text.replace('__PREFIX__', str(prefix)))
-    preinst, postinst = control / 'preinst', control / 'postinst'
+    preinst, postinst, postrm = (control / name for name in ('preinst', 'postinst', 'postrm'))
+    inspections = ((preinst, 'upgrade'), (postinst, 'configure'),
+                   (postrm, 'abort-upgrade'), (postrm, 'abort-install'), (postrm, 'failed-upgrade'))
 
     # Native find supplies traversal, lstat, permission, link and type checks.
     # Map root ownership to the caller for unprivileged macOS/Linux fixtures;
@@ -98,20 +101,22 @@ os.execv(''' + repr(shutil.which('find')) + ''', ['find'] + args)
     def refused(script, action, extra=None):
         result = run(script, action, extra)
         assert result.returncode != 0 and 'refusing unsafe pre-existing install' in result.stderr, result
-        assert 'sudo apt purge nekoray' in result.stderr and 'sudo dpkg --purge nekoray' in result.stderr
+        assert 'Half-Installed' in result.stderr and 'sudo dpkg --purge nekoray' in result.stderr
         assert not marker.exists(), result
 
     # Absent prefix and absent /opt are both normal fresh installs.
     assert run(preinst, 'install').returncode == 0
+    assert run(postrm, 'abort-install').returncode == 0
     opt.rmdir()
     assert run(preinst, 'install').returncode == 0
     opt.mkdir()
     prefix.mkdir()
     core = prefix / 'nekobox_core'
     core.write_text('fixture')
-    for script, action in ((preinst, 'upgrade'), (postinst, 'configure')):
+    for script, action in inspections:
         for _ in range(2):
             assert run(script, action).returncode == 0
+            assert marker.exists() == (script == postinst)
         for key in ('NONROOT_UID_PATH', 'NONROOT_GID_PATH'):
             for path in (sandbox, opt, prefix, core):
                 refused(script, action, {key: str(path)})
@@ -133,7 +138,7 @@ os.execv(''' + repr(shutil.which('find')) + ''', ['find'] + args)
     sentinel.write_text('unchanged')
     sentinel.chmod(0o666)
     before = sentinel.stat()
-    for script, action in ((preinst, 'install'), (preinst, 'upgrade'), (postinst, 'configure')):
+    for script, action in ((preinst, 'install'),) + inspections:
         core.unlink()
         prefix.rmdir()
         for kind in ('symlink-root', 'file-root', 'symlink-child', 'hardlink-child', 'fifo-child'):
@@ -177,8 +182,8 @@ os.execv(''' + repr(shutil.which('find')) + ''', ['find'] + args)
     # Nested mount boundary (simulated device only) is rejected.
     original_stat = (tools / 'stat').read_text()
     stub('stat', 'if [ "$#" -eq 4 ]; then echo 1; else echo 2; fi')
-    refused(preinst, 'upgrade')
-    refused(postinst, 'configure')
+    for script, action in inspections:
+        refused(script, action)
     (tools / 'stat').write_text(original_stat)
 
     # Capability setup and desktop-refresh errors retain PR #53 behavior.
@@ -198,11 +203,17 @@ os.execv(''' + repr(shutil.which('find')) + ''', ['find'] + args)
             assert run(script, action).returncode == 0
         assert run(script, 'unexpected').returncode != 0
         assert run(script, '').returncode != 0
-    postrm = control / 'postrm'
+    # Removal must remain available even when the installed tree is unsafe.
+    prefix.chmod(0o777)
     assert stat.S_IMODE(postrm.stat().st_mode) == 0o755
     stub('update-desktop-database', 'exit 0')
-    for action in ('remove', 'purge', 'upgrade', 'failed-upgrade', 'abort-install', 'abort-upgrade', 'disappear'):
+    for action in ('remove', 'purge', 'upgrade', 'disappear'):
         assert run(postrm, action).returncode == 0
+    prefix.chmod(0o755)
+    for action in ('abort-install', 'abort-upgrade', 'failed-upgrade'):
+        assert run(postrm, action).returncode == 0
+    assert run(postrm, '').returncode != 0
+    assert run(postrm, 'unexpected').returncode != 0
     stub('update-desktop-database', 'exit 1')
     for action in ('remove', 'purge'):
         assert run(postrm, action).returncode == 1

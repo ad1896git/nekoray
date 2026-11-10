@@ -14,11 +14,18 @@ def validate_script(name, content):
     # Defense against reintroducing pathname-based repairs in a reviewed
     # template. Exact byte comparison below also rejects stale packaged copies.
     forbidden = {'chown', 'chmod', 'rm', 'mv'}
-    if name == 'preinst':
+    if name != 'postinst':
         forbidden.add('setcap')
     tokens = shlex.split(content.decode('utf-8'), comments=True)
     if any(Path(token).name in forbidden for token in tokens):
         raise ValueError(f'{name}: forbidden privileged mutation command')
+
+    if name == 'postrm':
+        guard = (REPO / 'libs/debian/preinst').read_bytes().split(b'refuse_unsafe() {', 1)[1]
+        if not content.endswith(b'refuse_unsafe() {' + guard):
+            raise ValueError('postrm: missing shared read-only unwind guard')
+        if b'abort-install|abort-upgrade|failed-upgrade) ;;' not in content:
+            raise ValueError('postrm: missing fail-closed unwind dispatch')
 
 
 def validate(package):
@@ -44,7 +51,11 @@ def validate(package):
         raise ValueError('Expected exactly one supported control.tar member')
     metadata = subprocess.check_output(['ar', 'p', str(package), control[0]], timeout=30)
     with tarfile.open(fileobj=io.BytesIO(metadata), mode='r:*') as archive:
-        for name in ('preinst', 'postinst'):
+        # Reject extra executable maintainer entry points as well as missing guards.
+        reviewed = ('preinst', 'postinst', 'postrm')
+        if any(e.name.removeprefix('./') in ('prerm', 'config') for e in archive):
+            raise ValueError('Unexpected unreviewed maintainer script')
+        for name in reviewed:
             scripts = [entry for entry in archive.getmembers() if entry.name.removeprefix('./') == name]
             if len(scripts) != 1:
                 raise ValueError(f'Expected exactly one {name}')

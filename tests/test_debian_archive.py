@@ -20,14 +20,21 @@ def write_deb(path, uid=0, gid=0, mode=0o755, empty=False, script=None):
             archive.addfile(entry)
     control = io.BytesIO()
     with tarfile.open(fileobj=control, mode='w:xz') as archive:
-        for name in ('preinst', 'postinst'):
+        for name in ('preinst', 'postinst', 'postrm', 'prerm'):
+            if name == 'prerm' and script != 'extra-prerm':
+                continue
             if script == 'missing-' + name:
                 continue
-            content = (REPO / 'libs/debian' / name).read_bytes()
+            content = b'#!/bin/sh\nexit 0\n' if name == 'prerm' else (REPO / 'libs/debian' / name).read_bytes()
             if script == name:
                 content = b'#!/bin/sh\nexit 0\n'
             if script == 'mutation-' + name:
                 content += b'\nchown -R 0:0 /opt/nekoray\n'
+            if script == 'setcap-' + name:
+                content += b'\nsetcap cap_net_admin=ep /opt/nekoray/nekobox_core\n'
+            if name == 'postrm' and script == 'unguarded-postrm':
+                content = content.replace(b'abort-install|abort-upgrade|failed-upgrade) ;;',
+                                          b'abort-install|abort-upgrade|failed-upgrade) exit 0 ;;')
             entry = tarfile.TarInfo('./' + name)
             entry.uid = entry.gid = 0
             entry.mode = 0o755
@@ -53,6 +60,13 @@ def main():
                  ({'mode': 0o775}, False, 'unsafe mode'),
                  ({'script': 'missing-preinst'}, False, 'Expected exactly one preinst'),
                  ({'script': 'missing-postinst'}, False, 'Expected exactly one postinst'),
+                 ({'script': 'missing-postrm'}, False, 'Expected exactly one postrm'),
+                 ({'script': 'postrm'}, False, 'postrm: missing shared read-only unwind guard'),
+                 ({'script': 'unguarded-postrm'}, False, 'postrm: missing fail-closed unwind dispatch'),
+                 ({'script': 'mutation-postrm'}, False, 'forbidden privileged mutation'),
+                 ({'script': 'setcap-postrm'}, False, 'forbidden privileged mutation'),
+                 ({'script': 'setcap-preinst'}, False, 'forbidden privileged mutation'),
+                 ({'script': 'extra-prerm'}, False, 'Unexpected unreviewed maintainer script'),
                  ({'script': 'preinst'}, False, 'preinst: does not match'),
                  ({'script': 'postinst'}, False, 'postinst: does not match'),
                  ({'script': 'mutation-preinst'}, False, 'forbidden privileged mutation'),

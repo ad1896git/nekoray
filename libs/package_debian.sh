@@ -43,20 +43,7 @@ EOF
 cp "$repo/libs/debian/preinst" nekoray/DEBIAN/preinst
 cp "$repo/libs/debian/postinst" nekoray/DEBIAN/postinst
 
-cat >nekoray/DEBIAN/postrm <<'EOF'
-#!/bin/sh
-set -e
-
-case "$1" in
-    remove|purge)
-        if command -v update-desktop-database >/dev/null 2>&1; then
-            update-desktop-database
-        fi
-        ;;
-    upgrade|failed-upgrade|abort-install|abort-upgrade|disappear) ;;
-    *) echo "nekoray postrm: unsupported argument: $1" >&2; exit 1 ;;
-esac
-EOF
+cp "$repo/libs/debian/postrm" nekoray/DEBIAN/postrm
 
 chmod 0755 nekoray/DEBIAN/preinst nekoray/DEBIAN/postinst nekoray/DEBIAN/postrm
 chmod 0644 nekoray/usr/share/applications/nekoray.desktop
