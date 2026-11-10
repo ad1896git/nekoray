@@ -24,9 +24,11 @@ while result.strip():
         modules[module['Path']] = module
         for filename in package.get('GoFiles', []):
             source = Path(package['Dir']) / filename
-            preamble = source.read_text(errors='replace').split('\npackage ', 1)[0]
-            if re.search(r'copyright|licen[cs]e', preamble, re.I):
-                headers.setdefault(module['Path'], []).append((package['ImportPath'] + '/' + filename, preamble))
+            comments = re.findall(r'/\*.*?\*/|(?m:^[ \t]*//[^\n]*(?:\n[ \t]*//[^\n]*)*)',
+                                  source.read_text(errors='replace'), re.S)
+            notices = [comment for comment in comments if re.search(r'copyright|licen[cs]e|SPDX', comment, re.I)]
+            if notices:
+                headers.setdefault(module['Path'], []).append((package['ImportPath'] + '/' + filename, '\n'.join(notices)))
 legal = re.compile(r'^(licen[cs]e|copying|copyright|notice|authors|patents)([._-].*)?$', re.I)
 inventory = []
 for name, module in sorted(modules.items()):
