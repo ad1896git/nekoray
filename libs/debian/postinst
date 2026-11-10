@@ -9,7 +9,7 @@ esac
 
 refuse_unsafe() {
     echo "nekoray: refusing unsafe pre-existing install: $1" >&2
-    echo "Unsafe upgrade recovery is blocked; dpkg may leave nekoray Half-Installed. Follow the administrator A-prime recovery steps: https://github.com/ad1896git/nekoray/blob/fix/deb-upgrade-root-ownership/docs/PACKAGING.md#administrator-recovery-a-prime (inspect /opt, secure only /opt, quarantine the prefix, forced remove then purge, reinstall, delete quarantine as its original UID)." >&2
+    echo "Unsafe upgrade recovery is blocked; dpkg may leave nekoray Half-Installed. Follow the administrator A-prime recovery steps: https://github.com/ad1896git/nekoray/blob/fix/deb-upgrade-root-ownership/docs/PACKAGING.md#administrator-recovery-a-prime (use a trusted shell, cd /, and the absolute commands with isolated Python shown there; inspect /opt, secure only /opt, quarantine the prefix, forced remove then purge, reinstall, delete quarantine as its original UID)." >&2
     exit 1
 }
 
@@ -53,7 +53,7 @@ for device in $devices; do
 done
 
 if ! setcap cap_net_admin=ep /opt/nekoray/nekobox_core; then
-    echo "WARNING: nekoray: failed to set CAP_NET_ADMIN on nekobox_core; TUN is unavailable. Check libcap2-bin and filesystem capability support, then run dpkg --configure nekoray." >&2
+    echo "WARNING: nekoray: failed to set CAP_NET_ADMIN on nekobox_core; TUN is unavailable. Check libcap2-bin and filesystem capability support, then from a trusted shell and directory (cd /) run /usr/bin/sudo /usr/bin/env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin /usr/bin/dpkg --configure nekoray." >&2
     exit 1
 fi
 

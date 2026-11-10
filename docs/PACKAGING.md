@@ -40,7 +40,8 @@ setup failure before returning nonzero. This follows Debian policy sections
 6.1/6.4: https://www.debian.org/doc/debian-policy/ch-maintainerscripts.html
 A failed setup must not be represented as configured. The command is
 idempotent, so the administrator can fix the dependency/filesystem issue and
-retry `dpkg --configure nekoray`. Postinst abort recovery actions require no capability setup; postrm unwind actions inspect safety as described below.
+retry `/usr/bin/sudo /usr/bin/env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin /usr/bin/dpkg --configure nekoray`
+from a trusted directory (`cd /`). Postinst abort recovery actions require no capability setup; postrm unwind actions inspect safety as described below.
 
 `python3 tests/test_package_debian.py` checks generated script handling with
 harmless command stubs. The release workflow additionally unpacks the actual
@@ -116,6 +117,22 @@ administrator procedure on a trusted local filesystem, with `/` controlled by
 root and no concurrent administrator or mount changes. Do not recursively
 change ownership or permissions of the old tree.
 
+Use a trusted Bash session and run `cd /` as an extra precaution before the
+following blocks. Use the system executables shown, not copies from the old
+install or aliases/functions supplied by an untrusted shell setup. Both Python
+commands use `/usr/bin/python3 -I`: isolated mode excludes the working directory
+and user site from imports and ignores `PYTHON*` variables, even if sudo policy
+preserves them. The absolute `/usr/bin/sudo` uses the system's trusted sudo
+policy; its setuid startup strips loader variables such as `LD_PRELOAD` and
+`LD_LIBRARY_PATH`. Package-manager commands additionally start with an empty
+environment and a trusted system PATH, including for their maintainer scripts
+and helpers, without depending on sudo's `env_keep` or `secure_path` settings.
+All filesystem paths are absolute or relative to the checked `/opt` descriptor;
+`new_deb` must name an authenticated package at an absolute path in a trusted
+directory. Do not preserve an untrusted shell configuration or package-manager
+configuration. These steps assume the system executables and configuration are
+trusted, as well as `/`.
+
 Run the following blocks in order, in the same Bash session. The first block
 prints lstat metadata for `/opt` and `/opt/nekoray`, stops if `/opt` is a symlink
 or not a directory, then performs **non-recursive chown root:root and chmod
@@ -127,7 +144,7 @@ being overwritten. Save the printed original owning UID for the final cleanup.
 
 <!-- aprime-prepare -->
 ```bash
-quarantine_uid=$(sudo python3 - <<'PYRECOVER'
+quarantine_uid=$(/usr/bin/sudo /usr/bin/python3 -I - <<'PYRECOVER'
 import os, stat, sys
 
 def stop(message):
@@ -168,13 +185,13 @@ path of your trusted new Debian package):
 
 <!-- aprime-remove -->
 ```bash
-sudo dpkg --remove --force-remove-reinstreq nekoray &&
-sudo dpkg --purge nekoray
+/usr/bin/sudo /usr/bin/env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin /usr/bin/dpkg --remove --force-remove-reinstreq nekoray &&
+/usr/bin/sudo /usr/bin/env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin /usr/bin/dpkg --purge nekoray
 ```
 
 <!-- aprime-install -->
 ```bash
-sudo apt-get install -y "$new_deb"
+/usr/bin/sudo /usr/bin/env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin /usr/bin/apt-get install -y "$new_deb"
 ```
 
 Stop on any error. The authenticated upstream 4.0.1 archive has neither `prerm`
@@ -196,7 +213,7 @@ inspection; permission errors also require inspection, not a root recursive retr
 
 <!-- aprime-dispose -->
 ```bash
-disposal=$(sudo python3 - "$quarantine_uid" <<'PYDISPOSE'
+disposal=$(/usr/bin/sudo /usr/bin/python3 -I - "$quarantine_uid" <<'PYDISPOSE'
 import os, sys, tempfile
 uid = int(sys.argv[1])
 if uid <= 0:
@@ -208,7 +225,7 @@ os.rename("/opt/nekoray.untrusted", disposal + "/nekoray.untrusted")
 os.chown(disposal, uid, -1)
 print(disposal)
 PYDISPOSE
-) && sudo -u "#$quarantine_uid" -- rm -rf -- "$disposal"
+) && /usr/bin/sudo -u "#$quarantine_uid" -- /usr/bin/env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin /usr/bin/rm -rf -- "$disposal"
 ```
 
 If `/var/tmp` is on a different filesystem, the rename fails safely; an
@@ -258,6 +275,11 @@ bytes and all xattrs (including security.capability and a planted user xattr)
 must remain unchanged through refusal, removal, reinstall and unprivileged
 quarantine disposal. The prefix-symlink case uses the same quarantine procedure
 without restoring the old prefix. No test hook is shipped.
+Every complete recovery also runs the exact blocks from a UID 1001-owned
+directory with planted Python modules, startup hooks and command names, hostile
+`PYTHONPATH`/`PYTHONSTARTUP`/`PYTHONUSERBASE`, and a sudo policy preserving those
+variables. No planted marker may appear. A root non-isolated interpreter must
+import the planted `tempfile.py` as a positive control before recovery.
 Fresh install, actual apt reinstall of a safe tree, safe reconfiguration,
 forced failed-upgrade unwind over a safe tree (postrm exit zero), numeric
 ownership and modes of every prefix entry, capability, dpkg-tracked launcher,

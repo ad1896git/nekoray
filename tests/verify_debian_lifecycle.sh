@@ -6,7 +6,10 @@ trap 'echo "Debian lifecycle failure at line $LINENO (exit $?)" >&2' ERR
 
 subject=$(realpath "${1:?usage: verify_debian_lifecycle.sh package.deb}")
 work=$(mktemp -d)
-trap 'rm -rf "$work"' EXIT
+hostile_cwd=$(mktemp -d /var/tmp/nekoray-python-XXXXXX)
+sudo_python_policy=/etc/sudoers.d/nekoray-python-regression
+test ! -e "$sudo_python_policy"
+trap '/usr/bin/sudo /usr/bin/rm -f -- "$sudo_python_policy"; /usr/bin/sudo /usr/bin/rm -rf -- "$hostile_cwd" "$work"' EXIT
 baseline_name=nekoray-4.0.1-2024-12-12-debian-x64.deb
 baseline="$work/$baseline_name"
 
@@ -96,6 +99,96 @@ PYDOC
 }
 new_deb=$subject
 export new_deb
+prepare_command=$(recovery_command prepare)
+remove_command=$(recovery_command remove)
+install_command=$(recovery_command install)
+dispose_command=$(recovery_command dispose)
+
+# Static attacker fixture: no attacker process needs to run during recovery.
+# Markers use only builtins so imports cannot hide a broken payload. Include
+# direct/transitive imports and interpreter/site startup names on both Python
+# versions; some are frozen/preloaded, but tempfile is an effective control.
+/usr/bin/python3 -I - "$hostile_cwd" <<'PYPLANT'
+from pathlib import Path
+import sys
+root = Path(sys.argv[1])
+modules = ("tempfile os stat sys site sitecustomize usercustomize random shutil "
+           "weakref functools types re enum copyreg warnings collections "
+           "contextlib operator _collections_abc io abc encodings").split()
+def payload(name):
+    return (f"with open({str(root / ('marker-' + name))!r}, 'w') as marker:\n"
+            "    marker.write('attacker code executed')\nraise SystemExit(73)\n")
+for name in modules + ['startup']:
+    (root / (name + '.py')).write_text(payload(name))
+user_site = root / 'userbase' / 'lib' / ('python%d.%d' % sys.version_info[:2]) / 'site-packages'
+user_site.mkdir(parents=True)
+for name in ('sitecustomize', 'usercustomize'):
+    (user_site / (name + '.py')).write_text(payload('user-site-' + name))
+for name in ('sudo', 'env', 'python3', 'dpkg', 'apt-get', 'rm'):
+    command = root / name
+    command.write_text(f"#!/bin/sh\nprintf '%s\\n' 'attacker command executed' > '{root}/marker-command-{name}'\nexit 73\n")
+    command.chmod(0o755)
+PYPLANT
+sudo chown -R 1001:127 "$hostile_cwd"
+test "$(stat -c %u "$hostile_cwd")" = 1001
+# Deliberately exercise a policy that keeps hostile Python variables. The
+# production blocks must not depend on the default sudo environment filtering.
+printf '%s\n' 'Defaults env_keep += "PYTHONPATH PYTHONSTARTUP PYTHONUSERBASE"' | sudo tee "$sudo_python_policy" >/dev/null
+sudo chmod 0440 "$sudo_python_policy"
+sudo /usr/sbin/visudo -cf "$sudo_python_policy"
+assert_no_import_marker() {
+    local markers
+    markers=$(/usr/bin/find "$hostile_cwd" -name 'marker-*' -print)
+    test -z "$markers" || { printf 'Planted code executed:\n%s\n' "$markers" >&2; return 1; }
+}
+(
+    cd "$hostile_cwd"
+    # -S skips startup hooks so this specifically proves cwd tempfile import.
+    # No PYTHONPATH is needed for the positive control.
+    if /usr/bin/sudo /usr/bin/env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin /usr/bin/python3 -S - <<'PYCONTROL'
+import tempfile
+PYCONTROL
+    then
+        echo 'Non-isolated import positive control unexpectedly succeeded' >&2
+        exit 1
+    else
+        test "$?" -eq 73
+    fi
+    test -s marker-tempfile
+    test "$(/usr/bin/stat -c %u marker-tempfile)" = 0
+    /usr/bin/sudo /usr/bin/rm -- marker-tempfile
+)
+assert_no_import_marker
+echo 'POSITIVE_CONTROL_RESULT: PASS (non-isolated root interpreter imported cwd tempfile.py; exit 73)'
+
+hostile_recovery() (
+    local action=$1 label=${2:-unused}
+    cd "$hostile_cwd"
+    export PATH="$hostile_cwd:/usr/sbin:/usr/bin:/sbin:/bin"
+    export PYTHONPATH="$hostile_cwd" PYTHONSTARTUP="$hostile_cwd/startup.py" PYTHONUSERBASE="$hostile_cwd/userbase"
+    # Confirm sudo really preserves the hostile environment, rather than
+    # silently making the regression pass by discarding it before Python.
+    /usr/bin/sudo /usr/bin/python3 -I - "$hostile_cwd" <<'PYENV'
+import os, sys
+assert os.environ['PYTHONPATH'] == sys.argv[1]
+assert os.environ['PYTHONSTARTUP'] == sys.argv[1] + '/startup.py'
+assert os.environ['PYTHONUSERBASE'] == sys.argv[1] + '/userbase'
+assert sys.flags.isolated and sys.flags.ignore_environment and sys.flags.no_user_site
+PYENV
+    case "$action" in
+        prepare)
+            eval "$prepare_command"
+            printf '%s\n' "$quarantine_uid"
+            ;;
+        remove)
+            /usr/bin/sudo /usr/bin/strace -f -s 512 -e trace=execve -o "$work/$label-remove-exec.log" \
+                /bin/bash --noprofile --norc -e -c "$remove_command"
+            ;;
+        install) /bin/bash --noprofile --norc -e -c "$install_command" ;;
+        dispose) /bin/bash --noprofile --norc -e -c "$dispose_command" ;;
+        *) return 1 ;;
+    esac
+)
 
 # Outside-prefix sentinel: both metadata and bytes must survive refusals.
 mkdir "$work/outside-prefix"
@@ -206,7 +299,8 @@ assert_half_installed() {
 }
 recover_refused_old() {
     local label=$1 quarantine_uid
-    eval "$(recovery_command prepare)"
+    quarantine_uid=$(hostile_recovery prepare)
+    assert_no_import_marker
     test "$quarantine_uid" = 1001
     export quarantine_uid
     test "$(stat -c %u:%g:%a /opt)" = 0:0:755
@@ -216,8 +310,8 @@ recover_refused_old() {
     sha256sum /usr/share/applications/nekoray.desktop > "$work/launcher-before"
     # No old prerm/postrm exists. Trace dpkg's real script routing as well as
     # checking the old-postinst wrapper (where present) remains empty.
-    sudo strace -f -s 512 -e trace=execve -o "$work/$label-remove-exec.log" \
-        bash -e -c "$(recovery_command remove)" > "$work/$label-remove.log" 2>&1
+    hostile_recovery remove "$label" > "$work/$label-remove.log" 2>&1
+    assert_no_import_marker
     cat "$work/$label-remove.log" "$work/$label-remove-exec.log"
     if grep -E '/nekoray\.(preinst|postinst|prerm|postrm)' "$work/$label-remove-exec.log"; then
         echo 'Unexpected nekoray maintainer-script execution during old removal' >&2
@@ -227,12 +321,15 @@ recover_refused_old() {
     assert_purged old
     test "$(stat -c %u:%g:%a /opt)" = 0:0:755
     assert_sentinel
-    bash -e -c "$(recovery_command install)"
+    hostile_recovery install
+    assert_no_import_marker
     assert_installed "$label-aprime-install"
     assert_sentinel
-    bash -e -c "$(recovery_command dispose)"
+    hostile_recovery dispose
+    assert_no_import_marker
     test ! -e /opt/nekoray.untrusted && test ! -L /opt/nekoray.untrusted
     assert_sentinel
+    echo "PLANTED_MODULE_RESULT: PASS ($label; uid 1001 cwd, hostile PATH/PYTHON*, preserved sudo environment, no marker)"
     echo "APRIME_STEPS_RESULT: PASS ($label; quarantine removed as UID $quarantine_uid)"
 }
 

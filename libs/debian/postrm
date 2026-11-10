@@ -18,7 +18,7 @@ esac
 # unconditionally. Do not repair the tree, even during error unwind.
 refuse_unsafe() {
     echo "nekoray: refusing unsafe pre-existing install: $1" >&2
-    echo "Unsafe upgrade recovery is blocked; dpkg may leave nekoray Half-Installed. Follow the administrator A-prime recovery steps: https://github.com/ad1896git/nekoray/blob/fix/deb-upgrade-root-ownership/docs/PACKAGING.md#administrator-recovery-a-prime (inspect /opt, secure only /opt, quarantine the prefix, forced remove then purge, reinstall, delete quarantine as its original UID)." >&2
+    echo "Unsafe upgrade recovery is blocked; dpkg may leave nekoray Half-Installed. Follow the administrator A-prime recovery steps: https://github.com/ad1896git/nekoray/blob/fix/deb-upgrade-root-ownership/docs/PACKAGING.md#administrator-recovery-a-prime (use a trusted shell, cd /, and the absolute commands with isolated Python shown there; inspect /opt, secure only /opt, quarantine the prefix, forced remove then purge, reinstall, delete quarantine as its original UID)." >&2
     exit 1
 }
 
