@@ -48,6 +48,17 @@ package in disposable Debian bookworm, confirms missing dependencies prevent
 configuration, installs them, then checks successful configuration and the
 file capability. It does not start the application or create a TUN interface.
 
+Debian uses `dpkg-deb --root-owner-group` so runner ownership never enters the
+payload. `libs/validate_debian.py` inspects the built archive before packaging
+succeeds: every data entry must have numeric UID/GID 0:0, be a regular file or
+directory, and have no world-write, setuid or setgid bits. Empty, malformed and
+unsupported data archives fail closed. `python3 tests/test_debian_archive.py`
+tests both accepted root ownership and rejected owners/modes. CI also checks
+installed ownership and modes. The desktop launcher is a tracked payload file;
+postinst refreshes the desktop database after capability setup, and postrm
+refreshes it on removal/purge when the tool is available. CI verifies that dpkg
+tracks the launcher and removes it on removal and purge.
+
 Before copying native notices, the helper checks every common/platform manifest
 entry and the aggregate attribution files for nonempty contents. Each final ZIP,
 Debian, AppImage and macOS packaging entry point validates the assembled notice

@@ -28,6 +28,18 @@ Depends: libxcb-xinerama0, libqt5core5a, libqt5gui5, libqt5network5, libqt5widge
 Description: Qt based cross-platform GUI proxy configuration manager (backend: v2ray / sing-box)
 EOF
 
+mkdir -p nekoray/usr/share/applications
+cat >nekoray/usr/share/applications/nekoray.desktop <<'EOF'
+[Desktop Entry]
+Name=nekoray
+Comment=Qt based cross-platform GUI proxy configuration manager (backend: sing-box)
+Exec=sh -c "PATH=/opt/nekoray:$PATH /opt/nekoray/nekobox -appdata"
+Icon=/opt/nekoray/nekobox.png
+Terminal=false
+Type=Application
+Categories=Network;Application;
+EOF
+
 cat >nekoray/DEBIAN/postinst <<'EOF'
 #!/bin/sh
 set -e
@@ -38,19 +50,6 @@ case "$1" in
     *) echo "nekoray postinst: unsupported argument: $1" >&2; exit 1 ;;
 esac
 
-if [ ! -s /usr/share/applications/nekoray.desktop ]; then
-    cat >/usr/share/applications/nekoray.desktop <<'END'
-[Desktop Entry]
-Name=nekoray
-Comment=Qt based cross-platform GUI proxy configuration manager (backend: sing-box)
-Exec=sh -c "PATH=/opt/nekoray:$PATH /opt/nekoray/nekobox -appdata"
-Icon=/opt/nekoray/nekobox.png
-Terminal=false
-Type=Application
-Categories=Network;Application;
-END
-fi
-
 if ! setcap cap_net_admin=ep /opt/nekoray/nekobox_core; then
     echo "WARNING: nekoray: failed to set CAP_NET_ADMIN on nekobox_core; TUN is unavailable. Check libcap2-bin and filesystem capability support, then run dpkg --configure nekoray." >&2
     exit 1
@@ -59,8 +58,25 @@ fi
 update-desktop-database
 EOF
 
-sudo chmod 0755 nekoray/DEBIAN/postinst
+cat >nekoray/DEBIAN/postrm <<'EOF'
+#!/bin/sh
+set -e
+
+case "$1" in
+    remove|purge)
+        if command -v update-desktop-database >/dev/null 2>&1; then
+            update-desktop-database
+        fi
+        ;;
+    upgrade|failed-upgrade|abort-install|abort-upgrade|disappear) ;;
+    *) echo "nekoray postrm: unsupported argument: $1" >&2; exit 1 ;;
+esac
+EOF
+
+chmod 0755 nekoray/DEBIAN/postinst nekoray/DEBIAN/postrm
+chmod 0644 nekoray/usr/share/applications/nekoray.desktop
 
 # desktop && PATH
 
-sudo dpkg-deb -Zxz --build nekoray
+dpkg-deb --root-owner-group -Zxz --build nekoray
+python3 "$repo/libs/validate_debian.py" nekoray.deb

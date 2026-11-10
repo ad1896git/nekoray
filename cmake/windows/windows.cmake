@@ -2,8 +2,17 @@ set(PLATFORM_SOURCES 3rdparty/WinCommander.cpp sys/windows/guihelper.cpp sys/win
 set(PLATFORM_LIBRARIES wininet wsock32 ws2_32 user32 rasapi32 iphlpapi)
 
 include(cmake/windows/generate_product_version.cmake)
+file(STRINGS "${CMAKE_SOURCE_DIR}/nekoray_version.txt" NKR_WINDOWS_VERSION)
+if (NOT NKR_WINDOWS_VERSION MATCHES "^([0-9]+)\\.([0-9]+)\\.([0-9]+)$")
+    message(FATAL_ERROR "Windows resource requires a major.minor.patch version")
+endif ()
 generate_product_version(
         QV2RAY_RC
+        VERSION_MAJOR "${CMAKE_MATCH_1}"
+        VERSION_MINOR "${CMAKE_MATCH_2}"
+        VERSION_PATCH "${CMAKE_MATCH_3}"
+        VERSION_REVISION 0
+        COMMENTS "nekobox v${NKR_WINDOWS_VERSION}"
         ICON "${CMAKE_SOURCE_DIR}/res/nekobox.ico"
         NAME "nekobox"
         BUNDLE "nekobox"

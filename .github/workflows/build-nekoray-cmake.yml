@@ -196,6 +196,7 @@ jobs:
         timeout-minutes: 10
         run: |
           python3 tests/test_package_debian.py
+          python3 tests/test_debian_archive.py
           source libs/env_deploy.sh
           docker run --rm -v "$PWD/deployment/$version_standalone-debian-x64.deb:/tmp/nekoray.deb:ro" debian:bookworm bash -ec '
             export DEBIAN_FRONTEND=noninteractive
@@ -213,6 +214,12 @@ jobs:
             test -s /usr/share/doc/nekoray/LICENSE
             test -s /usr/share/doc/nekoray/copyright
             test -s /usr/share/doc/nekoray/licenses/go/inventory.json
+            test -z "$(find /opt/nekoray /usr/share/doc/nekoray /usr/share/applications/nekoray.desktop \( ! -uid 0 -o ! -gid 0 -o -perm /6002 \) -print)"
+            dpkg-query -L nekoray | grep -qx /usr/share/applications/nekoray.desktop
+            dpkg --remove nekoray
+            test ! -e /usr/share/applications/nekoray.desktop
+            dpkg --purge nekoray
+            test ! -e /usr/share/applications/nekoray.desktop
           '
       - name: Pack AppImage
         run: |
