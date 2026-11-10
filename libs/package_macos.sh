@@ -8,9 +8,11 @@ core=$2
 output=$3
 resources="$app/Contents/Resources"
 test -d "$app/Contents/MacOS"
-test -s "$core/licenses/go/inventory.json"
+python3 "$repo/libs/validate_licenses.py" go "$core" macos
 bash "$repo/libs/package_licenses.sh" "$resources" macos
+rm -rf "$resources/licenses/go"
 cp -R "$core/licenses/go" "$resources/licenses/"
+python3 "$repo/libs/validate_licenses.py" go "$resources" macos --binary "$app/Contents/MacOS/nekobox_core"
 # Resource changes must precede the final bundle signature.
 codesign --force --sign - "$app"
 codesign --verify --deep --strict "$app"

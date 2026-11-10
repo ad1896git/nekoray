@@ -6,14 +6,13 @@ import stat
 import subprocess
 import tempfile
 
+from license_fixture import fixture
+
 repo = Path(__file__).resolve().parents[1]
-with tempfile.TemporaryDirectory() as tmp:
+(repo / 'build-core').mkdir(exist_ok=True)
+with tempfile.TemporaryDirectory(dir=repo / 'build-core') as tmp:
     root = Path(tmp)
-    payload = root / 'linux64'
-    payload.mkdir()
-    for name in ('LICENSE', 'THIRD-PARTY-NOTICES.txt'):
-        (payload / name).write_text(name)
-    (payload / 'licenses').mkdir()
+    fixture(root, 'linux')
     tools = root / 'tools'
     tools.mkdir()
     def stub(name, body):

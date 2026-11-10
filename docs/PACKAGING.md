@@ -47,3 +47,22 @@ harmless command stubs. The release workflow additionally unpacks the actual
 package in disposable Debian bookworm, confirms missing dependencies prevent
 configuration, installs them, then checks successful configuration and the
 file capability. It does not start the application or create a TUN interface.
+
+Before copying native notices, the helper checks every common/platform manifest
+entry and the aggregate attribution files for nonempty contents. Each final ZIP,
+Debian, AppImage and macOS packaging entry point validates the assembled notice
+tree before archiving or signing. Go's `version -m` reads the target core's build
+metadata without executing it: its exact dependency names, replacement sources,
+versions and target OS must match the inventory. Every inventoried legal and
+generated source notice, Go-LICENSE, Go-PATENTS, project LICENSE and native notice
+must exist and be nonempty. Packaging therefore requires Python 3 and Go.
+
+AUTHORS, PATENTS, COPYRIGHT and NOTICE supplement a module's LICENSE/COPYING;
+they cannot alone satisfy the collector. The two documented exceptions are tied
+to their exact source/version pins; libneko requires its unchanged factual NOTICE.
+`python3 tests/test_package_licenses.py` builds tiny target fixtures, checks
+complete trees, and invokes every packaging entry point with missing/empty Go,
+runtime, project and Qt notices, inventory-only trees and mismatched module
+inventories. On macOS, add `--macos-real` to also sign a fixture app, create a DMG,
+mount it read-only and verify its notices/signature. These fixtures never run the
+application and do not substitute for a full GUI build.

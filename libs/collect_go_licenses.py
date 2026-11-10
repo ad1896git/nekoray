@@ -7,6 +7,9 @@ import shutil
 import subprocess
 import sys
 
+from validate_licenses import (LICENSE_NAME, LIBNEKO, LIBNEKO_NOTICE, LOCAL_VERSION,
+                               exception, require, validate_go)
+
 out = Path(sys.argv[1]).resolve() / 'licenses' / 'go'
 if out.exists():
     shutil.rmtree(out)
@@ -38,41 +41,41 @@ for name, module in sorted(modules.items()):
     if name == 'grpc_server':
         continue
     files = sorted(p for p in root.rglob('*') if p.is_file() and legal.match(p.name) and '.git' not in p.parts)
-    if not files and name == 'github.com/sagernet/cloudflare-tls':
-        files = []
-        target = out / name
-        target.mkdir(parents=True, exist_ok=True)
-        supplemental = Path(__file__).resolve().parent / 'licenses' / 'common' / 'cloudflare-go.txt'
-        shutil.copyfile(supplemental, target / 'LICENSE.txt')
-        shutil.copyfile(root / 'README.md', target / 'UPSTREAM.md')
-    elif not files and name != 'github.com/matsuridayo/libneko':
-        raise SystemExit('Missing license documents for ' + name)
-    if not files and name == 'github.com/matsuridayo/libneko':
-        # The pinned libneko upstream has no LICENSE or copyright document.
-        # Preserve that fact rather than assigning an unsupported license.
-        target = out / name
-        target.mkdir(parents=True, exist_ok=True)
-        (target / 'NOTICE.txt').write_text(
-            'libneko: Golang base helper library for NekoRay & NekoBox.\n'
-            'Source: https://github.com/ad1896git/libneko/tree/'
-            '45e350171b7b623860dd60ebce61a8e7c78de87e\n'
-            'No upstream license document was present at this revision.\n'
-            'This notice does not grant or infer a license.\n')
+    source_name = actual['Path']
+    version = actual.get('Version', LOCAL_VERSION)
+    special = exception(name, source_name, version)
+    if not any(LICENSE_NAME.match(p.name) for p in files) and not special:
+        raise SystemExit('Missing license documents (LICENSE/COPYING) for ' + name)
     target = out / name
+    target.mkdir(parents=True, exist_ok=True)
+    generated = []
+    if special and name == LIBNEKO:
+        (target / 'NOTICE.txt').write_text(LIBNEKO_NOTICE)
+        generated.append('NOTICE.txt')
+    elif special:
+        supplemental = Path(__file__).resolve().parent / 'licenses/common/cloudflare-go.txt'
+        shutil.copyfile(require(supplemental), target / 'LICENSE.txt')
+        shutil.copyfile(require(root / 'README.md'), target / 'UPSTREAM.md')
+        generated.extend(('LICENSE.txt', 'UPSTREAM.md'))
     for source in files:
         dest = target / source.relative_to(root)
         dest.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(source, dest)
+        shutil.copyfile(require(source), dest)
     if headers.get(name):
         (target / 'SOURCE-NOTICES.txt').write_text(''.join('\n===== ' + p + ' =====\n' + h + '\n' for p, h in sorted(headers[name])))
-    inventory.append({'module': name, 'source': actual['Path'], 'version': actual.get('Version', 'local pinned source; see SOURCES.txt'),
+        generated.append('SOURCE-NOTICES.txt')
+    inventory.append({'module': name, 'source': actual['Path'], 'version': actual.get('Version', LOCAL_VERSION),
                       'documents': [str(p.relative_to(root)) for p in files],
+                      'generated_documents': generated,
                       'supplemental_notice': ('See LICENSE.txt and UPSTREAM.md; license from the named cloudflare/go commit'
                           if name == 'github.com/sagernet/cloudflare-tls' else
                           'No upstream license document; see NOTICE.txt' if name == 'github.com/matsuridayo/libneko' else None)})
 # The Go runtime/standard library is linked too.
 goroot = Path(subprocess.check_output(['go', 'env', 'GOROOT'], text=True).strip())
-shutil.copyfile(goroot / 'LICENSE', out / 'Go-LICENSE')
-shutil.copyfile(goroot / 'PATENTS', out / 'Go-PATENTS')
+shutil.copyfile(require(goroot / 'LICENSE'), out / 'Go-LICENSE')
+shutil.copyfile(require(goroot / 'PATENTS'), out / 'Go-PATENTS')
 (out / 'inventory.json').write_text(json.dumps(inventory, indent=2) + '\n')
 print('Collected license documents for', len(inventory), 'Go dependency modules plus Go')
+platform = {'darwin': 'macos', 'windows': 'windows', 'linux': 'linux'}[subprocess.check_output(['go', 'env', 'GOOS'], text=True).strip()]
+binary = out.parents[1] / ('nekobox_core.exe' if platform == 'windows' else 'nekobox_core')
+validate_go(out, binary, platform)

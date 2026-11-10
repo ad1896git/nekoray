@@ -1,4 +1,7 @@
 #!/bin/bash
+set -euo pipefail
+repo=$(cd "$(dirname "$0")/.." && pwd)
+python3 "$repo/libs/validate_licenses.py" package linux64 linux
 
 sudo apt-get install fuse -y
 
