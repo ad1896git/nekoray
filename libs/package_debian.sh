@@ -40,40 +40,12 @@ Type=Application
 Categories=Network;Application;
 EOF
 
-cat >nekoray/DEBIAN/postinst <<'EOF'
-#!/bin/sh
-set -e
+cp "$repo/libs/debian/preinst" nekoray/DEBIAN/preinst
+cp "$repo/libs/debian/postinst" nekoray/DEBIAN/postinst
 
-case "$1" in
-    configure) ;;
-    abort-upgrade|abort-remove|abort-deconfigure) exit 0 ;;
-    *) echo "nekoray postinst: unsupported argument: $1" >&2; exit 1 ;;
-esac
+cp "$repo/libs/debian/postrm" nekoray/DEBIAN/postrm
 
-if ! setcap cap_net_admin=ep /opt/nekoray/nekobox_core; then
-    echo "WARNING: nekoray: failed to set CAP_NET_ADMIN on nekobox_core; TUN is unavailable. Check libcap2-bin and filesystem capability support, then run dpkg --configure nekoray." >&2
-    exit 1
-fi
-
-update-desktop-database
-EOF
-
-cat >nekoray/DEBIAN/postrm <<'EOF'
-#!/bin/sh
-set -e
-
-case "$1" in
-    remove|purge)
-        if command -v update-desktop-database >/dev/null 2>&1; then
-            update-desktop-database
-        fi
-        ;;
-    upgrade|failed-upgrade|abort-install|abort-upgrade|disappear) ;;
-    *) echo "nekoray postrm: unsupported argument: $1" >&2; exit 1 ;;
-esac
-EOF
-
-chmod 0755 nekoray/DEBIAN/postinst nekoray/DEBIAN/postrm
+chmod 0755 nekoray/DEBIAN/preinst nekoray/DEBIAN/postinst nekoray/DEBIAN/postrm
 chmod 0644 nekoray/usr/share/applications/nekoray.desktop
 
 # desktop && PATH

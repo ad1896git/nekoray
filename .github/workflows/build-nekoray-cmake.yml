@@ -214,7 +214,7 @@ jobs:
             test -s /usr/share/doc/nekoray/LICENSE
             test -s /usr/share/doc/nekoray/copyright
             test -s /usr/share/doc/nekoray/licenses/go/inventory.json
-            test -z "$(find /opt/nekoray /usr/share/doc/nekoray /usr/share/applications/nekoray.desktop \( ! -uid 0 -o ! -gid 0 -o -perm /6002 \) -print)"
+            test -z "$(find /opt/nekoray /usr/share/doc/nekoray /usr/share/applications/nekoray.desktop \( ! -uid 0 -o ! -gid 0 -o -perm /6022 \) -print)"
             dpkg-query -L nekoray | grep -qx /usr/share/applications/nekoray.desktop
             dpkg --remove nekoray
             test ! -e /usr/share/applications/nekoray.desktop
@@ -246,3 +246,45 @@ jobs:
         if: github.event.inputs.publish != 'y'
         run: |
           ./ghr -delete -t "${{ github.token }}" -n "${{ github.event.inputs.tag }}" "${{ github.event.inputs.tag }}" deployment
+
+  deb-upgrade:
+    name: Debian fail-closed lifecycle (${{ matrix.os }})
+    needs: publish
+    runs-on: ${{ matrix.os }}
+    # Hosted /opt can fail the required ownership/write-permission check. Keep
+    # that production check and test apt/dpkg in a clean matching Ubuntu rootfs.
+    container: ubuntu:${{ matrix.release }}
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      actions: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            release: '22.04'
+          - os: ubuntu-24.04
+            release: '24.04'
+    steps:
+      - name: Prepare clean Ubuntu lifecycle environment
+        shell: bash
+        run: |
+          export DEBIAN_FRONTEND=noninteractive
+          apt-get update
+          apt-get install -y --no-install-recommends binutils ca-certificates curl git python3 sudo
+          . /etc/os-release
+          test "$VERSION_ID" = '${{ matrix.release }}'
+          stat -c 'lifecycle ancestor %u:%g %a %n' / /opt
+      - uses: actions/checkout@v3
+      - name: Download this commit's newly built package
+        uses: actions/download-artifact@v4
+        with:
+          name: Deployment-${{ github.sha }}
+          path: input
+      - name: Verify fresh install, safe reinstall, 4.0.1 refusal, remedy and sentinel
+        shell: bash
+        run: |
+          mapfile -t packages < <(find input -type f -name '*-debian-x64.deb')
+          test "${#packages[@]}" -eq 1
+          bash tests/verify_debian_lifecycle.sh "${packages[0]}"

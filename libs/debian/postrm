@@ -1,0 +1,67 @@
+#!/bin/sh
+set -e
+
+case "${1:-}" in
+    abort-install|abort-upgrade|failed-upgrade) ;;
+    remove|purge)
+        if command -v update-desktop-database >/dev/null 2>&1; then
+            update-desktop-database
+        fi
+        exit 0
+        ;;
+    upgrade|disappear) exit 0 ;;
+    *) echo "nekoray postrm: unsupported argument: ${1:-}" >&2; exit 1 ;;
+esac
+
+# A failed new preinst reaches this script before dpkg considers the old
+# maintainer scripts. Refuse unsafe recovery too: old postinst may setcap
+# unconditionally. Do not repair the tree, even during error unwind.
+refuse_unsafe() {
+    echo "nekoray: refusing unsafe pre-existing install: $1" >&2
+    echo "Unsafe upgrade recovery is blocked; dpkg may leave nekoray Half-Installed. Follow the administrator A-prime recovery steps: https://github.com/ad1896git/nekoray/blob/fix/deb-upgrade-root-ownership/docs/PACKAGING.md#administrator-recovery-a-prime (use a trusted shell, cd /, and the absolute commands with isolated Python shown there; inspect /opt, secure only /opt, quarantine the prefix, forced remove then purge, reinstall, delete quarantine as its original UID)." >&2
+    exit 1
+}
+
+# Read-only, physical inspection. A safe ancestor cannot be replaced by a
+# non-root user; check ancestors before inspecting the protected package tree.
+for ancestor in / /opt; do
+    if [ "$ancestor" = /opt ] && [ ! -e /opt ] && [ ! -L /opt ]; then
+        continue
+    fi
+    if ! unsafe=$(find -P "$ancestor" -maxdepth 0 \( \
+        ! -type d -o ! -uid 0 -o ! -gid 0 -o -perm -020 -o -perm -002 \
+    \) -print); then
+        refuse_unsafe "cannot inspect $ancestor"
+    fi
+    [ -z "$unsafe" ] || refuse_unsafe "$ancestor must be a real root:root directory without group/world write permission"
+done
+
+# Fresh install: dpkg will create the prefix under the checked ancestors.
+if [ ! -e /opt/nekoray ] && [ ! -L /opt/nekoray ]; then
+    exit 0
+fi
+
+if [ -L /opt/nekoray ] || [ ! -d /opt/nekoray ]; then
+    refuse_unsafe "/opt/nekoray must be a real directory"
+fi
+# Include every entry's own metadata, never a symlink target's. Reject links
+# and special files too, so capability setup cannot use an alias outside here.
+if ! unsafe=$(find -P /opt/nekoray -xdev \( \
+    ! -uid 0 -o ! -gid 0 -o -perm -020 -o -perm -002 -o \
+    \( ! -type d ! -type f \) -o \( -type f -links +1 \) \
+    \) -print -quit); then
+    refuse_unsafe "cannot inspect /opt/nekoray"
+fi
+[ -z "$unsafe" ] || refuse_unsafe "/opt/nekoray contains non-root ownership, group/world write permission, links or special files"
+
+# -xdev visits a nested mount point but not its children; refuse that boundary
+# rather than treating the uninspected contents as trusted. stat uses lstat.
+if ! root_device=$(stat -c %d -- /opt/nekoray); then
+    refuse_unsafe "cannot inspect /opt/nekoray device"
+fi
+if ! devices=$(find -P /opt/nekoray -xdev -exec stat -c %d -- {} +); then
+    refuse_unsafe "cannot inspect /opt/nekoray devices"
+fi
+for device in $devices; do
+    [ "$device" = "$root_device" ] || refuse_unsafe "nested mount under /opt/nekoray"
+done
