@@ -24,3 +24,5 @@ popd
 
 #### prepare deployment ####
 cp $BUILD/*.pdb $DEPLOYMENT
+
+bash "$SRC_ROOT/libs/package_licenses.sh" "$DEST" windows

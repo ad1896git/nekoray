@@ -13,7 +13,7 @@
 set -euo pipefail
 
 die() { printf 'build_core: %s\n' "$*" >&2; exit 1; }
-for command in go git; do
+for command in go git python3; do
     command -v "$command" >/dev/null 2>&1 || die "required command not found: $command"
 done
 
@@ -137,6 +137,8 @@ verify_module_pin github.com/matsuridayo/libneko "$COMMIT_LIBNEKO" github.com/ad
 go build -mod=readonly -modfile="$work_dir/go.mod" -o "$out_dir/$binary" -trimpath \
     -ldflags "-w -s $checklinkname_flag -X github.com/matsuridayo/libneko/neko_common.Version_neko=$VERSION" \
     -tags 'with_clash_api,with_gvisor,with_quic,with_wireguard,with_utls,with_ech'
+
+python3 "$repo_dir/libs/collect_go_licenses.py" "$out_dir"
 
 if command -v shasum >/dev/null 2>&1; then
     checksum=$(cd -- "$out_dir" && shasum -a 256 "$binary")

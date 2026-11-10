@@ -34,7 +34,7 @@ jobs:
         uses: actions/cache@v3
         with:
           path: artifacts.tgz
-          key: CommonCache-${{ matrix.cross_os }}-${{ matrix.cross_arch }}-${{ hashFiles('libs/*.sh', 'go_status', '*.txt') }}
+          key: CommonCache-${{ matrix.cross_os }}-${{ matrix.cross_arch }}-${{ hashFiles('libs/*.sh', 'libs/*.py', 'libs/licenses/**', 'go_status', '*.txt') }}
       - name: Install Golang
         if: steps.cache-common.outputs.cache-hit != 'true'
         uses: actions/setup-go@v3
@@ -136,7 +136,8 @@ jobs:
             -v $PWD:/nekoray \
             -w /nekoray \
             ghcr.io/matsuridayo/debian10-qt5:20230131 \
-            bash -c "mkdir build && pushd build && cmake -GNinja -DCMAKE_BUILD_TYPE=Release .. && ninja && popd &&./libs/deploy_linux64.sh"
+            bash -c "mkdir build && pushd build && cmake -GNinja -DCMAKE_BUILD_TYPE=Release .. && ninja && popd"
+          ./libs/deploy_linux64.sh
       # ========================================================================================================= Deployments
       - name: Tar files
         shell: bash
@@ -160,6 +161,12 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           path: download-artifact
+      - uses: actions/setup-go@v3
+        with:
+          go-version: '1.22.12'
+      - name: Check required notices fail closed
+        timeout-minutes: 10
+        run: python3 tests/test_package_licenses.py
       - name: Pack
         run: |
           curl -Lo - https://github.com/tcnksm/ghr/releases/download/v0.13.0/ghr_v0.13.0_linux_amd64.tar.gz | tar xzv
@@ -172,13 +179,9 @@ jobs:
           cp -r public_res/* windows64
           rm -rf public_res *.pdb
           ####
-          mv linux64 nekoray
-          zip -r $version_standalone-linux64.zip nekoray
-          rm -rf nekoray
+          bash ../libs/package_zip.sh linux "$version_standalone-linux64.zip"
           ####
-          mv windows64 nekoray
-          zip -r $version_standalone-windows64.zip nekoray
-          rm -rf nekoray
+          bash ../libs/package_zip.sh windows "$version_standalone-windows64.zip"
       - name: Pack Debian
         run: |
           source libs/env_deploy.sh
@@ -189,6 +192,28 @@ jobs:
           bash ../libs/package_debian.sh ${{ github.event.inputs.tag }}
           mv nekoray.deb $version_standalone-debian-x64.deb
           sudo rm -rf nekoray
+      - name: Verify Debian installation and capability dependency
+        timeout-minutes: 10
+        run: |
+          python3 tests/test_package_debian.py
+          source libs/env_deploy.sh
+          docker run --rm -v "$PWD/deployment/$version_standalone-debian-x64.deb:/tmp/nekoray.deb:ro" debian:bookworm bash -ec '
+            export DEBIAN_FRONTEND=noninteractive
+            ! dpkg -s libcap2-bin 2>/dev/null | grep -qx "Status: install ok installed"
+            dpkg --unpack /tmp/nekoray.deb
+            if dpkg --configure nekoray > /tmp/missing-deps.log 2>&1; then
+              echo "Unexpected configuration success without dependencies" >&2; exit 1
+            fi
+            grep libcap2-bin /tmp/missing-deps.log
+            apt-get update
+            apt-get -y --no-install-recommends -f install
+            dpkg -s nekoray | grep -qx "Status: install ok installed"
+            getcap /opt/nekoray/nekobox_core | grep "cap_net_admin=ep"
+            test "$(stat -c %a /var/lib/dpkg/info/nekoray.postinst)" = 755
+            test -s /usr/share/doc/nekoray/LICENSE
+            test -s /usr/share/doc/nekoray/copyright
+            test -s /usr/share/doc/nekoray/licenses/go/inventory.json
+          '
       - name: Pack AppImage
         run: |
           source libs/env_deploy.sh

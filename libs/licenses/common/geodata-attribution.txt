@@ -1,0 +1,9 @@
+This product includes GeoLite2 Data created by MaxMind, available from https://www.maxmind.com/.
+MaxMind states that copyrightable GeoLite data is governed by CC BY-SA 4.0,
+subject to its GeoLite End User License Agreement:
+https://www.maxmind.com/en/geolite/eula
+The CC BY-SA 4.0 text is in CC-BY-SA-4.0.txt. This attribution does not grant
+rights beyond those provided by the upstream terms.
+GeoIP inputs are processed into the geodata formats distributed by the upstream projects.
+Source: https://dev.maxmind.com/geoip/geolite2-free-geolocation-data/
+Additional upstream source data: see the accompanying geodata project READMEs.
