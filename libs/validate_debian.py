@@ -4,9 +4,21 @@ import argparse
 import io
 from pathlib import Path
 import subprocess
+import shlex
 import tarfile
 
 REPO = Path(__file__).resolve().parents[1]
+
+
+def validate_script(name, content):
+    # Defense against reintroducing pathname-based repairs in a reviewed
+    # template. Exact byte comparison below also rejects stale packaged copies.
+    forbidden = {'chown', 'chmod', 'rm', 'mv'}
+    if name == 'preinst':
+        forbidden.add('setcap')
+    tokens = shlex.split(content.decode('utf-8'), comments=True)
+    if any(Path(token).name in forbidden for token in tokens):
+        raise ValueError(f'{name}: forbidden privileged mutation command')
 
 
 def validate(package):
@@ -39,8 +51,10 @@ def validate(package):
             entry = scripts[0]
             if not entry.isfile() or (entry.uid, entry.gid, entry.mode) != (0, 0, 0o755):
                 raise ValueError(f'{name}: expected regular root-owned mode 0755 script')
-            if archive.extractfile(entry).read() != (REPO / 'libs/debian' / name).read_bytes():
-                raise ValueError(f'{name}: does not match the reviewed ownership/capability script')
+            content = archive.extractfile(entry).read()
+            validate_script(name, content)
+            if content != (REPO / 'libs/debian' / name).read_bytes():
+                raise ValueError(f'{name}: does not match the reviewed fail-closed/capability script')
     print(f'Validated Debian payload: {count} entries, all 0:0; no group/world-write or setuid/setgid modes; maintainer scripts match')
 
 

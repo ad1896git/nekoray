@@ -52,38 +52,97 @@ assert_purged() {
     echo 'purge: no packaged prefix, launcher, documentation or maintainer scripts PASS'
 }
 
+# Outside-prefix sentinel: both metadata and bytes must survive refusals.
+sentinel="$work/outside-sentinel"
+printf 'outside prefix: unchanged\n' > "$sentinel"
+chmod 0664 "$sentinel"
+sentinel_state() { stat -c '%u:%g:%a' "$sentinel"; sha256sum "$sentinel"; }
+sentinel_state > "$work/sentinel-before"
+assert_sentinel() {
+    sentinel_state > "$work/sentinel-after"
+    cmp "$work/sentinel-before" "$work/sentinel-after"
+    echo 'outside sentinel: owner, mode and contents UNTOUCHED'
+}
+assert_refused() {
+    local label=$1 rc
+    if sudo apt-get install --reinstall -y "$subject" > "$work/$label.log" 2>&1; then
+        cat "$work/$label.log"
+        echo 'Unsafe install unexpectedly succeeded' >&2
+        return 1
+    else
+        rc=$?
+    fi
+    cat "$work/$label.log"
+    test "$rc" -eq 100
+    grep -F 'nekoray: refusing unsafe pre-existing install:' "$work/$label.log"
+    grep -F "sudo apt purge nekoray" "$work/$label.log"
+    grep -F "sudo dpkg --purge nekoray" "$work/$label.log"
+    grep -F 'pre-installation script subprocess returned error exit status 1' "$work/$label.log"
+    assert_sentinel
+    echo "$label: preinst refusal PASS (apt exit $rc)"
+}
+
 sudo apt-get update
 sudo apt-get install -y "$subject"
 assert_installed fresh
+# Reinstall over a trusted tree must succeed through actual apt/dpkg unpack.
+sudo apt-get install --reinstall -y "$subject"
+assert_installed reinstall-safe-tree
+sudo dpkg-reconfigure nekoray
+assert_installed reconfigure-safe-tree
 sudo apt-get remove -y nekoray
 test ! -e /opt/nekoray && test ! -e /usr/share/applications/nekoray.desktop
 sudo apt-get purge -y nekoray
 assert_purged
 
+# Exact upstream bytes, with their original non-root-owned prefix: no fixture
+# ownership changes here, so this tests the real historical upgrade trigger.
 sudo apt-get install -y "$baseline"
 test "$(dpkg-query -W -f='${Version}' nekoray)" = 4.0.1
+test "$(dpkg-query -W -f='${Status}' nekoray)" = 'install ok installed'
 stat -c 'baseline owner=%u:%g mode=%a %n' /opt/nekoray
-# Exercise retained nested directories/files as well as the original defect.
-sudo mkdir -p /opt/nekoray/ownership-probe/nested
-sudo touch /opt/nekoray/ownership-probe/nested/file
-sudo chown -hR 12345:12345 /opt/nekoray/ownership-probe
-sudo chmod -R a+rwX /opt/nekoray/ownership-probe
-sudo chown -h 12345:12345 /opt/nekoray
-sudo chmod go+w /opt/nekoray
+test "$(stat -c %u:%g /opt/nekoray)" != 0:0
+sha256sum /opt/nekoray/nekobox_core /usr/share/applications/nekoray.desktop > "$work/baseline-files-before"
+stat -c '%u:%g:%a' /opt/nekoray > "$work/baseline-prefix-before"
+assert_refused upgrade-from-401
+# dpkg's abort-upgrade recovery must preserve the configured old package.
+dpkg -s nekoray
+test "$(dpkg-query -W -f='${Version}' nekoray)" = 4.0.1
+test "$(dpkg-query -W -f='${Status}' nekoray)" = 'install ok installed'
+sha256sum -c "$work/baseline-files-before"
+stat -c '%u:%g:%a' /opt/nekoray > "$work/baseline-prefix-after"
+cmp "$work/baseline-prefix-before" "$work/baseline-prefix-after"
+sudo apt-get check
+sudo dpkg --audit > "$work/refusal-audit"
+test ! -s "$work/refusal-audit"
+echo 'upgrade-from-401: old 4.0.1 still installed/configured; payload unchanged PASS'
+
+# Follow the error's documented remedy; upstream's untracked desktop launcher
+# may survive its purge, and is adopted as a tracked file by the new package.
+sudo apt-get purge -y nekoray
+test ! -e /opt/nekoray && test ! -L /opt/nekoray
 sudo apt-get install -y "$subject"
-assert_installed upgrade
-# A repeated configure must restore ownership/modes and then restore setcap.
-sudo chown -h 12345:12345 /opt/nekoray/nekobox_core
-sudo chmod go+w /opt/nekoray/nekobox_core
-sudo dpkg-reconfigure nekoray
-assert_installed reconfigure
-sudo rm -r /opt/nekoray/ownership-probe
-# Every remaining prefix entry must be tracked by the new package.
-find -P /opt/nekoray -xdev -print > "$work/paths"
-while IFS= read -r path; do dpkg-query -S "$path"; done < "$work/paths"
+assert_installed purge-401-then-install
+
+# Root-owned prefix, attacker-owned nested directory and planted symlink.
+# This is a static fixture on a disposable runner; no hostile process runs.
+sudo mkdir -p /opt/nekoray/adversarial-probe/nested
+sudo ln -s "$sentinel" /opt/nekoray/adversarial-probe/nested/outside
+sudo chown -hR 12345:12345 /opt/nekoray/adversarial-probe
+sudo chmod 0777 /opt/nekoray/adversarial-probe /opt/nekoray/adversarial-probe/nested
+assert_refused adversarial-nested-tree
+test "$(stat -c %u:%g /opt/nekoray/adversarial-probe/nested)" = 12345:12345
+test "$(stat -c %a /opt/nekoray/adversarial-probe/nested)" = 777
+test -L /opt/nekoray/adversarial-probe/nested/outside
+test "$(dpkg-query -W -f='${Version}' nekoray)" = "$version"
+test "$(dpkg-query -W -f='${Status}' nekoray)" = 'install ok installed'
+# Administrator cleanup of the inspected, non-concurrent test fixture.
+sudo rm -r /opt/nekoray/adversarial-probe
+assert_installed after-adversarial-refusal
+assert_sentinel
 sudo apt-get purge -y nekoray
 assert_purged
 sudo apt-get check
 sudo dpkg --audit > "$work/final-audit"
 test ! -s "$work/final-audit"
-echo 'Debian fresh-install and 4.0.1 upgrade lifecycle PASS'
+echo 'Debian fresh install, safe reinstall, 4.0.1 refusal/remedy and adversarial sentinel lifecycle PASS'

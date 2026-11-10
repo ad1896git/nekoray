@@ -248,7 +248,7 @@ jobs:
           ./ghr -delete -t "${{ github.token }}" -n "${{ github.event.inputs.tag }}" "${{ github.event.inputs.tag }}" deployment
 
   deb-upgrade:
-    name: Debian fresh and upgrade (${{ matrix.os }})
+    name: Debian fail-closed lifecycle (${{ matrix.os }})
     needs: publish
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
@@ -266,7 +266,7 @@ jobs:
         with:
           name: Deployment-${{ github.sha }}
           path: input
-      - name: Verify fresh install, upstream 4.0.1 upgrade and purge
+      - name: Verify fresh install, safe reinstall, 4.0.1 refusal, remedy and sentinel
         shell: bash
         run: |
           mapfile -t packages < <(find input -type f -name '*-debian-x64.deb')

@@ -82,21 +82,59 @@ inventories. On macOS, add `--macos-real` to also sign a fixture app, create a D
 mount it read-only and verify its notices/signature. These fixtures never run the
 application and do not substitute for a full GUI build.
 
-Debian preinst repairs an existing `/opt/nekoray` before unpacking; postinst
-repeats the repair on every configure before running the unchanged capability
-setup. Both require a real directory, refuse symlinks, hard links, special files
-and nested mounts, and use physical, filesystem-bounded traversal with
-`chown -h` and `chmod go-w`. All ownership/mode/traversal errors fail closed.
-The archive validator also requires exact root-owned executable preinst and
-postinst contents matching `libs/debian/`, so omitted or stale scripts fail the
-build. Package-generated files share this protected prefix; locally added
-entries there also become root-owned and lose group/world write permissions.
+Debian preinst inspects existing installs before unpacking, using physical
+(`find -P`), filesystem-bounded (`-xdev`) traversal and lstat metadata. `/` and
+`/opt` must be real root:root directories without group/world write permission
+(an absent `/opt` is allowed for a fresh install). An absent `/opt/nekoray` is a
+fresh install. Otherwise the prefix and every entry must be root:root without
+group/world write permission. Symlinks (including a dangling prefix), hard-linked
+files, special files and nested filesystem boundaries are refused. Inspection
+errors also fail closed. Postinst repeats this read-only assertion before the
+unchanged capability setup, including on `dpkg-reconfigure`.
+
+There is no ownership/mode repair in either script. The upstream 4.0.1 Debian
+package leaves a non-root-owned `/opt/nekoray`, so upgrading it is deliberately
+refused with `nekoray: refusing unsafe pre-existing install:` and an English
+remedy. Run `sudo apt purge nekoray` (or `sudo dpkg --purge nekoray`), then
+reinstall the new Debian package. Alternatively, have an administrator inspect
+and remove `/opt/nekoray` before retrying. Back up any wanted local data before
+purging/removal. Do not make a user-controlled tree pass by recursively changing
+its ownership as root. CI verifies that the refused 4.0.1 upgrade leaves version
+4.0.1 in `install ok installed` state with an empty dpkg audit. Its upstream
+untracked desktop launcher can remain after purge; the new package adopts it as
+a tracked payload file and removes it on its own removal/purge.
+
+The checks only read metadata; racing the checks cannot redirect a privileged
+repair because no repair commands exist. A non-root user cannot replace an
+already-checked safe directory through its checked, unwritable parent, nor
+change that root-owned directory's permissions. Any attacker-controlled nested
+directory fails ownership/write checks; it is never secured by mutation. dpkg
+then unpacks root:root package files into the trusted tree. This does not protect
+against a concurrent administrator/root process, privileged mount changes or
+filesystems that change metadata outside normal local permission rules. A safe
+but unexpected root-owned file left by an administrator can remain untracked;
+these checks establish ownership/type/write safety, not an exact file inventory
+or file-content authenticity. No GUI, TUN operation or local data migration is
+performed by these checks.
+
+The archive validator requires exact root-owned executable preinst/postinst
+contents matching `libs/debian/`, rejects stale/omitted scripts and forbidden
+repair commands, and rejects unsafe payload ownership/modes. The Python tests
+use native traversal/mode/link checks in a translated scratch tree, simulate
+numeric root ownership/device boundaries on unprivileged hosts, and verify
+refusal, command failures, a synchronized path replacement and outside sentinel
+owner/mode/content preservation. A static guard prevents chown/chmod (and other
+repair commands) from returning to the maintainer scripts.
 
 The build matrix's `deb-upgrade` jobs run
 `bash tests/verify_debian_lifecycle.sh package.deb` on disposable Ubuntu 22.04
-and 24.04 runners. They use the same run's newly built package and verify the
-SHA256 of the upstream 4.0.1 baseline before installing it. They check fresh
-install, upgrade (including writable, non-root retained nested directories),
-reconfiguration, numeric ownership/modes of every prefix entry, capability,
-dpkg-tracked launcher, removal and purge. This script changes system packages;
-run it only in a disposable test environment.
+and 24.04 runners. They use the same run's newly built package, verify the exact
+upstream 4.0.1 SHA256 before installation, require preinst refusal and a consistent
+old package, then test the documented purge/reinstall remedy. Fresh install,
+actual apt reinstall of a safe tree, safe reconfiguration, numeric ownership and
+modes of every prefix entry, capability, dpkg-tracked launcher, removal/purge,
+and an attacker-owned nested directory with a symlink to an outside sentinel
+are asserted. Package-manager bookkeeping and upstream abort recovery still
+run during refusal; the sentinel, old core/launcher bytes and prefix metadata
+are checked, not every filesystem write made by apt/dpkg. This script changes
+system packages; run it only in a disposable test environment.

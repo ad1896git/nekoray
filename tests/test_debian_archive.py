@@ -26,6 +26,8 @@ def write_deb(path, uid=0, gid=0, mode=0o755, empty=False, script=None):
             content = (REPO / 'libs/debian' / name).read_bytes()
             if script == name:
                 content = b'#!/bin/sh\nexit 0\n'
+            if script == 'mutation-' + name:
+                content += b'\nchown -R 0:0 /opt/nekoray\n'
             entry = tarfile.TarInfo('./' + name)
             entry.uid = entry.gid = 0
             entry.mode = 0o755
@@ -53,6 +55,8 @@ def main():
                  ({'script': 'missing-postinst'}, False, 'Expected exactly one postinst'),
                  ({'script': 'preinst'}, False, 'preinst: does not match'),
                  ({'script': 'postinst'}, False, 'postinst: does not match'),
+                 ({'script': 'mutation-preinst'}, False, 'forbidden privileged mutation'),
+                 ({'script': 'mutation-postinst'}, False, 'forbidden privileged mutation'),
                  ({'mode': 0o777}, False, 'unsafe mode'),
                  ({'mode': 0o4755}, False, 'unsafe mode'),
                  ({'mode': 0o2755}, False, 'unsafe mode'),
