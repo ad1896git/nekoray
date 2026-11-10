@@ -651,5 +651,56 @@
   {
     "document": "common/CC-BY-SA-4.0.txt",
     "source": "https://creativecommons.org/licenses/by-sa/4.0/legalcode.txt"
+  },
+  {
+    "document": "linux/runtime-musl.txt",
+    "repository": "https://github.com/ifduyue/musl",
+    "ref": "v1.2.5",
+    "upstream_files": [
+      "COPYRIGHT"
+    ]
+  },
+  {
+    "document": "linux/runtime-libfuse.txt",
+    "repository": "https://github.com/libfuse/libfuse",
+    "ref": "fuse-3.15.0",
+    "upstream_files": [
+      "LGPL2.txt",
+      "LICENSE"
+    ]
+  },
+  {
+    "document": "linux/runtime-squashfuse.txt",
+    "repository": "https://github.com/vasi/squashfuse",
+    "ref": "0.5.2",
+    "upstream_files": [
+      "LICENSE"
+    ]
+  },
+  {
+    "document": "linux/runtime-zstd.txt",
+    "repository": "https://github.com/facebook/zstd",
+    "ref": "v1.5.6",
+    "upstream_files": [
+      "COPYING",
+      "LICENSE"
+    ]
+  },
+  {
+    "document": "linux/runtime-zlib.txt",
+    "repository": "https://github.com/madler/zlib",
+    "ref": "v1.3.1",
+    "upstream_files": [
+      "LICENSE",
+      "zlib.h"
+    ]
+  },
+  {
+    "document": "linux/runtime-mimalloc.txt",
+    "repository": "https://github.com/microsoft/mimalloc",
+    "ref": "v2.1.7",
+    "upstream_files": [
+      "LICENSE"
+    ]
   }
 ]

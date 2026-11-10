@@ -50,7 +50,13 @@ libcrypto DLL version string); DirectXShaderCompiler/LLVM dxcompiler.dll and
 dxil.dll (LLVM/NCSA and third-party notices, collected from the upstream
 v1.8.2405 source; this is the notice source, not an assertion of the DLL
 build version). AppImage includes its type2-runtime LICENSE (MIT) from
-the AppImage/type2-runtime repository, recorded in inventory.json.
+the AppImage/type2-runtime repository, recorded in inventory.json. Its
+linked-library notices cover musl, libfuse, squashfuse, zstd, zlib and mimalloc,
+as listed by the upstream runtime LICENSE and build scripts. Upstream runtime
+source/build instructions and carried libfuse patch:
+https://github.com/AppImage/type2-runtime/tree/fedfad51acc2860b2916a1eef32ba4a500ff31ef
+The document refs identify notice sources; the runtime tool downloads its own
+continuous runtime, so they do not assert exact linked-library build versions.
 SDK build source/recipe:
 https://github.com/MatsuriDayo/nekoray_qt_runtime
 macOS: Qt 6.12.0 qtbase/qtsvg/qtimageformats from the official Qt SDK.
