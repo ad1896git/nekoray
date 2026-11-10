@@ -111,8 +111,31 @@ preinst/postrm inspection bytes.
 
 An unsafe upgrade with blocked unwind leaves 4.0.1 Half-Installed
 (`Status: install reinstreq half-installed`). Plain `dpkg --purge` fails in
-that state. Back up wanted local data without executing untrusted files. Stop
-NekoBox and processes running as the old owning UID before recovery; this is an
+that state. **Before any recovery step, require that no process of the old
+owning UID holds capabilities, including CAP_NET_ADMIN.** From a trusted
+administrator shell, identify the numeric owner using `/usr/bin/stat -c %u
+/opt/nekoray` (lstat; do not follow a prefix symlink). For example, with
+`old_uid=1001`, inspect processes and their capabilities using:
+
+```bash
+/usr/bin/sudo /usr/bin/env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin /usr/bin/ps -U "$old_uid" -u "$old_uid" -o pid,uid,euid,args
+# For EACH listed PID, substitute its numeric value:
+/usr/bin/sudo /usr/bin/env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin /usr/sbin/getpcaps PID
+```
+
+Alternatively inspect `Uid:`, `CapEff:` and `CapPrm:` in `/proc/PID/status`
+for every process whose real, effective, saved or filesystem UID is the old
+UID; bit 12 (`0x1000`) is CAP_NET_ADMIN. Terminate those processes (suspending
+them retains capabilities), stop the UID's services and sessions, and prevent
+new logins/jobs throughout recovery. Repeat the inspection and require no
+remaining processes of that UID. An offline rescue environment is preferable
+when this exclusion cannot be established. These commands are observations,
+not an enforcement mechanism: file xattr revocation does not remove capabilities
+already held by a running process, and a live scan cannot prove completeness
+against concurrent hostile activity. Do not declare recovery complete without
+process exclusion and coverage of all relevant mounts.
+
+Only then back up wanted local data without executing untrusted files. This is an
 administrator procedure on a trusted local filesystem, with `/` controlled by
 root and no concurrent administrator or mount changes. Do not recursively
 change ownership or permissions of the old tree.
@@ -133,22 +156,137 @@ directory. Do not preserve an untrusted shell configuration or package-manager
 configuration. These steps assume the system executables and configuration are
 trusted, as well as `/`.
 
-Run the following blocks in order, in the same Bash session. The first block
-prints lstat metadata for `/opt` and `/opt/nekoray`, stops if `/opt` is a symlink
-or not a directory, then performs **non-recursive chown root:root and chmod
-0755 on only `/opt`**. It uses an `O_NOFOLLOW` directory descriptor and
-`fchown`/`fchmod`, so neither operation follows a symlink. It renames only the
-`/opt/nekoray` directory entry to `/opt/nekoray.untrusted`; a prefix symlink is
-renamed, never followed. An existing quarantine stops recovery rather than
-being overwritten. Save the printed original owning UID for the final cleanup.
+Run the following blocks in order, in the same Bash session. Preparation first
+opens `/opt` with `O_DIRECTORY|O_NOFOLLOW`, verifies its identity, and performs
+**non-recursive fchown root:root and fchmod 0755 on that descriptor** before
+inspecting any child or quarantine destination. It then opens the real legacy
+prefix and core relative to descriptors, without following symlinks. It verifies
+the core is regular, records `(st_dev, st_ino)`, removes `security.capability`
+through the core descriptor, and requires empty `getcap /proc/self/fd/N` output.
+Revocation changes the inode, covering every hardlink or moved alias, rather
+than just unlinking a quarantine name. A prefix symlink is never traversed;
+the scan below must find any displaced capable core instead. A symlink or
+special file at the core of a real prefix stops for manual inspection.
+
+The same block scans regular files as root, using descriptor-relative,
+no-follow traversal bounded to each scan root's filesystem (like `find -P
+-xdev` plus `getcap -r`). It reports every capable inode, and flags and revokes
+capabilities if the inode is not root-owned, has unsafe modes/ancestors, or is
+outside trusted system/package paths. Only root-controlled `/usr`, `/bin`,
+`/sbin`, `/lib` and `/lib64` trees are allowlisted here; review that trust
+assumption against authenticated system packages. Other paths lose capabilities,
+even when root-owned; reinstall authenticated packages if needed afterward.
+The scan catches inodes that older postinst runs may have made capable before
+an attacker swapped the core path. No symlink is followed during traversal,
+opening or revocation. Errors stop recovery rather than imply an empty scan.
+
+**Mount coverage is an administrator responsibility.** Inspect mounts first
+with `/usr/bin/sudo /usr/bin/env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin
+/usr/bin/findmnt -rn -o TARGET,FSTYPE,OPTIONS`. The default roots cover `/` and
+the filesystem containing `/opt`. Every skipped boundary is reported. Add each
+other local filesystem (including separate `/home`, `/var`, bind mounts and
+volumes holding old aliases) to `scan_roots` below, using physical paths with
+no symlink components; review nested boundaries too. Do not scan kernel virtual
+filesystems such as `/proc`, `/sys` or `/dev`. Unavailable/unmounted filesystems,
+remote filesystems and snapshots may contain additional capable copies; inspect
+and remediate them offline before reuse. This scan neither authenticates bytes
+nor revokes process-held capabilities.
+
+Only after lockdown, revocation and scanning does preparation check the
+quarantine destination. It renames relative to the `/opt` descriptor with Linux
+`renameat2(RENAME_NOREPLACE)`; an existing destination always causes STOP and
+is preserved. Unsupported renameat2 also stops. A prefix symlink is renamed,
+never followed. Save the printed original owning UID for the final cleanup.
 
 <!-- aprime-prepare -->
 ```bash
 quarantine_uid=$(/usr/bin/sudo /usr/bin/python3 -I - <<'PYRECOVER'
-import os, stat, sys
+import ctypes, errno, os, stat, subprocess, sys
 
 def stop(message):
     sys.exit("STOP: " + message)
+
+clean_env = {"PATH": "/usr/sbin:/usr/bin:/sbin:/bin"}
+missing_xattr = (errno.ENODATA, errno.EOPNOTSUPP)
+def capability(core_fd):
+    try:
+        return os.getxattr(core_fd, "security.capability")
+    except OSError as error:
+        if error.errno not in missing_xattr:
+            raise
+        return b""
+
+def revoke(core_fd, label):
+    info = os.fstat(core_fd)
+    if not stat.S_ISREG(info.st_mode):
+        stop("not a regular file: " + repr(label))
+    identity = (info.st_dev, info.st_ino)
+    if capability(core_fd):
+        os.removexattr(core_fd, "security.capability")
+    result = subprocess.run(
+        ["/usr/sbin/getcap", "/proc/self/fd/" + str(core_fd)],
+        pass_fds=(core_fd,), env=clean_env, check=True,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30)
+    if result.stdout or result.stderr or capability(core_fd):
+        stop("capability revocation verification failed: " + repr(label))
+    print(f"REVOKED {label!r} dev,ino={identity}; getcap empty", file=sys.stderr)
+
+# Edit this list to include ALL other relevant local mount roots (see above).
+scan_roots = ["/", "/opt"]
+trusted_paths = ("/usr/", "/bin/", "/sbin/", "/lib/", "/lib64/")
+def safe(info):
+    return info.st_uid == 0 and info.st_gid == 0 and not info.st_mode & 0o6022
+
+def scan(directory_fd, path, device, trusted_ancestors):
+    with os.scandir(directory_fd) as entries:
+        for entry in entries:
+            info = entry.stat(follow_symlinks=False)
+            name = path.rstrip("/") + "/" + entry.name
+            if info.st_dev != device:
+                print("SCAN boundary (review mount coverage): " + repr(name), file=sys.stderr)
+                continue
+            if stat.S_ISLNK(info.st_mode):
+                continue
+            if not (stat.S_ISDIR(info.st_mode) or stat.S_ISREG(info.st_mode)):
+                continue
+            flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
+            if stat.S_ISDIR(info.st_mode):
+                flags |= os.O_DIRECTORY
+            child = os.open(entry.name, flags, dir_fd=directory_fd)
+            try:
+                opened = os.fstat(child)
+                if (opened.st_dev, opened.st_ino, stat.S_IFMT(opened.st_mode)) != (
+                        info.st_dev, info.st_ino, stat.S_IFMT(info.st_mode)):
+                    stop("scan entry changed: " + repr(name))
+                trusted = trusted_ancestors and safe(opened)
+                if stat.S_ISDIR(opened.st_mode):
+                    scan(child, name, device, trusted)
+                elif capability(child):
+                    print(f"CAP_SCAN found {name!r} uid={opened.st_uid} dev,ino="
+                          f"{(opened.st_dev, opened.st_ino)}", file=sys.stderr)
+                    if not trusted or not name.startswith(trusted_paths):
+                        print("CAP_SCAN flagged: " + repr(name), file=sys.stderr)
+                        revoke(child, name)
+            finally:
+                os.close(child)
+
+# Open every root component physically; O_NOFOLLOW applies at each level.
+def open_directory(path):
+    if not path.startswith("/") or ".." in path.split("/"):
+        stop("scan root must be an absolute physical path")
+    current = os.open("/", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    trusted = safe(os.fstat(current))
+    try:
+        for component in filter(None, path.split("/")):
+            child = os.open(component, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                            dir_fd=current)
+            os.close(current)
+            current = child
+            trusted = trusted and safe(os.fstat(current))
+        return current, trusted
+    except BaseException:
+        os.close(current)
+        raise
 
 opt = os.stat("/opt", follow_symlinks=False)
 print(f"/opt: uid={opt.st_uid} gid={opt.st_gid} mode={stat.S_IMODE(opt.st_mode):04o}", file=sys.stderr)
@@ -159,18 +297,47 @@ try:
     opened = os.fstat(fd)
     if (opened.st_dev, opened.st_ino) != (opt.st_dev, opt.st_ino):
         stop("/opt changed during inspection")
+    os.fchown(fd, 0, 0)
+    os.fchmod(fd, 0o755)
     prefix = os.stat("nekoray", dir_fd=fd, follow_symlinks=False)
     print(f"/opt/nekoray: uid={prefix.st_uid} gid={prefix.st_gid} mode={stat.S_IMODE(prefix.st_mode):04o}", file=sys.stderr)
+    if stat.S_ISDIR(prefix.st_mode):
+        prefix_fd = os.open("nekoray", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+        try:
+            actual = os.fstat(prefix_fd)
+            if (actual.st_dev, actual.st_ino) != (prefix.st_dev, prefix.st_ino):
+                stop("legacy prefix changed")
+            core_fd = os.open("nekobox_core", os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+                              dir_fd=prefix_fd)
+            try:
+                revoke(core_fd, "/opt/nekoray/nekobox_core")
+            finally:
+                os.close(core_fd)
+        finally:
+            os.close(prefix_fd)
+    elif not stat.S_ISLNK(prefix.st_mode):
+        stop("legacy prefix is neither directory nor symlink")
+    for root in scan_roots:
+        root_fd, trusted = open_directory(root)
+        try:
+            scan(root_fd, root, os.fstat(root_fd).st_dev, trusted)
+        finally:
+            os.close(root_fd)
     try:
         os.stat("nekoray.untrusted", dir_fd=fd, follow_symlinks=False)
     except FileNotFoundError:
         pass
     else:
         stop("/opt/nekoray.untrusted already exists; preserve it and inspect manually")
-    os.fchown(fd, 0, 0)
-    os.fchmod(fd, 0o755)
-    os.rename("nekoray", "nekoray.untrusted", src_dir_fd=fd, dst_dir_fd=fd)
+    libc = ctypes.CDLL(None, use_errno=True)
+    rename = libc.renameat2
+    rename.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+    rename.restype = ctypes.c_int
+    if rename(fd, b"nekoray", fd, b"nekoray.untrusted", 1) != 0:  # RENAME_NOREPLACE
+        stop("quarantine rename refused: " + os.strerror(ctypes.get_errno()))
     quarantined = os.stat("nekoray.untrusted", dir_fd=fd, follow_symlinks=False)
+    if (quarantined.st_dev, quarantined.st_ino) != (prefix.st_dev, prefix.st_ino):
+        stop("legacy prefix changed during quarantine")
     print(quarantined.st_uid)
 finally:
     os.close(fd)
@@ -231,6 +398,8 @@ PYDISPOSE
 If `/var/tmp` is on a different filesystem, the rename fails safely; an
 administrator must choose a trusted disposal parent on the same filesystem.
 No command above changes ownership or modes inside the quarantined tree.
+Capability revocation occurs before quarantine/disposal, so disposal is not the
+security boundary for surviving hardlinks or moved aliases.
 Ordinary new-package postrm remove/purge actions remain available without a
 prefix guard.
 
@@ -266,7 +435,13 @@ run's newly built package, verify the exact
 upstream 4.0.1 SHA256 before installation, require preinst and postrm refusal,
 assert the exact Half-Installed state, then execute the documented dpkg
 A-prime quarantine/forced-remove/purge/reinstall/disposal remedy from the blocks
-above. Replacement native core bytes have no capability before
+above. Additional cases retain the genuine capable 4.0.1 core, create hardlinks
+as UID 1001 outside the prefix, move that inode as UID 1001 after quarantine,
+and plant a separate UID-1001-owned capable inode for scan/revocation. Nonempty
+capabilities before recovery are required positive controls. A synchronized
+UID-1001 quarantine collision between the early observation and lockdown must
+STOP and preserve the planted object; an ordinary-rename control demonstrates
+the old overwrite hazard. Replacement native core bytes have no capability before
 or after refusal. A test-only repack of 4.0.1 traces its original postinst with a
 configure positive control and proves it is never called during unsafe unwind.
 It also tests an attacker-owned nested directory with a planted symlink, and a

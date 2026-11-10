@@ -112,7 +112,7 @@ dispose_command=$(recovery_command dispose)
 from pathlib import Path
 import sys
 root = Path(sys.argv[1])
-modules = ("tempfile os stat sys site sitecustomize usercustomize random shutil "
+modules = ("ctypes errno subprocess tempfile os stat sys site sitecustomize usercustomize random shutil "
            "weakref functools types re enum copyreg warnings collections "
            "contextlib operator _collections_abc io abc encodings").split()
 def payload(name):
@@ -307,6 +307,17 @@ recover_refused_old() {
     test ! -e /opt/nekoray && test ! -L /opt/nekoray
     test -e /opt/nekoray.untrusted || test -L /opt/nekoray.untrusted
     assert_sentinel
+    if [ "$label" = real-capable-401 ]; then
+        # A scheduled active UID runs BETWEEN the exact prepare/remove blocks.
+        # Its source is the quarantined, original, already-revoked core inode.
+        sudo -u '#1001' -- /usr/bin/mv /opt/nekoray.untrusted/nekobox_core /opt/attacker-cache/moved-core
+        test "$(stat -c %d:%i /opt/attacker-cache/moved-core)" = "$real_core_identity"
+        assert_no_cap /opt/attacker-cache/moved-core
+        assert_no_cap /opt/attacker-cache/retained-core
+        assert_no_cap /home/nekoray-capability-test/retained-core
+        assert_no_cap /opt/attacker-cache/stale-capable-core
+        echo 'ACTIVE_MOVE_RESULT: PASS (uid 1001 moved real legacy inode out of quarantine; getcap empty)'
+    fi
     sha256sum /usr/share/applications/nekoray.desktop > "$work/launcher-before"
     # No old prerm/postrm exists. Trace dpkg's real script routing as well as
     # checking the old-postinst wrapper (where present) remains empty.
@@ -331,7 +342,134 @@ recover_refused_old() {
     assert_sentinel
     echo "PLANTED_MODULE_RESULT: PASS ($label; uid 1001 cwd, hostile PATH/PYTHON*, preserved sudo environment, no marker)"
     echo "APRIME_STEPS_RESULT: PASS ($label; quarantine removed as UID $quarantine_uid)"
+    if [ "$label" = real-capable-401 ]; then
+        for alias in /opt/attacker-cache/retained-core /home/nekoray-capability-test/retained-core /opt/attacker-cache/moved-core /opt/attacker-cache/stale-capable-core; do
+            test -f "$alias"
+            assert_no_cap "$alias"
+        done
+        echo 'HARDLINK_RESULT: PASS (real legacy core; /opt cache and home aliases survive disposal without capability)'
+        echo 'CAP_SCAN_RESULT: PASS (separate uid-1001 inode detected, revoked and remains empty after recovery)'
+    fi
 }
+
+# Synchronized old-UID collision between an early negative observation and
+# fchown. Execute the published Python body verbatim; monkeypatch ONLY fchown
+# to schedule a real uid-1001 filesystem operation immediately before lockdown.
+# The ordinary rename control first demonstrates the former overwrite hazard.
+sudo mkdir -p /opt
+sudo chown 1001:127 /opt
+printf '%s\n' "$prepare_command" > "$work/prepare.bash"
+cat > "$work/collision.py" <<'PYCOLLISION'
+from pathlib import Path
+import os, subprocess, sys
+prepare = Path(sys.argv[1]).read_text().split("<<'PYRECOVER'\n", 1)[1].split('\nPYRECOVER', 1)[0]
+runas = ['/usr/bin/sudo', '-u', '#1001', '--', '/usr/bin/python3', '-I', '-']
+def attacker(code):
+    subprocess.run(runas, input=code, text=True, check=True, timeout=30)
+attacker("import os; os.symlink('/nonexistent-control', '/opt/old-rename-source'); "
+         "open('/opt/old-rename-destination', 'w').write('preserve me')")
+# Old ordering: destination planted after an absence check can be overwritten.
+os.rename('/opt/old-rename-source', '/opt/old-rename-destination')
+assert os.path.islink('/opt/old-rename-destination')
+os.unlink('/opt/old-rename-destination')
+print('COLLISION_POSITIVE_CONTROL: PASS (ordinary rename overwrote planted file)', flush=True)
+attacker("import os; os.symlink('/nonexistent-prefix-target', '/opt/nekoray')")
+assert not os.path.lexists('/opt/nekoray.untrusted')  # early observation
+original = os.fchown
+scheduled = False
+def scheduled_fchown(fd, uid, gid):
+    global scheduled
+    assert not scheduled and (uid, gid) == (0, 0)
+    assert os.fstat(fd).st_ino == os.stat('/opt').st_ino
+    attacker("open('/opt/nekoray.untrusted', 'w').write('quarantine must be preserved')")
+    scheduled = True
+    original(fd, uid, gid)
+os.fchown = scheduled_fchown
+try:
+    try:
+        exec(compile(prepare, '<verbatim-published-prepare>', 'exec'), {})
+    except SystemExit as error:
+        assert str(error).startswith('STOP: /opt/nekoray.untrusted already exists'), error
+    else:
+        raise AssertionError('collision unexpectedly accepted')
+finally:
+    os.fchown = original
+assert scheduled
+assert Path('/opt/nekoray.untrusted').read_text() == 'quarantine must be preserved'
+assert os.path.islink('/opt/nekoray')
+# Exercise the atomic primitive itself with an existing file too: EEXIST,
+# preserving the planted bytes, even if a privileged actor raced the check.
+import ctypes, errno
+libc = ctypes.CDLL(None, use_errno=True)
+rename = libc.renameat2
+rename.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+rename.restype = ctypes.c_int
+fd = os.open('/opt', os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+try:
+    assert rename(fd, b'nekoray', fd, b'nekoray.untrusted', 1) == -1
+    assert ctypes.get_errno() == errno.EEXIST
+finally:
+    os.close(fd)
+assert Path('/opt/nekoray.untrusted').read_text() == 'quarantine must be preserved'
+print('COLLISION_RESULT: PASS (scheduled uid 1001 collision STOP; no-replace EEXIST; planted object preserved)')
+os.unlink('/opt/nekoray')
+os.unlink('/opt/nekoray.untrusted')
+PYCOLLISION
+(
+    cd "$hostile_cwd"
+    export PYTHONPATH="$hostile_cwd" PYTHONSTARTUP="$hostile_cwd/startup.py" PYTHONUSERBASE="$hostile_cwd/userbase"
+    /usr/bin/sudo /usr/bin/python3 -I "$work/collision.py" "$work/prepare.bash"
+)
+assert_no_import_marker
+assert_sentinel
+sudo rmdir /opt
+
+# Genuine checksum-pinned 4.0.1 core: never replace its bytes or capability.
+sudo apt-get install -y "$baseline"
+getcap /opt/nekoray/nekobox_core | grep -Fx '/opt/nekoray/nekobox_core cap_net_admin=ep'
+real_core_identity=$(stat -c %d:%i /opt/nekoray/nekobox_core)
+sudo -u '#1001' -- /usr/bin/mkdir /opt/attacker-cache
+sudo mkdir -p /home/nekoray-capability-test
+sudo chown 1001:127 /home/nekoray-capability-test
+# /home and /opt are on the same disposable container root filesystem.
+test "$(stat -c %d /home/nekoray-capability-test)" = "$(stat -c %d /opt/nekoray/nekobox_core)"
+sudo -u '#1001' -- /usr/bin/ln /opt/nekoray/nekobox_core /opt/attacker-cache/retained-core
+sudo -u '#1001' -- /usr/bin/ln /opt/nekoray/nekobox_core /home/nekoray-capability-test/retained-core
+for alias in /opt/attacker-cache/retained-core /home/nekoray-capability-test/retained-core; do
+    test "$(stat -c %d:%i "$alias")" = "$real_core_identity"
+    test "$(stat -c %u "$alias")" = 1001
+    getcap "$alias" | grep -F 'cap_net_admin=ep'
+done
+# Active-move positive control on the SAME real capable inode, before recovery:
+# a move out of a quarantine-like directory retains its capability; restore it.
+sudo -u '#1001' -- /usr/bin/mkdir /opt/attacker-cache/quarantine-control
+sudo -u '#1001' -- /usr/bin/mv /opt/nekoray/nekobox_core /opt/attacker-cache/quarantine-control/core
+sudo -u '#1001' -- /usr/bin/mv /opt/attacker-cache/quarantine-control/core /opt/attacker-cache/move-control
+getcap /opt/attacker-cache/move-control | grep -F 'cap_net_admin=ep'
+test "$(stat -c %d:%i /opt/attacker-cache/move-control)" = "$real_core_identity"
+sudo -u '#1001' -- /usr/bin/mv /opt/attacker-cache/move-control /opt/nekoray/nekobox_core
+sudo -u '#1001' -- /usr/bin/rmdir /opt/attacker-cache/quarantine-control
+# Model an inode setcap'd by an earlier postinst then swapped out of the prefix.
+sudo -u '#1001' -- /usr/bin/cp /opt/nekoray/nekobox_core /opt/attacker-cache/stale-capable-core
+sudo /usr/sbin/setcap cap_net_admin=ep /opt/attacker-cache/stale-capable-core
+test "$(stat -c %u /opt/attacker-cache/stale-capable-core)" = 1001
+test "$(stat -c %d:%i /opt/attacker-cache/stale-capable-core)" != "$real_core_identity"
+getcap /opt/attacker-cache/stale-capable-core | grep -F 'cap_net_admin=ep'
+echo 'CAPABILITY_POSITIVE_CONTROLS: PASS (real core hardlinks and uid-1001 move retain capability; separate stale inode capable)'
+assert_refused upgrade-real-capable-401
+assert_half_installed 4.0.1
+getcap /opt/nekoray/nekobox_core | grep -F 'cap_net_admin=ep'
+# Capture stderr as evidence that the scan DETECTED this separate inode.
+recover_refused_old real-capable-401 2> "$work/real-capable-recovery-stderr.log"
+cat "$work/real-capable-recovery-stderr.log"
+grep -F "CAP_SCAN flagged: '/opt/attacker-cache/stale-capable-core'" "$work/real-capable-recovery-stderr.log"
+assert_sentinel
+sudo -u '#1001' -- /usr/bin/rm -- /opt/attacker-cache/retained-core /opt/attacker-cache/moved-core /opt/attacker-cache/stale-capable-core /home/nekoray-capability-test/retained-core
+sudo rmdir /opt/attacker-cache /home/nekoray-capability-test
+sudo dpkg --purge nekoray
+assert_purged
+# Remove root-owned /opt so the next exact legacy install recreates its owner.
+sudo rmdir /opt
 
 # Exact upstream archive installed as-is before planting a replacement inode.
 sudo apt-get install -y "$baseline"
