@@ -51,7 +51,7 @@ file capability. It does not start the application or create a TUN interface.
 Debian uses `dpkg-deb --root-owner-group` so runner ownership never enters the
 payload. `libs/validate_debian.py` inspects the built archive before packaging
 succeeds: every data entry must have numeric UID/GID 0:0, be a regular file or
-directory, and have no world-write, setuid or setgid bits. Empty, malformed and
+directory, and have no group/world-write, setuid or setgid bits. Empty, malformed and
 unsupported data archives fail closed. `python3 tests/test_debian_archive.py`
 tests both accepted root ownership and rejected owners/modes. CI also checks
 installed ownership and modes. The desktop launcher is a tracked payload file;
@@ -81,3 +81,22 @@ runtime, project and Qt notices, inventory-only trees and mismatched module
 inventories. On macOS, add `--macos-real` to also sign a fixture app, create a DMG,
 mount it read-only and verify its notices/signature. These fixtures never run the
 application and do not substitute for a full GUI build.
+
+Debian preinst repairs an existing `/opt/nekoray` before unpacking; postinst
+repeats the repair on every configure before running the unchanged capability
+setup. Both require a real directory, refuse symlinks, hard links, special files
+and nested mounts, and use physical, filesystem-bounded traversal with
+`chown -h` and `chmod go-w`. All ownership/mode/traversal errors fail closed.
+The archive validator also requires exact root-owned executable preinst and
+postinst contents matching `libs/debian/`, so omitted or stale scripts fail the
+build. Package-generated files share this protected prefix; locally added
+entries there also become root-owned and lose group/world write permissions.
+
+The build matrix's `deb-upgrade` jobs run
+`bash tests/verify_debian_lifecycle.sh package.deb` on disposable Ubuntu 22.04
+and 24.04 runners. They use the same run's newly built package and verify the
+SHA256 of the upstream 4.0.1 baseline before installing it. They check fresh
+install, upgrade (including writable, non-root retained nested directories),
+reconfiguration, numeric ownership/modes of every prefix entry, capability,
+dpkg-tracked launcher, removal and purge. This script changes system packages;
+run it only in a disposable test environment.

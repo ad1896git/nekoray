@@ -1,0 +1,41 @@
+#!/bin/sh
+set -e
+
+case "$1" in
+    configure) ;;
+    abort-upgrade|abort-remove|abort-deconfigure) exit 0 ;;
+    *) echo "nekoray postinst: unsupported argument: $1" >&2; exit 1 ;;
+esac
+
+# dpkg preserves existing directory metadata on upgrade. Secure the prefix
+# before assigning a file capability; never traverse links or other filesystems.
+if [ -L /opt/nekoray ] || [ ! -d /opt/nekoray ]; then
+    echo "nekoray: refusing unsafe /opt/nekoray (expected a real directory)" >&2
+    exit 1
+fi
+chown -h 0:0 /opt/nekoray
+chmod go-w /opt/nekoray
+# Refuse nested mount points rather than changing another filesystem's root.
+root_device=$(stat -c %d -- /opt/nekoray)
+devices=$(find -P /opt/nekoray -xdev -exec stat -c %d -- {} +)
+for device in $devices; do
+    if [ "$device" != "$root_device" ]; then
+        echo "nekoray: refusing nested mount under /opt/nekoray" >&2
+        exit 1
+    fi
+done
+unsafe=$(find -P /opt/nekoray -xdev \( \( ! -type d ! -type f \) -o \( -type f -links +1 \) \) -print -quit)
+if [ -n "$unsafe" ]; then
+    echo "nekoray: refusing symlink, hard link or special file under /opt/nekoray: $unsafe" >&2
+    exit 1
+fi
+# -exec ... + propagates command failures through find's exit status.
+find -P /opt/nekoray -xdev -exec chown -h 0:0 -- {} +
+find -P /opt/nekoray -xdev \( -type d -o -type f \) -exec chmod go-w -- {} +
+
+if ! setcap cap_net_admin=ep /opt/nekoray/nekobox_core; then
+    echo "WARNING: nekoray: failed to set CAP_NET_ADMIN on nekobox_core; TUN is unavailable. Check libcap2-bin and filesystem capability support, then run dpkg --configure nekoray." >&2
+    exit 1
+fi
+
+update-desktop-database

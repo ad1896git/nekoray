@@ -1,0 +1,40 @@
+#!/bin/sh
+set -e
+
+case "$1" in
+    install|upgrade) ;;
+    abort-upgrade) exit 0 ;;
+    *) echo "nekoray preinst: unsupported argument: $1" >&2; exit 1 ;;
+esac
+
+# A fresh installation has no prefix yet. Check existing installations before
+# dpkg unpacks into a directory potentially owned by the previous package user.
+if [ ! -e /opt/nekoray ] && [ ! -L /opt/nekoray ]; then
+    exit 0
+fi
+
+# dpkg preserves existing directory metadata on upgrade. Secure the prefix
+# before assigning a file capability; never traverse links or other filesystems.
+if [ -L /opt/nekoray ] || [ ! -d /opt/nekoray ]; then
+    echo "nekoray: refusing unsafe /opt/nekoray (expected a real directory)" >&2
+    exit 1
+fi
+chown -h 0:0 /opt/nekoray
+chmod go-w /opt/nekoray
+# Refuse nested mount points rather than changing another filesystem's root.
+root_device=$(stat -c %d -- /opt/nekoray)
+devices=$(find -P /opt/nekoray -xdev -exec stat -c %d -- {} +)
+for device in $devices; do
+    if [ "$device" != "$root_device" ]; then
+        echo "nekoray: refusing nested mount under /opt/nekoray" >&2
+        exit 1
+    fi
+done
+unsafe=$(find -P /opt/nekoray -xdev \( \( ! -type d ! -type f \) -o \( -type f -links +1 \) \) -print -quit)
+if [ -n "$unsafe" ]; then
+    echo "nekoray: refusing symlink, hard link or special file under /opt/nekoray: $unsafe" >&2
+    exit 1
+fi
+# -exec ... + propagates command failures through find's exit status.
+find -P /opt/nekoray -xdev -exec chown -h 0:0 -- {} +
+find -P /opt/nekoray -xdev \( -type d -o -type f \) -exec chmod go-w -- {} +

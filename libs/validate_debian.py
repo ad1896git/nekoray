@@ -6,6 +6,8 @@ from pathlib import Path
 import subprocess
 import tarfile
 
+REPO = Path(__file__).resolve().parents[1]
+
 
 def validate(package):
     members = subprocess.check_output(['ar', 't', str(package)], text=True, timeout=30).splitlines()
@@ -20,12 +22,26 @@ def validate(package):
                 raise ValueError(f'{entry.name}: owner {entry.uid}:{entry.gid}, expected 0:0')
             if not (entry.isfile() or entry.isdir()):
                 raise ValueError(f'{entry.name}: unexpected payload type')
-            if entry.mode & 0o6002:
+            if entry.mode & 0o6022:
                 raise ValueError(f'{entry.name}: unsafe mode {entry.mode:04o}')
             count += 1
     if not count:
         raise ValueError('Empty Debian payload')
-    print(f'Validated Debian payload: {count} entries, all 0:0; no world-writable or setuid/setgid modes')
+    control = [name for name in members if name.startswith('control.tar')]
+    if len(control) != 1 or control[0] not in ('control.tar', 'control.tar.gz', 'control.tar.xz', 'control.tar.bz2'):
+        raise ValueError('Expected exactly one supported control.tar member')
+    metadata = subprocess.check_output(['ar', 'p', str(package), control[0]], timeout=30)
+    with tarfile.open(fileobj=io.BytesIO(metadata), mode='r:*') as archive:
+        for name in ('preinst', 'postinst'):
+            scripts = [entry for entry in archive.getmembers() if entry.name.removeprefix('./') == name]
+            if len(scripts) != 1:
+                raise ValueError(f'Expected exactly one {name}')
+            entry = scripts[0]
+            if not entry.isfile() or (entry.uid, entry.gid, entry.mode) != (0, 0, 0o755):
+                raise ValueError(f'{name}: expected regular root-owned mode 0755 script')
+            if archive.extractfile(entry).read() != (REPO / 'libs/debian' / name).read_bytes():
+                raise ValueError(f'{name}: does not match the reviewed ownership/capability script')
+    print(f'Validated Debian payload: {count} entries, all 0:0; no group/world-write or setuid/setgid modes; maintainer scripts match')
 
 
 def main():
