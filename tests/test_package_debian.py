@@ -101,7 +101,7 @@ os.execv(''' + repr(shutil.which('find')) + ''', ['find'] + args)
     def refused(script, action, extra=None):
         result = run(script, action, extra)
         assert result.returncode != 0 and 'refusing unsafe pre-existing install' in result.stderr, result
-        assert 'Half-Installed' in result.stderr and 'sudo dpkg --purge nekoray' in result.stderr
+        assert 'Half-Installed' in result.stderr and 'docs/PACKAGING.md#administrator-recovery-a-prime' in result.stderr
         assert not marker.exists(), result
 
     # Absent prefix and absent /opt are both normal fresh installs.

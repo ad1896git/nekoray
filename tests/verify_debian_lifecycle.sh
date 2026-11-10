@@ -26,6 +26,8 @@ assert_installed() {
     test "$(dpkg-query -W -f='${Status}' nekoray)" = 'install ok installed'
     test "$(dpkg-query -W -f='${Version}' nekoray)" = "$version"
     test ! -L /opt/nekoray && test -d /opt/nekoray
+    test "$(stat -c %u:%g:%a /opt)" = 0:0:755
+    echo 'FINAL_OPT_OWNER_MODE: 0:0:755'
     # Assert every entry in the prefix, including directories retained by dpkg.
     bad=$(find -P /opt/nekoray -xdev \( ! -uid 0 -o ! -gid 0 -o -perm /6022 \) -print)
     test -z "$bad" || { printf 'Unsafe installed paths:\n%s\n' "$bad" >&2; return 1; }
@@ -60,7 +62,26 @@ assert_no_cap() {
     test -z "$caps"
 }
 sudo apt-get update
-sudo apt-get install -y libcap2-bin
+sudo apt-get install -y libcap2-bin strace
+# sudo can require a passwd entry even for a numeric runas UID.
+if ! getent passwd 1001; then
+    sudo useradd --uid 1001 --no-create-home --shell /usr/sbin/nologin nekoray-original-owner
+fi
+test "$(sudo -u '#1001' -- id -u)" = 1001
+
+# Execute the exact user-facing Bash blocks, so documentation drift fails CI.
+recovery_command() {
+    python3 - "$1" <<'PYDOC'
+from pathlib import Path
+import sys
+text = Path("docs/PACKAGING.md").read_text()
+marker = "<!-- aprime-" + sys.argv[1] + " -->\n```bash\n"
+assert text.count(marker) == 1
+print(text.split(marker, 1)[1].split("\n```", 1)[0])
+PYDOC
+}
+new_deb=$subject
+export new_deb
 
 # Outside-prefix sentinel: both metadata and bytes must survive refusals.
 mkdir "$work/outside-prefix"
@@ -71,10 +92,14 @@ import os, sys
 os.setxattr(sys.argv[1], "user.nekoray-lifecycle", b"must survive refusal")
 PYATTR
 chmod 0664 "$sentinel"
+cp /bin/true "$work/outside-prefix/geoip.dat"
+chmod 0640 "$work/outside-prefix/geoip.dat"
+cp /bin/true "$work/outside-prefix/nekobox_core.dpkg-new"
+chmod 04755 "$work/outside-prefix/nekobox_core.dpkg-new"
 # Snapshot all xattrs, including security.capability, without following links.
 sentinel_state() {
-    stat -c '%u:%g:%a' "$sentinel"
-    sha256sum "$sentinel"
+    stat -c '%u:%g:%a:%n' "$work/outside-prefix" "$work/outside-prefix/"*
+    sha256sum "$work/outside-prefix/"*
     python3 - "$sentinel" <<'PYATTR'
 import os, sys
 p = sys.argv[1]
@@ -101,7 +126,7 @@ assert_refused() {
     cat "$work/$label.log"
     test "$rc" -eq 100
     grep -F 'nekoray: refusing unsafe pre-existing install:' "$work/$label.log"
-    grep -F "sudo dpkg --purge nekoray" "$work/$label.log"
+    grep -F 'docs/PACKAGING.md#administrator-recovery-a-prime' "$work/$label.log"
     grep -F 'pre-installation script subprocess returned error exit status 1' "$work/$label.log"
     grep -F 'Half-Installed' "$work/$label.log"
     assert_sentinel
@@ -119,6 +144,26 @@ sudo apt-get remove -y nekoray
 test ! -e /opt/nekoray && test ! -e /usr/share/applications/nekoray.desktop
 sudo apt-get purge -y nekoray
 assert_purged
+
+# Exercise the documented STOP before touching an unsafe /opt entry itself.
+# The clean package has been purged; only this disposable rootfs is changed.
+if [ -d /opt ]; then sudo rmdir /opt; fi
+for kind in symlink file; do
+    if [ "$kind" = symlink ]; then
+        sudo ln -s "$work/outside-prefix" /opt
+    else
+        sudo touch /opt
+    fi
+    if bash -e -c "$(recovery_command prepare)" > "$work/stop-$kind.log" 2>&1; then
+        echo "Preparation unexpectedly accepted /opt as $kind" >&2
+        exit 1
+    fi
+    cat "$work/stop-$kind.log"
+    grep -F 'STOP: /opt is a symlink or not a directory' "$work/stop-$kind.log"
+    assert_sentinel
+    sudo unlink /opt
+done
+sudo mkdir -m 0755 /opt
 
 # Inspect authenticated old removal entry points BEFORE testing the remedy.
 dpkg-deb -e "$baseline" "$work/old-control"
@@ -145,12 +190,35 @@ assert_half_installed() {
     echo "POST_REFUSAL_DPKG_STATE: Status: $status"
     test "$status" = 'install reinstreq half-installed'
 }
-purge_refused_old() {
-    # Exact documented command, from the actual failed-unwind state.
-    sudo dpkg --purge nekoray
+recover_refused_old() {
+    local label=$1 quarantine_uid
+    quarantine_uid=$(bash -e -c "$(recovery_command prepare)")
+    test "$quarantine_uid" = 1001
+    export quarantine_uid
+    test "$(stat -c %u:%g:%a /opt)" = 0:0:755
     test ! -e /opt/nekoray && test ! -L /opt/nekoray
+    test -e /opt/nekoray.untrusted || test -L /opt/nekoray.untrusted
     assert_sentinel
-    echo 'REMEDY_COMMAND: sudo dpkg --purge nekoray -> pass'
+    # No old prerm/postrm exists. Trace dpkg's real script routing as well as
+    # checking the old-postinst wrapper (where present) remains empty.
+    sudo strace -f -s 512 -e trace=execve -o "$work/$label-remove-exec.log" \
+        bash -e -c "$(recovery_command remove)" > "$work/$label-remove.log" 2>&1
+    cat "$work/$label-remove.log" "$work/$label-remove-exec.log"
+    if grep -E '/nekoray\.(preinst|postinst|prerm|postrm)' "$work/$label-remove-exec.log"; then
+        echo 'Unexpected nekoray maintainer-script execution during old removal' >&2
+        return 1
+    fi
+    echo "OLD_REMOVAL_SCRIPTS: no nekoray maintainer scripts executed ($label)"
+    assert_purged
+    test "$(stat -c %u:%g:%a /opt)" = 0:0:755
+    assert_sentinel
+    bash -e -c "$(recovery_command install)"
+    assert_installed "$label-aprime-install"
+    assert_sentinel
+    bash -e -c "$(recovery_command dispose)"
+    test ! -e /opt/nekoray.untrusted && test ! -L /opt/nekoray.untrusted
+    assert_sentinel
+    echo "APRIME_STEPS_RESULT: PASS ($label; quarantine removed as UID $quarantine_uid)"
 }
 
 # Exact upstream archive installed as-is before planting a replacement inode.
@@ -163,9 +231,7 @@ assert_refused upgrade-from-401
 assert_half_installed 4.0.1
 assert_no_cap /opt/nekoray/nekobox_core
 echo 'PLANTED_CORE_GETCAP_AFTER_UNWIND: empty (exact 4.0.1)'
-purge_refused_old
-sudo apt-get install -y "$subject"
-assert_installed purge-401-then-install
+recover_refused_old exact-401
 sudo dpkg --purge nekoray
 assert_purged
 
@@ -181,23 +247,32 @@ EOF
 sudo chmod 0755 "$work/traced-old/DEBIAN/postinst"
 sudo dpkg-deb -Zxz --build "$work/traced-old" "$work/traced-old.deb"
 
-for layout in replacement-core nested-symlink prefix-symlink; do
+for layout in replacement-core nested-symlink prefix-symlink nonroot-opt; do
     sudo apt-get install -y "$work/traced-old.deb"
     grep -Ex 'configure( .*)?' "$work/old-postinst-trace"
     : > "$work/old-postinst-trace"
     plant_core
-    if [ "$layout" = nested-symlink ]; then
-        # Isolate the nested guard: ancestors and prefix are safe in this fixture.
+    if [ "$layout" = replacement-core ]; then
+        # Root-owned /opt with the original UID owning the prefix/replacement.
+        sudo chown 0:0 /opt
+    elif [ "$layout" = nested-symlink ]; then
+        # Retain a hostile nested layout through the complete recovery, too.
         sudo chown 0:0 /opt
         sudo chown -hR 0:0 /opt/nekoray
+        sudo chown 1001:127 /opt/nekoray
         sudo mkdir -p /opt/nekoray/adversarial-probe/nested
         sudo ln -s "$sentinel" /opt/nekoray/adversarial-probe/nested/outside
         sudo chown -hR 12345:12345 /opt/nekoray/adversarial-probe
         sudo chmod 0777 /opt/nekoray/adversarial-probe /opt/nekoray/adversarial-probe/nested
     elif [ "$layout" = prefix-symlink ]; then
-        sudo mv /opt/nekoray "$work/saved-prefix"
+        saved_prefix=$(sudo mktemp -d /var/tmp/nekoray-saved-XXXXXX)
+        sudo mv /opt/nekoray "$saved_prefix/payload"
+        sudo chown 1001 "$saved_prefix"
         sudo chown 0:0 /opt
         sudo ln -s "$work/outside-prefix" /opt/nekoray
+        sudo chown -h 1001:127 /opt/nekoray
+        # Preserve the moved test payload for unprivileged cleanup too.
+        sudo -u '#1001' -- rm -rf -- "$saved_prefix"
         assert_no_cap "$work/outside-prefix/nekobox_core"
     fi
     assert_refused "traced-401-$layout"
@@ -207,21 +282,10 @@ for layout in replacement-core nested-symlink prefix-symlink; do
     assert_no_cap /opt/nekoray/nekobox_core
     echo "PLANTED_CORE_GETCAP_AFTER_UNWIND: empty ($layout)"
     assert_sentinel
-    if [ "$layout" = prefix-symlink ]; then
-        # Restore the known test fixture before package removal; this is not a
-        # production remedy or a maintainer script. No outside target is removed.
-        sudo unlink /opt/nekoray
-        sudo mv "$work/saved-prefix" /opt/nekoray
-        assert_no_cap "$work/outside-prefix/nekobox_core"
-        assert_sentinel
-    elif [ "$layout" = nested-symlink ]; then
-        test "$(stat -c %u:%g /opt/nekoray/adversarial-probe/nested)" = 12345:12345
-        test -L /opt/nekoray/adversarial-probe/nested/outside
-        # Remove only the named static fixture, never through its planted link.
-        sudo unlink /opt/nekoray/adversarial-probe/nested/outside
-        sudo rmdir /opt/nekoray/adversarial-probe/nested /opt/nekoray/adversarial-probe
-    fi
-    purge_refused_old
+    recover_refused_old "traced-401-$layout"
+    test ! -s "$work/old-postinst-trace"
+    sudo dpkg --purge nekoray
+    assert_purged
     test ! -s "$work/old-postinst-trace"
 done
 
@@ -255,4 +319,7 @@ assert_purged
 sudo apt-get check
 sudo dpkg --audit > "$work/final-audit"
 test ! -s "$work/final-audit"
+assert_sentinel
+echo 'ADVERSARIAL_RESULT: replacement-core, nested-symlink, prefix-symlink, nonroot-opt PASS'
+echo 'SENTINEL_RESULT: owner, mode, contents and xattrs UNTOUCHED'
 echo 'Debian fresh install, safe reinstall/unwind, 4.0.1 refusal/remedy and adversarial capability/xattr lifecycle PASS'

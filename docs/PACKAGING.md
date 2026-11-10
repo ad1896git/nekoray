@@ -106,25 +106,116 @@ still returns zero and unwinds normally. The guard is embedded in each script;
 no code is sourced from the installed tree, and tests enforce identical
 preinst/postrm inspection bytes.
 
-An unsafe upgrade with blocked unwind leaves 4.0.1 Half-Installed
-(`Status: install reinstreq half-installed`). Back up wanted local data, then run this
-exact remedy from that state:
+## Administrator recovery (A-prime)
 
-```sh
+An unsafe upgrade with blocked unwind leaves 4.0.1 Half-Installed
+(`Status: install reinstreq half-installed`). Plain `dpkg --purge` fails in
+that state. Back up wanted local data without executing untrusted files. Stop
+NekoBox and processes running as the old owning UID before recovery; this is an
+administrator procedure on a trusted local filesystem, with `/` controlled by
+root and no concurrent administrator or mount changes. Do not recursively
+change ownership or permissions of the old tree.
+
+Run the following blocks in order, in the same Bash session. The first block
+prints lstat metadata for `/opt` and `/opt/nekoray`, stops if `/opt` is a symlink
+or not a directory, then performs **non-recursive chown root:root and chmod
+0755 on only `/opt`**. It uses an `O_NOFOLLOW` directory descriptor and
+`fchown`/`fchmod`, so neither operation follows a symlink. It renames only the
+`/opt/nekoray` directory entry to `/opt/nekoray.untrusted`; a prefix symlink is
+renamed, never followed. An existing quarantine stops recovery rather than
+being overwritten. Save the printed original owning UID for the final cleanup.
+
+<!-- aprime-prepare -->
+```bash
+quarantine_uid=$(sudo python3 - <<'PYRECOVER'
+import os, stat, sys
+
+def stop(message):
+    sys.exit("STOP: " + message)
+
+opt = os.stat("/opt", follow_symlinks=False)
+print(f"/opt: uid={opt.st_uid} gid={opt.st_gid} mode={stat.S_IMODE(opt.st_mode):04o}", file=sys.stderr)
+if not stat.S_ISDIR(opt.st_mode):
+    stop("/opt is a symlink or not a directory; administrator inspection required")
+fd = os.open("/opt", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+try:
+    opened = os.fstat(fd)
+    if (opened.st_dev, opened.st_ino) != (opt.st_dev, opt.st_ino):
+        stop("/opt changed during inspection")
+    prefix = os.stat("nekoray", dir_fd=fd, follow_symlinks=False)
+    print(f"/opt/nekoray: uid={prefix.st_uid} gid={prefix.st_gid} mode={stat.S_IMODE(prefix.st_mode):04o}", file=sys.stderr)
+    try:
+        os.stat("nekoray.untrusted", dir_fd=fd, follow_symlinks=False)
+    except FileNotFoundError:
+        pass
+    else:
+        stop("/opt/nekoray.untrusted already exists; preserve it and inspect manually")
+    os.fchown(fd, 0, 0)
+    os.fchmod(fd, 0o755)
+    os.rename("nekoray", "nekoray.untrusted", src_dir_fd=fd, dst_dir_fd=fd)
+    quarantined = os.stat("nekoray.untrusted", dir_fd=fd, follow_symlinks=False)
+    print(quarantined.st_uid)
+finally:
+    os.close(fd)
+PYRECOVER
+) || { echo "STOP: recovery preparation failed" >&2; false; }
+```
+
+If this block fails, **STOP**; do not run dpkg removal against an untrusted path.
+On success, `/opt` is root:root 0755 and the old prefix is absent. Now reconcile
+package state before installing the new package (set `new_deb` to the absolute
+path of your trusted new Debian package):
+
+<!-- aprime-remove -->
+```bash
+sudo dpkg --remove --force-remove-reinstreq nekoray &&
 sudo dpkg --purge nekoray
 ```
 
-Then reinstall the new Debian package. The exact authenticated 4.0.1 archive has
-neither a prerm nor a postrm: its purge has no old removal script that could
-perform capability setup or recursive deletion through a planted symlink. CI
-verifies the command succeeds from the actual failed-unwind state before
-installing the new package. If `/opt` itself remains unsafe after purge, an
-administrator must inspect it before retrying; removing just `/opt/nekoray`
-does not fix unsafe ancestor metadata. Do not make a user-controlled tree pass
-by recursively changing its ownership as root. The old untracked desktop
-launcher can remain after purge; the new package adopts it as a tracked payload
-file and removes it on its own removal/purge. Ordinary postrm remove/purge
-actions remain available without a prefix guard.
+<!-- aprime-install -->
+```bash
+sudo apt-get install -y "$new_deb"
+```
+
+Stop on any error. The authenticated upstream 4.0.1 archive has neither `prerm`
+nor `postrm`; CI verifies both are absent. From Half-Installed, forced removal
+runs no old removal script and does not call the old `postinst`. With the prefix
+renamed first, dpkg's recorded `/opt/nekoray/*` paths are absent, including when
+the quarantined entry is a symlink to an outside directory. The following plain
+purge succeeds, and installation creates a new root-owned prefix. The old
+untracked desktop launcher can remain until the new package adopts it.
+
+After successful installation, delete the quarantine **as its original owning
+UID**, never recursively as root. Root-owned 0755 `/opt` does not permit that
+UID to unlink the quarantine entry. This block therefore renames the quarantine
+into a fresh private disposal directory in `/var/tmp`, hands only that disposal
+directory to the recorded UID, then runs `rm` as that UID. The original UID
+must have a local account usable by `sudo`; never substitute root. A quarantined symlink
+is unlinked without traversing its target. A UID of zero stops for manual
+inspection; permission errors also require inspection, not a root recursive retry.
+
+<!-- aprime-dispose -->
+```bash
+disposal=$(sudo python3 - "$quarantine_uid" <<'PYDISPOSE'
+import os, sys, tempfile
+uid = int(sys.argv[1])
+if uid <= 0:
+    sys.exit("STOP: quarantine owner is root; inspect manually")
+if os.stat("/opt/nekoray.untrusted", follow_symlinks=False).st_uid != uid:
+    sys.exit("STOP: quarantine owner changed; inspect manually")
+disposal = tempfile.mkdtemp(prefix="nekoray-dispose-", dir="/var/tmp")
+os.rename("/opt/nekoray.untrusted", disposal + "/nekoray.untrusted")
+os.chown(disposal, uid, -1)
+print(disposal)
+PYDISPOSE
+) && sudo -u "#$quarantine_uid" -- rm -rf -- "$disposal"
+```
+
+If `/var/tmp` is on a different filesystem, the rename fails safely; an
+administrator must choose a trusted disposal parent on the same filesystem.
+No command above changes ownership or modes inside the quarantined tree.
+Ordinary new-package postrm remove/purge actions remain available without a
+prefix guard.
 
 The checks only read metadata; racing the checks cannot redirect a privileged
 repair because no repair commands exist. A non-root user cannot replace an
@@ -157,14 +248,16 @@ production refusal or changing host directory ownership/modes. They use the same
 run's newly built package, verify the exact
 upstream 4.0.1 SHA256 before installation, require preinst and postrm refusal,
 assert the exact Half-Installed state, then execute the documented dpkg
-purge/reinstall remedy. Replacement native core bytes have no capability before
+A-prime quarantine/forced-remove/purge/reinstall/disposal remedy from the blocks
+above. Replacement native core bytes have no capability before
 or after refusal. A test-only repack of 4.0.1 traces its original postinst with a
 configure positive control and proves it is never called during unsafe unwind.
 It also tests an attacker-owned nested directory with a planted symlink, and a
 prefix symlink to an outside native-file sentinel. The sentinel's owner, mode,
 bytes and all xattrs (including security.capability and a planted user xattr)
-must remain unchanged. Fixtures are static; test-only cleanup restores the
-known prefix before purging the prefix-symlink case. No test hook is shipped.
+must remain unchanged through refusal, removal, reinstall and unprivileged
+quarantine disposal. The prefix-symlink case uses the same quarantine procedure
+without restoring the old prefix. No test hook is shipped.
 Fresh install, actual apt reinstall of a safe tree, safe reconfiguration,
 forced failed-upgrade unwind over a safe tree (postrm exit zero), numeric
 ownership and modes of every prefix entry, capability, dpkg-tracked launcher,
