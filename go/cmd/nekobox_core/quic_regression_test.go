@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/sagernet/quic-go"
+	"github.com/sagernet/quic-go/logging"
 	qtls "github.com/sagernet/sing-quic"
 	"github.com/sagernet/sing-quic/hysteria"
 	"github.com/sagernet/sing-quic/hysteria2"
@@ -32,7 +33,11 @@ import (
 // Keep these tests sequential: other tests in this package own core globals.
 // All destinations are synthetic loopback addresses; handlers echo in process.
 // No sing-box test module, external resolver, or upstream service is involved.
+type nk04QUICAPI interface{ qtls.Config }
+
 type nk04TLS struct {
+	nk04QUICAPI
+	trace             *nk04Trace
 	aTLS.ServerConfig // Unused stream-TLS methods must never be called by QUIC.
 	config            *tls.Config
 	accepted          chan quic.Connection
@@ -43,11 +48,12 @@ func (c *nk04TLS) NextProtos() []string         { return c.config.NextProtos }
 func (c *nk04TLS) SetNextProtos(p []string)     { c.config.NextProtos = p }
 func (c *nk04TLS) ConfigureHTTP3()              {}
 func (c *nk04TLS) Listen(p net.PacketConn, cfg *quic.Config) (qtls.Listener, error) {
+	c.installTrace(cfg)
 	l, err := quic.Listen(p, c.config, cfg)
 	if err != nil {
 		return nil, err
 	}
-	return &nk04Listener{Listener: l, accepted: c.accepted}, nil
+	return &nk04Listener{Listener: l, accepted: c.accepted, trace: c.trace}, nil
 }
 func (c *nk04TLS) ListenEarly(p net.PacketConn, cfg *quic.Config) (qtls.EarlyListener, error) {
 	return quic.ListenEarly(p, c.config, cfg)
@@ -55,12 +61,16 @@ func (c *nk04TLS) ListenEarly(p net.PacketConn, cfg *quic.Config) (qtls.EarlyLis
 
 type nk04Listener struct {
 	*quic.Listener
+	trace    *nk04Trace
 	accepted chan quic.Connection
 }
 
 func (l *nk04Listener) Accept(ctx context.Context) (quic.Connection, error) {
 	c, err := l.Listener.Accept(ctx)
 	if err == nil {
+		if l.trace != nil {
+			c = &nk04TraceConn{Connection: c, trace: l.trace, side: "server"}
+		}
 		select {
 		case l.accepted <- c:
 		case <-ctx.Done():
@@ -201,10 +211,20 @@ func nk04ServerWithAuthTimeout(t *testing.T, protocol, obfs string, udpDisabled 
 		alpn = "tuic"
 	}
 	accepted := make(chan quic.Connection, 8)
-	serverTLS := &nk04TLS{config: &tls.Config{Certificates: []tls.Certificate{{Certificate: [][]byte{der}, PrivateKey: private}}, NextProtos: []string{alpn}}, accepted: accepted}
+	trace := &nk04Trace{}
+	t.Cleanup(func() {
+		if t.Failed() {
+			trace.mu.Lock()
+			defer trace.mu.Unlock()
+			for _, event := range trace.events {
+				t.Log(event)
+			}
+		}
+	})
+	serverTLS := &nk04TLS{trace: trace, config: &tls.Config{Certificates: []tls.Certificate{{Certificate: [][]byte{der}, PrivateKey: private}}, NextProtos: []string{alpn}}, accepted: accepted}
 	f := &nk04Fixture{ctx: ctx, protocol: protocol, accepted: accepted, dialer: &nk04Dialer{},
 		echo: &nk04ObservedEcho{}, parserLog: make(chan string, 16),
-		clientTLS: &nk04TLS{config: &tls.Config{InsecureSkipVerify: true, NextProtos: []string{alpn}}}, // Ephemeral loopback certificate.
+		clientTLS: &nk04TLS{trace: trace, config: &tls.Config{InsecureSkipVerify: true, NextProtos: []string{alpn}}}, // Ephemeral loopback certificate.
 	}
 	var service nk04Service
 	switch protocol {
@@ -668,4 +688,78 @@ func TestNK04Hysteria2PortHopping(t *testing.T) {
 		}
 	}
 	nk04OK(t, nk04UDP(f.ctx, c))
+}
+
+// Scratch-only instrumentation: capture application datagram metadata and QUIC loss.
+type nk04Trace struct {
+	mu     sync.Mutex
+	events []string
+}
+
+func (t *nk04Trace) record(format string, args ...any) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.events = append(t.events, fmt.Sprintf(format, args...))
+}
+func (c *nk04TLS) installTrace(cfg *quic.Config) {
+	if c.trace == nil {
+		return
+	}
+	cfg.Tracer = func(_ context.Context, side logging.Perspective, _ quic.ConnectionID) *logging.ConnectionTracer {
+		return &logging.ConnectionTracer{
+			LostPacket: func(level logging.EncryptionLevel, pn logging.PacketNumber, reason logging.PacketLossReason) {
+				c.trace.record("QUIC lost side=%v level=%v pn=%d reason=%v", side, level, pn, reason)
+			},
+			DroppedPacket: func(pt logging.PacketType, pn logging.PacketNumber, n logging.ByteCount, reason logging.PacketDropReason) {
+				c.trace.record("QUIC dropped side=%v type=%v pn=%d bytes=%d reason=%v", side, pt, pn, n, reason)
+			},
+			SentShortHeaderPacket: func(h *logging.ShortHeader, n logging.ByteCount, _ logging.ECN, _ *logging.AckFrame, frames []logging.Frame) {
+				for _, f := range frames {
+					if d, ok := f.(*logging.DatagramFrame); ok {
+						c.trace.record("QUIC sent side=%v pn=%d packetbytes=%d datagramlen=%d", side, h.PacketNumber, n, d.Length)
+					}
+				}
+			},
+			ReceivedShortHeaderPacket: func(h *logging.ShortHeader, n logging.ByteCount, _ logging.ECN, frames []logging.Frame) {
+				for _, f := range frames {
+					if d, ok := f.(*logging.DatagramFrame); ok {
+						c.trace.record("QUIC received side=%v pn=%d packetbytes=%d datagramlen=%d", side, h.PacketNumber, n, d.Length)
+					}
+				}
+			},
+		}
+	}
+}
+func (c *nk04TLS) Dial(ctx context.Context, p net.PacketConn, a net.Addr, cfg *quic.Config) (quic.Connection, error) {
+	c.installTrace(cfg)
+	q, err := quic.Dial(ctx, p, a, c.config, cfg)
+	if err == nil && c.trace != nil {
+		q = &nk04TraceConn{Connection: q, trace: c.trace, side: "client"}
+	}
+	return q, err
+}
+func (c *nk04TLS) DialEarly(ctx context.Context, p net.PacketConn, a net.Addr, cfg *quic.Config) (quic.EarlyConnection, error) {
+	c.installTrace(cfg)
+	return quic.DialEarly(ctx, p, a, c.config, cfg)
+}
+
+type nk04TraceConn struct {
+	quic.Connection
+	trace *nk04Trace
+	side  string
+}
+
+func (c *nk04TraceConn) SendDatagram(p []byte) error {
+	err := c.Connection.SendDatagram(p)
+	if len(p) >= 10 && p[1] == 2 {
+		c.trace.record("TUIC send side=%s session=%x packet=%x fragment=%d/%d bytes=%d err=%v", c.side, p[2:4], p[4:6], p[7], p[6], len(p), err)
+	}
+	return err
+}
+func (c *nk04TraceConn) ReceiveDatagram(ctx context.Context) ([]byte, error) {
+	p, err := c.Connection.ReceiveDatagram(ctx)
+	if len(p) >= 10 && p[1] == 2 {
+		c.trace.record("TUIC receive side=%s session=%x packet=%x fragment=%d/%d bytes=%d err=%v", c.side, p[2:4], p[4:6], p[7], p[6], len(p), err)
+	}
+	return p, err
 }
