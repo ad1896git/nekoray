@@ -1,0 +1,12 @@
+go 1.19
+
+// Verification only: select this file explicitly with GOWORK. Its non-default
+// name keeps normal builds and packaging on their existing module graphs.
+use (
+	./cmd/nekobox_core
+	./grpc_server
+)
+
+// Match the core's existing fork pin when resolving the two modules' conflicting
+// libneko replacements. Keep this identical to cmd/nekobox_core/go.mod.
+replace github.com/matsuridayo/libneko => github.com/ad1896git/libneko v0.0.0-20261108075722-45e350171b7b
