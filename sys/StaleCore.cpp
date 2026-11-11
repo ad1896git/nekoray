@@ -1,4 +1,5 @@
 #include "StaleCore.hpp"
+#include "LinuxOwner.hpp"
 #include "rpc/RpcTransport.hpp"
 
 #include <QCoreApplication>
@@ -27,6 +28,27 @@
 #endif
 
 namespace NekoGui_sys::StaleCore {
+#ifdef Q_OS_LINUX
+namespace {
+LinuxOwner::ReadResult readLinuxProc(const QString &path) {
+    const auto name = QFile::encodeName(path);
+    if (path.endsWith(QStringLiteral("/ns/time"))) {
+        char target[128];
+        const auto size = ::readlink(name.constData(), target, sizeof(target));
+        return {size > 0 && size < qint64(sizeof(target)) ? QByteArray(target, int(size)) : QByteArray{}};
+    }
+    const int fd = ::open(name.constData(), O_RDONLY | O_CLOEXEC);
+    if (fd < 0) return {{}, errno == ENOENT || errno == ESRCH};
+    QFile file;
+    if (!file.open(fd, QIODevice::ReadOnly, QFileDevice::AutoCloseHandle)) {
+        ::close(fd);
+        return {};
+    }
+    const auto data = file.readAll();
+    return {file.error() == QFileDevice::NoError ? data : QByteArray{}};
+}
+}
+#endif
 QString recordPath() { return QDir::current().absoluteFilePath(".core-launch.json"); }
 
 Identity observe(qint64 pid) {
@@ -40,14 +62,12 @@ Identity observe(qint64 pid) {
     result = {pid, QString::number(info.pbi_start_tvsec) + ":" + QString::number(info.pbi_start_tvusec),
               QString::fromLocal8Bit(path)};
 #elif defined(Q_OS_LINUX)
-    QFile stat(QStringLiteral("/proc/%1/stat").arg(pid));
-    if (!stat.open(QIODevice::ReadOnly)) return result;
-    const auto data = stat.readAll();
-    const auto fields = data.mid(data.lastIndexOf(')') + 2).split(' ');
-    if (fields.size() < 20 || fields[0] == "Z") return result;
+    const auto sample = LinuxOwner::sample(pid, readLinuxProc);
+    if (sample.identity.start.isEmpty() || sample.state == OwnerState::CONFIRMED_DEAD) return result;
     const auto exe = QFileInfo(QStringLiteral("/proc/%1/exe").arg(pid)).symLinkTarget();
     if (exe.isEmpty()) return result;
-    result = {pid, QString::fromLatin1(fields[19]), exe};
+    result = sample.identity;
+    result.executable = exe;
 #endif
     return result;
 }
@@ -70,28 +90,7 @@ OwnerState observeOwner(const Identity &expected) {
         return OwnerState::UNKNOWN;
     start = QString::number(info.pbi_start_tvsec) + ":" + QString::number(info.pbi_start_tvusec);
 #elif defined(Q_OS_LINUX)
-    const auto name = QFile::encodeName(QStringLiteral("/proc/%1/stat").arg(expected.pid));
-    const int fd = ::open(name.constData(), O_RDONLY | O_CLOEXEC);
-    if (fd < 0)
-        return errno == ENOENT || errno == ESRCH ? OwnerState::CONFIRMED_DEAD : OwnerState::UNKNOWN;
-    QFile stat;
-    if (!stat.open(fd, QIODevice::ReadOnly, QFileDevice::AutoCloseHandle)) {
-        ::close(fd);
-        return OwnerState::UNKNOWN;
-    }
-    const auto data = stat.readAll();
-    const auto end = data.lastIndexOf(')');
-    if (stat.error() != QFileDevice::NoError || !data.endsWith('\n') ||
-        !data.startsWith(QByteArray::number(expected.pid) + " (") || end < 0 || data.mid(end, 2) != ") ")
-        return OwnerState::UNKNOWN;
-    const auto fields = data.mid(end + 2).simplified().split(' ');
-    if (fields.size() < 20 || fields[0].size() != 1 || !QByteArray("RSDZTtWXxKPI").contains(fields[0]))
-        return OwnerState::UNKNOWN;
-    bool validStart = false;
-    fields[19].toULongLong(&validStart);
-    if (!validStart) return OwnerState::UNKNOWN;
-    if (fields[0] == "Z") return OwnerState::CONFIRMED_DEAD;
-    start = QString::fromLatin1(fields[19]);
+    return LinuxOwner::observeOwner(expected, readLinuxProc);
 #else
     return OwnerState::UNKNOWN;
 #endif
@@ -142,6 +141,7 @@ bool read(const QString &path, Record &record) {
         return false;
     const auto owner = object["owner"].toObject();
     value.owner = {owner["pid"].toString().toLongLong(), owner["start"].toString(), {}};
+    value.owner.clockBase = owner["clock"].toString();
     // Legacy/missing/incomplete owner metadata retains the authenticated,
     // bounded recovery path; it must not invalidate an otherwise valid record.
     if (value.owner.pid <= 0 || value.owner.pid > INT_MAX || value.owner.start.isEmpty())
@@ -152,11 +152,13 @@ bool read(const QString &path, Record &record) {
 
 bool write(const QString &path, const Record &record) {
 #ifdef Q_OS_UNIX
+    QJsonObject owner{{"pid", QString::number(record.owner.pid)}, {"start", record.owner.start}};
+    if (!record.owner.clockBase.isEmpty()) owner["clock"] = record.owner.clockBase;
     const QJsonObject object{{"version", 1}, {"token", QString::fromLatin1(record.token)},
         {"port", record.port}, {"config", record.config},
         {"pid", QString::number(record.process.pid)}, {"start", record.process.start},
         {"exe", record.process.executable},
-        {"owner", QJsonObject{{"pid", QString::number(record.owner.pid)}, {"start", record.owner.start}}}};
+        {"owner", owner}};
     QSaveFile file(path);
     file.setDirectWriteFallback(false);
     if (!file.open(QIODevice::WriteOnly) ||

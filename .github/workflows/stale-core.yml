@@ -1,0 +1,39 @@
+name: Stale core ownership
+
+on:
+  pull_request:
+    paths:
+      - 'sys/StaleCore.*'
+      - 'sys/LinuxOwner.hpp'
+      - 'tests/tst_stale_core.cpp'
+      - '.github/workflows/stale-core.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  linux-ownership:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - qt: 5
+            packages: qtbase5-dev libqt5svg5-dev qttools5-dev qttools5-dev-tools
+          - qt: 6
+            packages: qt6-base-dev qt6-svg-dev qt6-tools-dev qt6-tools-dev-tools
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Install Qt and build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends cmake ninja-build ${{ matrix.packages }}
+      - name: Build production ownership guard and tests
+        run: |
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DQT_VERSION_MAJOR=${{ matrix.qt }} -DNKR_NO_EXTERNAL=ON -DNKR_BUILD_TESTS=ON
+          cmake --build build --target tst_stale_core --parallel 2
+      - name: Test real procfs and deterministic namespace cases
+        run: ctest --test-dir build -R '^stale_core_ownership$' --output-on-failure --verbose --no-tests=error

@@ -12,6 +12,7 @@ struct Identity {
     qint64 pid = 0;
     QString start;
     QString executable;
+    QString clockBase; // Linux owner only: boot ID and recording time namespace.
 };
 struct Record {
     Identity process;
