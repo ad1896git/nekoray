@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"github.com/sagernet/quic-go"
+	"github.com/sagernet/quic-go/logging"
+	qtls "github.com/sagernet/sing-quic"
 	"github.com/sagernet/sing-quic/tuic"
 	M "github.com/sagernet/sing/common/metadata"
 )
@@ -62,7 +64,15 @@ func TestNK04MatrixPacketBoundaries(t *testing.T) {
 			for _, size := range []int{0, 1, mode.max - 1, mode.max, mode.max + 1} {
 				t.Run(fmt.Sprint(size), func(t *testing.T) {
 					f := nk04Server(t, mode.protocol, "", false)
-					c := f.client(t, "secret", "", "", [16]byte{1}, mode.stream)
+					var c nk04Client
+					if mode.name == "tuic_datagram" && (size == 65534 || size == 65535) {
+						// KI-14: the pinned packer can discard a 1200-byte frame
+						// in a 1150-byte handshake-coalesced budget. Test these
+						// boundaries after confirmation, with no loss tolerance.
+						c = nk04ConfirmedTUICClient(t, f)
+					} else {
+						c = f.client(t, "secret", "", "", [16]byte{1}, mode.stream)
+					}
 					p, err := c.(nk04PacketClient).ListenPacket(f.ctx)
 					nk04OK(t, err)
 					defer p.Close()
@@ -93,6 +103,60 @@ func TestNK04MatrixPacketBoundaries(t *testing.T) {
 			}
 		})
 	}
+}
+
+// Only the non-0-RTT TUIC boundary fixture uses this adapter's Dial method.
+// Embed the unused QUIC TLS methods as nk04TLS does for stream TLS methods.
+type nk04UnusedQUICMethods = qtls.Config
+
+type nk04ConfirmedTLS struct {
+	*nk04TLS
+	nk04UnusedQUICMethods
+}
+
+func (c *nk04ConfirmedTLS) Dial(ctx context.Context, socket net.PacketConn, addr net.Addr, config *quic.Config) (quic.Connection, error) {
+	confirmed := make(chan struct{})
+	config = config.Clone()
+	previous := config.Tracer
+	config.Tracer = func(ctx context.Context, perspective logging.Perspective, id quic.ConnectionID) *logging.ConnectionTracer {
+		gate := &logging.ConnectionTracer{DroppedEncryptionLevel: func(level logging.EncryptionLevel) {
+			if level == logging.EncryptionHandshake {
+				// In the pinned quic-go, this runs in handleHandshakeConfirmed.
+				// The event loop sets handshakeConfirmed before it can pack data.
+				close(confirmed)
+			}
+		}}
+		if previous != nil {
+			if tracer := previous(ctx, perspective, id); tracer != nil {
+				return logging.NewMultiplexedConnectionTracer(tracer, gate)
+			}
+		}
+		return gate
+	}
+	conn, err := quic.Dial(ctx, socket, addr, c.config, config)
+	if err != nil {
+		return nil, err
+	}
+	select {
+	case <-confirmed:
+		return conn, nil
+	case <-conn.Context().Done():
+		err = context.Cause(conn.Context())
+	case <-ctx.Done():
+		err = ctx.Err()
+	}
+	_ = conn.CloseWithError(0, "boundary handshake confirmation failed")
+	return nil, fmt.Errorf("boundary handshake confirmation: %w", err)
+}
+
+func nk04ConfirmedTUICClient(t *testing.T, f *nk04Fixture) nk04Client {
+	t.Helper()
+	c, err := tuic.NewClient(tuic.ClientOptions{Context: f.ctx, Dialer: f.dialer,
+		ServerAddress: f.address, TLSConfig: &nk04ConfirmedTLS{nk04TLS: f.clientTLS},
+		Password: "secret", UUID: [16]byte{1}, UDPStream: false})
+	nk04OK(t, err)
+	t.Cleanup(func() { _ = c.CloseWithError(net.ErrClosed) })
+	return c
 }
 
 func TestNK04MatrixPacketCancelTimeout(t *testing.T) {
