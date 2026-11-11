@@ -28,6 +28,13 @@ struct Sample {
     OwnerState state = OwnerState::UNKNOWN;
 };
 
+inline bool validStart(const QString &start) {
+    bool valid = false;
+    const auto ticks = start.toULongLong(&valid);
+    // Require the complete, in-range canonical decimal spelling emitted by procfs.
+    return valid && QString::number(ticks) == start;
+}
+
 inline Sample sample(qint64 pid, const Reader &read) {
     Sample result;
     const auto before = clockBase(pid, read);
@@ -43,20 +50,25 @@ inline Sample sample(qint64 pid, const Reader &read) {
     const auto fields = data.mid(end + 2).simplified().split(' ');
     if (fields.size() < 20 || fields[0].size() != 1 || !QByteArray("RSDZTtWXxKPI").contains(fields[0]))
         return result;
-    bool validStart = false;
-    fields[19].toULongLong(&validStart);
-    if (!validStart) return result;
+    const auto start = QString::fromLatin1(fields[19]);
+    if (!validStart(start)) return result;
     // Preserve PID/start even without a clock base: an unobservable live owner
     // must not become a missing/legacy owner that bypasses the startup gate.
-    result.identity = {pid, QString::fromLatin1(fields[19]), {}};
+    result.identity = {pid, start, {}};
+    // A validated zombie is definitively dead even after its namespaces vanish.
+    if (fields[0] == "Z") {
+        result.state = OwnerState::CONFIRMED_DEAD;
+        return result;
+    }
     const auto after = clockBase(pid, read);
     if (before.isEmpty() || before != after) return result;
     result.identity.clockBase = before;
-    result.state = fields[0] == "Z" ? OwnerState::CONFIRMED_DEAD : OwnerState::MATCHING_LIVE;
+    result.state = OwnerState::MATCHING_LIVE;
     return result;
 }
 
 inline OwnerState observeOwner(const Identity &expected, const Reader &read) {
+    if (!validStart(expected.start)) return OwnerState::UNKNOWN;
     const auto actual = sample(expected.pid, read);
     if (actual.state != OwnerState::MATCHING_LIVE) return actual.state;
     // Raw legacy ticks, a different boot, and a different recording namespace
