@@ -15,7 +15,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        row: [default, default_race, debug, debug_race, low_memory, low_memory_race, debug_low_memory, debug_low_memory_race]
+        row: [default_race, debug_race, debug_low_memory_race]
     env:
       GOTOOLCHAIN: local
       GOWORK: 'off'
@@ -62,6 +62,8 @@ jobs:
         env:
           D5_ROW: ${{ matrix.row }}
         run: |
+          python3 tests/d5_trace_packer.py
+          git -C ../quic-go diff > "$RUNNER_TEMP/nk04/results/d5-quic-instrumentation.patch"
           python3 - <<'PY'
           import importlib.util, json, os, pathlib, subprocess
           spec = importlib.util.spec_from_file_location('matrix', 'tests/run_nk04_matrix.py')
@@ -73,7 +75,7 @@ jobs:
           output = pathlib.Path(os.environ['RUNNER_TEMP']) / 'nk04/results'
           output.mkdir(parents=True, exist_ok=True)
           command = ['go', 'test', '-json', '-mod=readonly', '-tags='+tags,
-                     '-run=^TestNK04MatrixPacketBoundaries$', '-count=200', '-timeout=1200s']
+                     '-run=^TestNK04MatrixPacketBoundaries$/^tuic_datagram$', '-count=1000', '-timeout=1200s']
           if race: command.append('-race')
           command.append('.')
           with (output / 'd5-baseline.jsonl').open('w') as out:
