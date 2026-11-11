@@ -31,12 +31,45 @@ After fetching the pinned sibling sources with `bash libs/get_source.sh`, run:
 GOTOOLCHAIN=local bash libs/verify_go_modules.sh
 ```
 
-The script runs plain `go mod verify` in both modules with the explicit
-`GOWORK=<repository>/go/verify.go.work` workspace. You can also set that absolute
-`GOWORK` path yourself and run `go mod verify` in either module. The workspace
-recognizes `grpc_server` as project source and resolves the libneko replacement
-conflict to the existing core fork pin. It preserves the normal checksum checks
-for downloaded dependencies; local source is not a downloaded module archive.
+This script provides **partial verification, not exact standalone build-list
+integrity coverage**. It first runs `GOWORK=off go mod download all` for each
+module using temporary copies of its `go.mod` and `go.sum`. This checks recorded
+checksums and downloads the actual standalone selections without editing the
+repository manifests. Missing sums are added only to the temporary copies using
+Go's normal checksum handling; their absence in the original files does not fail
+this check. Downloads can reuse cached hashes and do not rehash existing source
+directories or archives.
+
+It then runs one `go mod verify` with the explicit
+`GOWORK=<repository>/go/verify.go.work` workspace. This rehashes the workspace
+graph's cached archives/directories, not each module's standalone graph. Both
+working directories select the same workspace graph, so repeating the command
+would not add coverage. Local source replacements are not downloaded archives.
+
+The precise limitations at the current dependency pins are:
+
+| Standalone module | External selections | Missing archive sums in its own go.sum | Missing go.mod sums | Versions changed by the workspace |
+| --- | ---: | ---: | ---: | ---: |
+| `go/cmd/nekobox_core` | 159 | 62 | 51 | 9 |
+| `go/grpc_server` | 62 | 47 | 6 | 37 |
+
+Counts use `GOWORK=off go list -mod=readonly -m -e -json all`, follow versioned
+replacements, and exclude the main module and local replacements. Exact
+standalone verification that fails on every missing go.sum entry cannot pass
+without changing the frozen checksum files. Plain standalone grpc_server listing
+also requests `go mod tidy`; `-e` exposes its selected list without editing it.
+
+The workspace changes core's selected versions of `cloud.google.com/go`,
+`github.com/cncf/udpa/go`, `github.com/go-logr/logr`, `github.com/pierrec/lz4/v4`,
+`github.com/prometheus/client_model`, `github.com/stretchr/objx`,
+`golang.org/x/xerrors`, `gopkg.in/check.v1`, and `gopkg.in/yaml.v2`. For example,
+standalone core selects lz4 v4.1.14 while the workspace selects v4.1.18: edits to
+an already cached v4.1.14 source directory are **not detected** by this script.
+grpc_server's 37 changed external versions include grpc v1.49.0 versus workspace
+v1.63.2 and protobuf v1.28.1 versus v1.33.0. Its local libneko replacement also
+becomes the core's downloaded fork pin. Thus a successful script does not establish
+cache integrity for all versions used by either standalone build. The workspace
+also adds 154 external paths relative to core and 251 relative to grpc_server.
 
 The non-default workspace filename prevents automatic discovery by builds or
 packaging. Without explicitly selecting it, Go 1.22's verifier still attempts a

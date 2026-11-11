@@ -25,13 +25,7 @@ jobs:
           cache: false
       - name: Fetch pinned sibling sources
         run: bash libs/get_source.sh
-      - name: Download the existing core dependency graph
-        working-directory: go/cmd/nekobox_core
-        run: |
-          cp go.mod "$RUNNER_TEMP/download.mod"
-          cp go.sum "$RUNNER_TEMP/download.sum"
-          go mod download -modfile="$RUNNER_TEMP/download.mod" all
-      - name: Verify both modules with the explicit workspace
+      - name: Check standalone downloads and rehash the workspace graph (partial coverage)
         run: bash libs/verify_go_modules.sh
       - name: Check manifests and default workspace discovery
         run: |
