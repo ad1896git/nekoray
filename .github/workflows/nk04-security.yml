@@ -57,6 +57,41 @@ jobs:
         run: python3 -m unittest discover -s tests -p test_nk04_matrix.py -v
       - name: Required PASS row
         run: python3 tests/run_nk04_matrix.py --row '${{ matrix.row }}' --output "$RUNNER_TEMP/nk04/results"
+      - name: D5 bounded baseline diagnosis
+        if: always()
+        env:
+          D5_ROW: ${{ matrix.row }}
+        run: |
+          python3 - <<'PY'
+          import importlib.util, json, os, pathlib, subprocess
+          spec = importlib.util.spec_from_file_location('matrix', 'tests/run_nk04_matrix.py')
+          m = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(m)
+          row = os.environ['D5_ROW']
+          extra, race = m.ROWS[row]
+          tags = m.TAGS + (',' + extra if extra else '')
+          output = pathlib.Path(os.environ['RUNNER_TEMP']) / 'nk04/results'
+          output.mkdir(parents=True, exist_ok=True)
+          command = ['go', 'test', '-json', '-mod=readonly', '-tags='+tags,
+                     '-run=^TestNK04MatrixPacketBoundaries$', '-count=200', '-timeout=1200s']
+          if race: command.append('-race')
+          command.append('.')
+          with (output / 'd5-baseline.jsonl').open('w') as out:
+              p = subprocess.run(command, cwd=m.CORE, stdout=out, stderr=subprocess.STDOUT, timeout=1250)
+          events = []
+          for line in (output / 'd5-baseline.jsonl').read_text().splitlines():
+              try: events.append(json.loads(line))
+              except ValueError: pass
+          counts = {}
+          for e in events:
+              if e.get('Action') in ('run','pass','fail') and e.get('Test','').count('/') == 2:
+                  counts.setdefault(e['Test'], {}).setdefault(e['Action'], 0)
+                  counts[e['Test']][e['Action']] += 1
+          result = dict(row=row, command=command, exit=p.returncode, counts=counts)
+          (output / 'd5-baseline-summary.json').write_text(json.dumps(result, indent=2)+'\n')
+          print(json.dumps(result))
+          raise SystemExit(p.returncode)
+          PY
       - name: Check manifests remain unchanged
         run: git diff --exit-code -- go/cmd/nekobox_core/go.mod go/cmd/nekobox_core/go.sum go/grpc_server/go.mod go/grpc_server/go.sum
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
