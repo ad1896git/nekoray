@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -85,6 +86,13 @@ func TestNK04MatrixPacketBoundaries(t *testing.T) {
 					}
 					reply := make([]byte, mode.max+1)
 					n, addr, err := p.ReadFrom(reply)
+					if err != nil {
+						for _, path := range []string{"/proc/net/udp", "/proc/net/snmp"} {
+							if data, e := os.ReadFile(path); e == nil {
+								t.Logf("%s\n%s", path, data)
+							}
+						}
+					}
 					nk04OK(t, err)
 					if !bytes.Equal(reply[:n], payload) || addr.String() != dst.String() {
 						t.Fatalf("echo size=%d from %v, want size=%d from %v", n, addr, size, dst)

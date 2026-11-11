@@ -12,12 +12,14 @@ import (
 	"io"
 	"math/big"
 	"net"
+	"net/http"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/sagernet/quic-go"
+	"github.com/sagernet/quic-go/http3"
 	"github.com/sagernet/quic-go/logging"
 	qtls "github.com/sagernet/sing-quic"
 	"github.com/sagernet/sing-quic/hysteria"
@@ -707,6 +709,9 @@ func (c *nk04TLS) installTrace(cfg *quic.Config) {
 	}
 	cfg.Tracer = func(_ context.Context, side logging.Perspective, _ quic.ConnectionID) *logging.ConnectionTracer {
 		return &logging.ConnectionTracer{
+			StartedConnection: func(local, remote net.Addr, _, _ logging.ConnectionID) {
+				c.trace.record("QUIC addresses side=%v local=%v remote=%v", side, local, remote)
+			},
 			LostPacket: func(level logging.EncryptionLevel, pn logging.PacketNumber, reason logging.PacketLossReason) {
 				c.trace.record("QUIC lost side=%v level=%v pn=%d reason=%v", side, level, pn, reason)
 			},
@@ -762,4 +767,12 @@ func (c *nk04TraceConn) ReceiveDatagram(ctx context.Context) ([]byte, error) {
 		c.trace.record("TUIC receive side=%s session=%x packet=%x fragment=%d/%d bytes=%d err=%v", c.side, p[2:4], p[4:6], p[7], p[6], len(p), err)
 	}
 	return p, err
+}
+
+func (c *nk04TLS) CreateTransport(p net.PacketConn, qptr *quic.EarlyConnection, a M.Socksaddr, cfg *quic.Config) http.RoundTripper {
+	return &http3.RoundTripper{TLSClientConfig: c.config, QUICConfig: cfg, Dial: func(ctx context.Context, _ string, tc *tls.Config, qc *quic.Config) (quic.EarlyConnection, error) {
+		q, err := quic.DialEarly(ctx, p, a.UDPAddr(), tc, qc)
+		*qptr = q
+		return q, err
+	}}
 }
