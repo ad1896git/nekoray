@@ -2,6 +2,8 @@ cmake_minimum_required(VERSION 3.5)
 
 project(nekobox VERSION 0.1 LANGUAGES CXX)
 
+include("cmake/build_paths.cmake")
+
 set(CMAKE_INCLUDE_CURRENT_DIR ON)
 
 set(CMAKE_CXX_STANDARD 17)
