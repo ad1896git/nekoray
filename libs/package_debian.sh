@@ -23,7 +23,7 @@ cat >nekoray/DEBIAN/control <<-EOF
 Package: nekoray
 Version: $version
 Architecture: amd64
-Maintainer: MatsuriDayo nekoha_matsuri@protonmail.com
+Maintainer: MatsuriDayo <nekoha_matsuri@protonmail.com>
 Depends: libxcb-xinerama0, libqt5core5a, libqt5gui5, libqt5network5, libqt5widgets5, libqt5svg5, libqt5x11extras5, desktop-file-utils, libcap2-bin
 Description: Qt based cross-platform GUI proxy configuration manager (backend: v2ray / sing-box)
 EOF
@@ -48,7 +48,24 @@ cp "$repo/libs/debian/postrm" nekoray/DEBIAN/postrm
 chmod 0755 nekoray/DEBIAN/preinst nekoray/DEBIAN/postinst nekoray/DEBIAN/postrm
 chmod 0644 nekoray/usr/share/applications/nekoray.desktop
 
-# desktop && PATH
+# Hash the final regular payload, excluding control metadata. Paths are relative
+# to the package root, as required by dpkg's installed-file verification.
+python3 - <<'PYMD5'
+import hashlib
+from pathlib import Path
+
+root = Path('nekoray')
+with (root / 'DEBIAN/md5sums').open('w') as manifest:
+    for path in sorted(root.rglob('*')):
+        relative = path.relative_to(root)
+        if relative.parts[0] == 'DEBIAN' or path.is_symlink() or not path.is_file():
+            continue
+        digest = hashlib.md5()
+        with path.open('rb') as payload:
+            for chunk in iter(lambda: payload.read(1024 * 1024), b''):
+                digest.update(chunk)
+        manifest.write(f'{digest.hexdigest()}  {relative.as_posix()}\n')
+PYMD5
 
 dpkg-deb --root-owner-group -Zxz --build nekoray
 python3 "$repo/libs/validate_debian.py" nekoray.deb

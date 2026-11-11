@@ -2,6 +2,11 @@
 """Generated scripts: real traversal/modes, simulated root UID/GID, no system writes."""
 from pathlib import Path
 import os
+import hashlib
+import io
+from email import policy
+from email.parser import Parser
+import tarfile
 import shlex
 import stat
 import shutil
@@ -25,12 +30,40 @@ with tempfile.TemporaryDirectory(dir=repo / 'build-core') as tmp:
         p.chmod(0o755)
 
     stub('sudo', 'exec "$@"')
-    stub('dpkg-deb', 'exit 0')
-    write_deb(root / 'nekoray.deb')
+    real_deb = os.environ.get('NKR_TEST_REAL_DEB') == '1'
+    if not real_deb:
+        stub('dpkg-deb', 'exit 0')
+        write_deb(root / 'nekoray.deb')
     env = dict(os.environ, PATH=str(tools) + os.pathsep + os.environ['PATH'])
     subprocess.run(['bash', str(repo / 'libs/package_debian.sh'), 'v5.0.1'], cwd=root, env=env, check=True, timeout=30)
     control = root / 'nekoray/DEBIAN'
     assert 'libcap2-bin' in (control / 'control').read_text()
+    maintainer = Parser(policy=policy.default).parsestr((control / 'control').read_text())['Maintainer']
+    # Parse as an RFC mailbox rather than an unstructured control field.
+    mailbox = Parser(policy=policy.default).parsestr('From: ' + str(maintainer))['From']
+    assert not mailbox.defects
+    assert [(a.display_name, a.addr_spec) for a in mailbox.addresses] == [
+        ('MatsuriDayo', 'nekoha_matsuri@protonmail.com')]
+    manifest = dict(line.split('  ', 1)[::-1] for line in (control / 'md5sums').read_text().splitlines())
+    expected = {p.relative_to(root / 'nekoray').as_posix(): hashlib.md5(p.read_bytes()).hexdigest()
+                for p in (root / 'nekoray').rglob('*')
+                if p.is_file() and p.relative_to(root / 'nekoray').parts[0] != 'DEBIAN'}
+    assert manifest == expected
+    if real_deb:
+        package = str(root / 'nekoray.deb')
+        for option in ('-I', '-c'):
+            subprocess.run(['dpkg-deb', option, package], check=True, timeout=30)
+        field = subprocess.check_output(['dpkg-deb', '--field', package, 'Maintainer'], text=True, timeout=30)
+        assert field.strip() == str(maintainer)
+        control_tar = subprocess.check_output(['dpkg-deb', '--ctrl-tarfile', package], timeout=30)
+        with tarfile.open(fileobj=io.BytesIO(control_tar)) as archive:
+            assert archive.extractfile('./md5sums').read() == (control / 'md5sums').read_bytes()
+        data_tar = subprocess.check_output(['dpkg-deb', '--fsys-tarfile', package], timeout=30)
+        with tarfile.open(fileobj=io.BytesIO(data_tar)) as archive:
+            actual = {entry.name.removeprefix('./'): hashlib.md5(archive.extractfile(entry).read()).hexdigest()
+                      for entry in archive if entry.isfile()}
+        assert actual == manifest
+    print(f'Debian metadata verified: valid Maintainer mailbox; {len(manifest)} md5sums match all regular payload files')
     assert (root / 'nekoray/usr/share/doc/nekoray/copyright').is_file()
     assert (root / 'nekoray/usr/share/applications/nekoray.desktop').is_file()
     assert '/usr/share/applications/nekoray.desktop' not in (control / 'postinst').read_text()
