@@ -1,6 +1,15 @@
 #!/bin/bash
 set -e
 
+# The project-specific hooks work with the CMake 3.5 minimum too. Rebuild old
+# static archives: mapping the GUI cannot change paths already inside them.
+build_paths=$(cd "$(dirname "$0")/../cmake" && pwd)/build_paths.cmake
+path_args=(
+  "-DCMAKE_PROJECT_ZXing_INCLUDE=$build_paths"
+  "-DCMAKE_PROJECT_YAML_CPP_INCLUDE=$build_paths"
+  "-DCMAKE_PROJECT_protobuf_INCLUDE=$build_paths"
+)
+
 cd libs
 
 # 参数
@@ -35,7 +44,7 @@ cd zxing-*
 mkdir -p build
 cd build
 
-$cmake .. -GNinja -DBUILD_SHARED_LIBS=OFF -DCMAKE_BUILD_TYPE=Release -DBUILD_EXAMPLES=OFF -DBUILD_BLACKBOX_TESTS=OFF -DCMAKE_INSTALL_PREFIX=$INSTALL_PREFIX
+$cmake .. -GNinja "${path_args[@]}" -DBUILD_SHARED_LIBS=OFF -DCMAKE_BUILD_TYPE=Release -DBUILD_EXAMPLES=OFF -DBUILD_BLACKBOX_TESTS=OFF -DCMAKE_INSTALL_PREFIX=$INSTALL_PREFIX
 ninja && ninja install
 
 cd ../..
@@ -48,7 +57,7 @@ cd yaml-*
 mkdir -p build
 cd build
 
-$cmake .. -GNinja -DBUILD_SHARED_LIBS=OFF -DBUILD_TESTING=OFF -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=$INSTALL_PREFIX
+$cmake .. -GNinja "${path_args[@]}" -DBUILD_SHARED_LIBS=OFF -DBUILD_TESTING=OFF -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=$INSTALL_PREFIX
 ninja && ninja install
 
 cd ../..
@@ -62,6 +71,7 @@ mkdir -p protobuf/build
 cd protobuf/build
 
 $cmake .. -GNinja \
+  "${path_args[@]}" \
   -DCMAKE_BUILD_TYPE=Release \
   -DBUILD_SHARED_LIBS=OFF \
   -Dprotobuf_MSVC_STATIC_RUNTIME=OFF \

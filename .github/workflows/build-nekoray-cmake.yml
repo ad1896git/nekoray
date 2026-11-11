@@ -98,7 +98,7 @@ jobs:
         uses: actions/cache@v3
         with:
           path: libs/deps
-          key: DepsCache-${{ matrix.platform }}-${{ matrix.arch }}-${{ hashFiles('libs/build_deps_*.sh') }}-Qt${{ matrix.qt_version }}
+          key: DepsCache-${{ matrix.platform }}-${{ matrix.arch }}-${{ hashFiles('libs/build_deps_*.sh', 'cmake/build_paths.cmake') }}-Qt${{ matrix.qt_version }}
       - name: Build Dependencies
         shell: bash
         if: steps.cache-deps.outputs.cache-hit != 'true' && matrix.platform != 'ubuntu-22.04'
