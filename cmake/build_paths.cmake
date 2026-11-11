@@ -4,6 +4,8 @@ if (MSVC)
     file(TO_NATIVE_PATH "${CMAKE_SOURCE_DIR}" _nkr_source_path)
     file(TO_NATIVE_PATH "${CMAKE_BINARY_DIR}" _nkr_binary_path)
     set(_nkr_path_options
+        # MSVC 19.29 otherwise emits D9007 and ignores /pathmap.
+        "/experimental:deterministic"
         "/pathmap:${_nkr_binary_path}=./build"
         "/pathmap:${_nkr_source_path}=./src")
     # Keep the PDB itself in the build directory, but embed only its basename.

@@ -79,7 +79,7 @@ ziphash. Existing `go.mod`/`go.sum` files and normal build graphs are unchanged.
 ## Build path metadata
 
 Both `libs/build_core.sh` and the release `libs/build_go.sh` use `go build -trimpath`. CMake maps the GUI's source/build roots with GCC/Clang prefix-map
-options or MSVC `/pathmap`; the Windows executable records only the PDB basename
+options or MSVC `/experimental:deterministic` with `/pathmap`; the Windows executable records only the PDB basename
 with `/PDBALTPATH`. `libs/build_deps_all.sh` applies the same mapping to protobuf,
 ZXing and yaml-cpp. Rebuild existing static dependencies; previously built
 archives retain their original paths. For a separately configured dependency,
