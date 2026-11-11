@@ -39,6 +39,8 @@ private slots:
         QTest::newRow("different-recording-boot") << QString("other-boot") << OwnerState::UNKNOWN;
         QTest::newRow("different-recording-namespace") << QString("other-recording-ns") << OwnerState::UNKNOWN;
         QTest::newRow("legacy-record-no-clock-base") << QString("legacy") << OwnerState::UNKNOWN;
+        QTest::newRow("legacy-record-dead-pid-unreadable-clock") << QString("legacy-dead") << OwnerState::CONFIRMED_DEAD;
+        QTest::newRow("unreadable-stat-is-not-death") << QString("stat-unreadable") << OwnerState::UNKNOWN;
         QTest::newRow("namespace-changes-during-read") << QString("changing") << OwnerState::UNKNOWN;
         QTest::newRow("malformed-stat") << QString("malformed") << OwnerState::UNKNOWN;
     }
@@ -55,6 +57,7 @@ private slots:
         proc[stat] += " 100\n";
         bool statRead = false, changesEnabled = false;
         LinuxOwner::Reader reader = [&](const QString &path) -> LinuxOwner::ReadResult {
+            if (changesEnabled && kind == "legacy-dead" && path == stat) return {{}, true};
             if (changesEnabled && kind == "changing" && statRead && path == ours) return {"time:[200]"};
             if (path == stat) statRead = true;
             return {proc.value(path)};
@@ -71,12 +74,16 @@ private slots:
         if (kind == "boot-unreadable") proc.remove(bootPath);
         if (kind == "other-boot") owner.clockBase.replace("12345678-", "87654321-");
         if (kind == "other-recording-ns") owner.clockBase.replace("[100]", "[200]");
-        if (kind == "legacy") owner.clockBase.clear();
+        if (kind.startsWith("legacy")) owner.clockBase.clear();
+        if (kind == "legacy-dead") {
+            proc.remove(ours); proc.remove(theirs); proc.remove(bootPath);
+        }
+        if (kind == "stat-unreadable") proc.remove(stat);
         if (kind == "malformed") proc[stat].chop(1);
         QCOMPARE(LinuxOwner::observeOwner(owner, reader), state);
         // Failed clock-base observation must retain owner metadata so that the
         // record cannot fall through to legacy authenticated Exit recovery.
-        if (kind.endsWith("unreadable") || kind.startsWith("different")) {
+        if ((kind.endsWith("unreadable") && kind != "stat-unreadable") || kind.startsWith("different")) {
             const auto sampled = LinuxOwner::sample(456, reader).identity;
             QCOMPARE(sampled.pid, qint64(456));
             QCOMPARE(sampled.start, QString("100"));
@@ -104,7 +111,7 @@ private slots:
         operations.listener = [&](int) { ++listenerChecks; return 0; };
         std::atomic_bool cancelled{false};
         QString refusal;
-        const bool stale = state == OwnerState::CONFIRMED_REUSED;
+        const bool stale = state == OwnerState::CONFIRMED_REUSED || state == OwnerState::CONFIRMED_DEAD;
         QCOMPARE(wait(path, cancelled, operations, 40, &refusal), stale);
         QCOMPARE(requests, stale ? 1 : 0);
         QCOMPARE(listenerChecks, stale ? 1 : 0);
