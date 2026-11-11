@@ -7,12 +7,18 @@
 #include <QJsonObject>
 #include <QProcess>
 #include "sys/StaleCore.hpp"
+#include "sys/LinuxOwner.hpp"
 #ifdef Q_OS_UNIX
 #include <unistd.h>
 #include <sys/stat.h>
 #endif
+#ifdef Q_OS_LINUX
+#include <sys/wait.h>
+#include <cerrno>
+#endif
 
 using namespace NekoGui_sys::StaleCore;
+Q_DECLARE_METATYPE(OwnerState)
 class StaleCoreTest : public QObject {
     Q_OBJECT
     static Record record(const QString &directory) {
@@ -24,6 +30,174 @@ class StaleCoreTest : public QObject {
         return result;
     }
 private slots:
+    void linuxClockBase_data() {
+        QTest::addColumn<QString>("kind");
+        QTest::addColumn<OwnerState>("state");
+        QTest::newRow("different-namespace-mismatched-start") << QString("different") << OwnerState::UNKNOWN;
+        QTest::newRow("different-namespace-matching-start") << QString("different-matching") << OwnerState::UNKNOWN;
+        QTest::newRow("same-namespace-matching-start") << QString("matching") << OwnerState::MATCHING_LIVE;
+        QTest::newRow("same-namespace-mismatched-start") << QString("reused") << OwnerState::CONFIRMED_REUSED;
+        QTest::newRow("unreadable-owner-namespace") << QString("owner-unreadable") << OwnerState::UNKNOWN;
+        QTest::newRow("unreadable-reader-namespace") << QString("reader-unreadable") << OwnerState::UNKNOWN;
+        QTest::newRow("unreadable-boot-id") << QString("boot-unreadable") << OwnerState::UNKNOWN;
+        QTest::newRow("different-recording-boot") << QString("other-boot") << OwnerState::UNKNOWN;
+        QTest::newRow("different-recording-namespace") << QString("other-recording-ns") << OwnerState::UNKNOWN;
+        QTest::newRow("legacy-record-no-clock-base") << QString("legacy") << OwnerState::UNKNOWN;
+        QTest::newRow("legacy-record-dead-pid-unreadable-clock") << QString("legacy-dead") << OwnerState::CONFIRMED_DEAD;
+        QTest::newRow("unreadable-stat-is-not-death") << QString("stat-unreadable") << OwnerState::UNKNOWN;
+        QTest::newRow("namespace-changes-during-read") << QString("changing") << OwnerState::UNKNOWN;
+        QTest::newRow("malformed-stat") << QString("malformed") << OwnerState::UNKNOWN;
+        QTest::newRow("zombie-unreadable-clock") << QString("zombie") << OwnerState::CONFIRMED_DEAD;
+        QTest::newRow("legacy-zombie-unreadable-clock") << QString("legacy-zombie") << OwnerState::CONFIRMED_DEAD;
+        QTest::newRow("malformed-recorded-start") << QString("bad-start") << OwnerState::UNKNOWN;
+        QTest::newRow("overflow-recorded-start") << QString("overflow-start") << OwnerState::UNKNOWN;
+        QTest::newRow("padded-recorded-start") << QString("padded-start") << OwnerState::UNKNOWN;
+        QTest::newRow("signed-recorded-start") << QString("signed-start") << OwnerState::UNKNOWN;
+        QTest::newRow("whitespace-recorded-start") << QString("whitespace-start") << OwnerState::UNKNOWN;
+        QTest::newRow("signed-current-start") << QString("signed-current") << OwnerState::UNKNOWN;
+        QTest::newRow("overflow-current-start") << QString("overflow-current") << OwnerState::UNKNOWN;
+        QTest::newRow("max-valid-recorded-start") << QString("max-start") << OwnerState::CONFIRMED_REUSED;
+    }
+    void linuxClockBase() {
+        QFETCH(QString, kind);
+        QFETCH(OwnerState, state);
+        const QByteArray boot("12345678-1234-1234-1234-123456789abc");
+        const QString ours("/proc/thread-self/ns/time"), theirs("/proc/456/ns/time");
+        const QString stat("/proc/456/stat"), bootPath("/proc/sys/kernel/random/boot_id");
+        QHash<QString, QByteArray> proc{{ours, "time:[100]"}, {theirs, "time:[100]"}, {bootPath, boot + '\n'}};
+        // Field 22, after a comm containing spaces and parentheses.
+        proc[stat] = "456 (live (gui)) S";
+        for (int field = 4; field < 22; ++field) proc[stat] += " 0";
+        proc[stat] += " 100\n";
+        bool statRead = false, changesEnabled = false;
+        LinuxOwner::Reader reader = [&](const QString &path) -> LinuxOwner::ReadResult {
+            if (changesEnabled && kind == "legacy-dead" && path == stat) return {{}, true};
+            if (changesEnabled && kind == "changing" && statRead && path == ours) return {"time:[200]"};
+            if (path == stat) statRead = true;
+            return {proc.value(path)};
+        };
+        auto owner = LinuxOwner::sample(456, reader).identity;
+        QCOMPARE(owner.start, QString("100"));
+        QCOMPARE(owner.clockBase, QString::fromLatin1(boot + "/time:[100]"));
+        statRead = false;
+        changesEnabled = true;
+        if (kind != "matching" && kind != "different-matching") owner.start = "99";
+        if (kind.startsWith("different")) proc[theirs] = "time:[200]";
+        if (kind == "owner-unreadable") proc.remove(theirs);
+        if (kind == "reader-unreadable") proc.remove(ours);
+        if (kind == "boot-unreadable") proc.remove(bootPath);
+        if (kind == "other-boot") owner.clockBase.replace("12345678-", "87654321-");
+        if (kind == "other-recording-ns") owner.clockBase.replace("[100]", "[200]");
+        if (kind.startsWith("legacy")) owner.clockBase.clear();
+        if (kind == "legacy-dead") {
+            proc.remove(ours); proc.remove(theirs); proc.remove(bootPath);
+        }
+        if (kind == "stat-unreadable") proc.remove(stat);
+        if (kind == "malformed") proc[stat].chop(1);
+        if (kind.contains("zombie")) {
+            proc[stat].replace(") S", ") Z");
+            proc.remove(ours); proc.remove(theirs); proc.remove(bootPath);
+        }
+        if (kind == "bad-start") owner.start = "not-a-number";
+        if (kind == "overflow-start") owner.start = "18446744073709551616";
+        if (kind == "padded-start") owner.start = "0100";
+        if (kind == "signed-start") owner.start = "+100";
+        if (kind == "whitespace-start") owner.start = "100\n";
+        if (kind == "max-start") owner.start = "18446744073709551615";
+        if (kind == "signed-current") proc[stat].replace(" 100\n", " +100\n");
+        if (kind == "overflow-current") proc[stat].replace(" 100\n", " 18446744073709551616\n");
+        // Failed clock-base observation must retain owner metadata so that the
+        // record cannot fall through to legacy authenticated Exit recovery.
+        if ((kind.endsWith("unreadable") && kind != "stat-unreadable") || kind.startsWith("different")) {
+            const auto sampled = LinuxOwner::sample(456, reader).identity;
+            QCOMPARE(sampled.pid, qint64(456));
+            QCOMPARE(sampled.start, QString("100"));
+            QVERIFY(sampled.clockBase.isEmpty());
+        }
+        QTemporaryDir root;
+        const auto path = root.filePath(".core-launch.json");
+        auto value = record(root.path());
+        value.owner = owner;
+        QVERIFY(write(path, value));
+        Record loaded;
+        QVERIFY(read(path, loaded));
+        QCOMPARE(loaded.owner.pid, owner.pid);
+        QCOMPARE(loaded.owner.start, owner.start);
+        QCOMPARE(loaded.owner.clockBase, owner.clockBase);
+        QFile file(path);
+        QVERIFY(file.open(QIODevice::ReadOnly));
+        const auto original = file.readAll(); file.close();
+        int requests = 0, listenerChecks = 0;
+        Operations operations;
+        OwnerState observed = OwnerState::UNKNOWN;
+        operations.ownerState = [&](const Identity &expected) {
+            statRead = false;
+            observed = LinuxOwner::observeOwner(expected, reader);
+            return observed;
+        };
+        operations.observeProcess = [](qint64) { return Identity{}; };
+        operations.exit = [&](const Record &) { ++requests; };
+        operations.listener = [&](int) { ++listenerChecks; return 0; };
+        std::atomic_bool cancelled{false};
+        QString refusal;
+        const bool stale = state == OwnerState::CONFIRMED_REUSED || state == OwnerState::CONFIRMED_DEAD;
+        const bool ready = wait(path, cancelled, operations, 40, &refusal);
+        QCOMPARE(requests, stale ? 1 : 0);
+        QCOMPARE(listenerChecks, stale ? 1 : 0);
+        QCOMPARE(observed, state);
+        QCOMPARE(ready, stale);
+        QCOMPARE(QFile::exists(path), !stale);
+        if (!stale) {
+            QVERIFY(!refusal.isEmpty());
+            QVERIFY(file.open(QIODevice::ReadOnly));
+            QCOMPARE(file.readAll(), original);
+        }
+    }
+    void linuxUnreapedZombie() {
+#ifdef Q_OS_LINUX
+        int channel[2];
+        QVERIFY(::pipe(channel) == 0);
+        const auto pid = ::fork();
+        if (pid == 0) {
+            ::close(channel[1]);
+            char byte;
+            while (::read(channel[0], &byte, 1) < 0 && errno == EINTR) {}
+            ::_exit(0);
+        }
+        ::close(channel[0]);
+        if (pid < 0) {
+            ::close(channel[1]);
+            QFAIL("fork failed");
+        }
+        // Always release and reap our child, including on an assertion failure.
+        struct Child {
+            pid_t pid;
+            int release;
+            ~Child() {
+                if (release >= 0) ::close(release);
+                while (::waitpid(pid, nullptr, 0) < 0 && errno == EINTR) {}
+            }
+        } child{pid, channel[1]};
+        auto owner = observe(pid);
+        QCOMPARE(owner.pid, qint64(pid));
+        ::close(child.release);
+        child.release = -1;
+        siginfo_t info{};
+        QElapsedTimer timer;
+        timer.start();
+        do {
+            QVERIFY(::waitid(P_PID, id_t(pid), &info, WEXITED | WNOWAIT | WNOHANG) == 0);
+            if (info.si_pid == pid) break;
+            QTest::qWait(5);
+        } while (timer.elapsed() < 3000);
+        QCOMPARE(info.si_pid, pid); // confirmed exited, deliberately not reaped
+        QCOMPARE(observeOwner(owner), OwnerState::CONFIRMED_DEAD);
+        owner.clockBase.clear(); // legacy records also recover before reaping
+        QCOMPARE(observeOwner(owner), OwnerState::CONFIRMED_DEAD);
+#else
+        QSKIP("Controlled unreaped-child regression requires Linux procfs");
+#endif
+    }
     void staleActionsHaveNoSignalApi() {
         QFile source(QString::fromUtf8(NKR_STALE_SOURCE));
         QVERIFY(source.open(QIODevice::ReadOnly));
@@ -198,7 +372,11 @@ private slots:
         value.owner.executable.clear();
         QCOMPARE(observeOwner(value.owner), OwnerState::MATCHING_LIVE);
         auto reused = value.owner;
+#ifdef Q_OS_LINUX
+        reused.start = QString::number(reused.start.toULongLong() + 1);
+#else
         reused.start += "-reused";
+#endif
         QCOMPARE(observeOwner(reused), OwnerState::CONFIRMED_REUSED);
         QVERIFY(write(path, value));
         QFile file(path);
