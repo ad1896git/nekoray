@@ -179,9 +179,24 @@ jobs:
           cp -r public_res/* windows64
           rm -rf public_res *.pdb
           ####
+          install -m 0755 ../libs/launcher linux64/launcher
           bash ../libs/package_zip.sh linux "$version_standalone-linux64.zip"
           ####
           bash ../libs/package_zip.sh windows "$version_standalone-windows64.zip"
+      - name: Verify Linux ZIP launcher
+        run: |
+          source libs/env_deploy.sh
+          archive="deployment/$version_standalone-linux64.zip"
+          unzip -Z -l "$archive" nekoray/launcher
+          python3 - "$archive" <<'PY'
+          import stat
+          import sys
+          import zipfile
+          with zipfile.ZipFile(sys.argv[1]) as archive:
+              mode = archive.getinfo('nekoray/launcher').external_attr >> 16
+              assert stat.S_ISREG(mode) and stat.S_IMODE(mode) == 0o755, oct(mode)
+          PY
+          unzip -p "$archive" nekoray/launcher | sh -n
       - name: Pack Debian
         run: |
           source libs/env_deploy.sh
