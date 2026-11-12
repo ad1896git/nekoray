@@ -1,22 +1,73 @@
 #!/bin/sh
 set -e
 
-# Follow launcher symlinks, resolving relative targets beside each link.
 launcher=$0
+# Shells differ on whether `sh launcher` searches the current directory first.
+# Refuse that ambiguous form; an explicit path always identifies the script.
+case "$launcher" in
+    */*) ;;
+    *)
+        if [ -f "./$launcher" ]; then
+            printf '%s\n' 'launcher: ambiguous script name; invoke ./launcher or an absolute path.' >&2
+            exit 1
+        fi
+        search=${PATH-}
+        launcher=
+        while :; do
+            entry=${search%%:*}
+            if [ -f "${entry:-.}/$0" ] && [ -r "${entry:-.}/$0" ]; then
+                launcher=${entry:-.}/$0
+                break
+            fi
+            case "$search" in
+                *:*) search=${search#*:} ;;
+                *) break ;;
+            esac
+        done
+        if [ -z "$launcher" ]; then
+            printf '%s\n' 'launcher: cannot locate script; invoke it with an explicit path.' >&2
+            exit 1
+        fi
+        ;;
+esac
 case "$launcher" in
     /*) ;;
     *) launcher=$PWD/$launcher ;;
 esac
+# A sentinel preserves path newlines that command substitution would strip.
+# Follow launcher symlinks, resolving relative targets beside each link.
 while [ -L "$launcher" ]; do
-    dir=$(CDPATH= cd -P "$(dirname "$launcher")" && pwd)
-    target=$(readlink "$launcher")
+    dir=$(CDPATH= cd -P "${launcher%/*}/." && pwd -P && printf '.')
+    dir=${dir%?.}
+    target=$(readlink -n "$launcher" && printf '.')
+    target=${target%.}
     case "$target" in
         /*) launcher=$target ;;
         *) launcher=$dir/$target ;;
     esac
 done
-dir=$(CDPATH= cd -P "$(dirname "$launcher")" && pwd)
+dir=$(CDPATH= cd -P "${launcher%/*}/." && pwd -P && printf '.')
+dir=${dir%?.}
+case "$dir" in
+    *:*|*'
+'*)
+        printf '%s\n' 'launcher: install directory contains a colon or newline; move or rename it before launching.' >&2
+        exit 1
+        ;;
+esac
 
-export LD_LIBRARY_PATH="$dir/usr/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+library_path=$dir/usr/lib
+remaining=${LD_LIBRARY_PATH-}
+while [ -n "$remaining" ]; do
+    entry=${remaining%%:*}
+    if [ -n "$entry" ]; then
+        library_path=$library_path:$entry
+    fi
+    case "$remaining" in
+        *:*) remaining=${remaining#*:} ;;
+        *) break ;;
+    esac
+done
+export LD_LIBRARY_PATH="$library_path"
 export QT_PLUGIN_PATH="$dir/usr/plugins"
 exec "$dir/nekobox" "$@"
