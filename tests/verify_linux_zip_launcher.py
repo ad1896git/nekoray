@@ -13,7 +13,7 @@ import zipfile
 
 STUB = b'''#!/bin/sh
 set -eu
-printf '%s\\0' "$0" "$PWD" "$LD_LIBRARY_PATH" "$$" "$@" > "$SMOKE_RECORD"
+printf '%s\\0' "$0" "$PWD" "$LD_LIBRARY_PATH" "${QT_PLUGIN_PATH-}" "$$" "$@" > "$SMOKE_RECORD"
 exit 0
 '''
 ARGS = ['-appdata', 'argument with spaces', '', 'literal * ? $HOME \' "', 'line\nbreak']
@@ -34,11 +34,12 @@ def verify(archive_path):
         launcher_bytes = archive.read(entries[0])
 
     # Extract only the launcher, preserving its archived mode. The child and
-    # empty library directory are fixtures, so no packaged ELF/GUI code runs.
+    # empty library/plugin directories are fixtures, so no packaged ELF/GUI code runs.
     with tempfile.TemporaryDirectory(prefix='launcher-smoke-', dir=archive_path.parent) as tmp:
         root = Path(tmp).resolve()
         bundle = root / 'package with spaces' / 'nekoray'
         (bundle / 'usr/lib').mkdir(parents=True)
+        (bundle / 'usr/plugins').mkdir()
         launcher = bundle / 'launcher'
         launcher.write_bytes(launcher_bytes)
         launcher.chmod(stat.S_IMODE(mode))
@@ -53,6 +54,7 @@ def verify(archive_path):
         (outside / 'absolute link').symlink_to(launcher)
         record = root / 'child-record'
         library = str(bundle / 'usr/lib')
+        plugins = str(bundle / 'usr/plugins')
         invocations = [
             ('direct', './launcher', bundle),
             ('other-cwd', str(launcher), outside),
@@ -73,6 +75,7 @@ def verify(archive_path):
                 env = {'PATH': os.defpath, 'SMOKE_RECORD': str(record)}
                 if inherited is not None:
                     env['LD_LIBRARY_PATH'] = inherited
+                    env['QT_PLUGIN_PATH'] = inherited
                 process = subprocess.Popen([command, *ARGS], cwd=cwd, env=env,
                                            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                            start_new_session=True)
@@ -97,14 +100,18 @@ def verify(archive_path):
                         f'{label}: exit {process.returncode}; stdout={stdout!r}; stderr={stderr!r}')
                 require(record.is_file(), f'{label}: launcher did not execute the stub')
                 fields = record.read_bytes().split(b'\0')
-                expected = [str(child), str(cwd), ':'.join(expected_library),
+                # Unlike LD_LIBRARY_PATH, QT_PLUGIN_PATH overrides inherited entries.
+                expected = [str(child), str(cwd), ':'.join(expected_library), plugins,
                             str(process.pid), *ARGS, '']
                 require(fields == [os.fsencode(value) for value in expected],
-                        f'{label}: path/cwd/library/PID/argv mismatch: {fields!r}')
+                        f'{label}: path/cwd/library/plugin/PID/argv mismatch: {fields!r}')
                 elements = re.split(b'[:;]', fields[2])
                 require(elements[0] == os.fsencode(library) and all(elements),
                         f'{label}: invalid LD_LIBRARY_PATH: {fields[2]!r}')
-                print(f'PASS {label}: stub exec, path, cwd, library path and argv', flush=True)
+                elements = re.split(b'[:;]', fields[3])
+                require(elements == [os.fsencode(plugins)] and all(elements),
+                        f'{label}: invalid QT_PLUGIN_PATH: {fields[3]!r}')
+                print(f'PASS {label}: stub exec, path, cwd, library/plugin paths and argv', flush=True)
     print(f'PASS Linux ZIP launcher runtime smoke ({len(invocations) * len(environments)} cases)')
 
 
