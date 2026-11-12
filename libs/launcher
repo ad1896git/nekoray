@@ -1,0 +1,22 @@
+#!/bin/sh
+set -e
+
+# Follow launcher symlinks, resolving relative targets beside each link.
+launcher=$0
+case "$launcher" in
+    /*) ;;
+    *) launcher=$PWD/$launcher ;;
+esac
+while [ -L "$launcher" ]; do
+    dir=$(CDPATH= cd -P "$(dirname "$launcher")" && pwd)
+    target=$(readlink "$launcher")
+    case "$target" in
+        /*) launcher=$target ;;
+        *) launcher=$dir/$target ;;
+    esac
+done
+dir=$(CDPATH= cd -P "$(dirname "$launcher")" && pwd)
+
+export LD_LIBRARY_PATH="$dir/usr/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+export QT_PLUGIN_PATH="$dir/usr/plugins"
+exec "$dir/nekobox" "$@"

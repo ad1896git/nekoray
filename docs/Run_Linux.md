@@ -65,7 +65,7 @@ cd /
 
 目前 Release 便携包解压后，有两种使用方法：
 
-1. System: 若要使用系统的 Qt5 运行库，请执行 `./nekoray`
+1. System: 若要使用系统的 Qt5 运行库，请执行 `./nekobox`
 2. Bundle: 若要使用预编译的 Qt 运行库，请执行 `./launcher`
 
 ### Bundle
@@ -76,8 +76,8 @@ cd /
 
 launcher 参数
 
-* `./launcher -- -appdata` ( `--` 后的参数传递给主程序 )
-* `-debug` Debug mode
+* `./launcher -appdata` ( 所有参数直接传递给主程序 )
+* `./launcher -debug` Debug mode
 
 Ubuntu 22.04: 先 `cd /`，然后 `/usr/bin/sudo /usr/bin/env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin /usr/bin/apt-get install libxcb-xinerama0`
 
@@ -85,4 +85,4 @@ Ubuntu 22.04: 先 `cd /`，然后 `/usr/bin/sudo /usr/bin/env -i PATH=/usr/sbin:
 
 要求：已安装主流的发行版和 xcb 桌面环境，已安装 Qt5.12 ~ Qt5.15 环境。
 
-运行： `./nekoray` 或 部分系统可双击打开。如果无法运行，建议使用 Bundle 版。
+运行： `./nekobox` 或 部分系统可双击打开。如果无法运行，建议使用 Bundle 版。
