@@ -4,6 +4,7 @@ import argparse
 import os
 from pathlib import Path
 import re
+import signal
 import stat
 import subprocess
 import tempfile
@@ -46,6 +47,8 @@ def verify(archive_path):
         child.chmod(0o755)
         outside = root / 'different cwd'
         outside.mkdir()
+        deeper = outside / 'deeper caller'
+        deeper.mkdir()
         (outside / 'relative link').symlink_to(os.path.relpath(launcher, outside))
         (outside / 'absolute link').symlink_to(launcher)
         record = root / 'child-record'
@@ -55,6 +58,7 @@ def verify(archive_path):
             ('other-cwd', str(launcher), outside),
             ('relative-symlink', './relative link', outside),
             ('absolute-symlink', './absolute link', outside),
+            ('relative-symlink-other-cwd', str(outside / 'relative link'), deeper),
         ]
         environments = [
             ('unset', None, [library]),
@@ -69,27 +73,39 @@ def verify(archive_path):
                 env = {'PATH': os.defpath, 'SMOKE_RECORD': str(record)}
                 if inherited is not None:
                     env['LD_LIBRARY_PATH'] = inherited
-                with subprocess.Popen([command, *ARGS], cwd=cwd, env=env,
-                                      stdout=subprocess.PIPE, stderr=subprocess.PIPE) as process:
+                process = subprocess.Popen([command, *ARGS], cwd=cwd, env=env,
+                                           stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                           start_new_session=True)
+                try:
+                    stdout, stderr = process.communicate(timeout=5)
+                except subprocess.TimeoutExpired:
+                    # Descendants can hold the pipes after the launcher exits.
+                    # Kill the whole session's group, then bound draining/reaping
+                    # too, even if a descendant has escaped that group.
                     try:
-                        stdout, stderr = process.communicate(timeout=5)
+                        os.killpg(process.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                    try:
+                        process.communicate(timeout=1)
                     except subprocess.TimeoutExpired:
-                        process.kill()
-                        process.communicate()
-                        raise RuntimeError(f'{label}: launcher timed out') from None
-                    require(process.returncode == 0,
-                            f'{label}: exit {process.returncode}; stdout={stdout!r}; stderr={stderr!r}')
-                    require(record.is_file(), f'{label}: launcher did not execute the stub')
-                    fields = record.read_bytes().split(b'\0')
-                    expected = [str(child), str(cwd), ':'.join(expected_library),
-                                str(process.pid), *ARGS, '']
-                    require(fields == [os.fsencode(value) for value in expected],
-                            f'{label}: path/cwd/library/PID/argv mismatch: {fields!r}')
-                    elements = re.split(b'[:;]', fields[2])
-                    require(elements[0] == os.fsencode(library) and all(elements),
-                            f'{label}: invalid LD_LIBRARY_PATH: {fields[2]!r}')
+                        process.stdout.close()
+                        process.stderr.close()
+                        process.wait(timeout=1)
+                    raise RuntimeError(f'{label}: launcher timed out') from None
+                require(process.returncode == 0,
+                        f'{label}: exit {process.returncode}; stdout={stdout!r}; stderr={stderr!r}')
+                require(record.is_file(), f'{label}: launcher did not execute the stub')
+                fields = record.read_bytes().split(b'\0')
+                expected = [str(child), str(cwd), ':'.join(expected_library),
+                            str(process.pid), *ARGS, '']
+                require(fields == [os.fsencode(value) for value in expected],
+                        f'{label}: path/cwd/library/PID/argv mismatch: {fields!r}')
+                elements = re.split(b'[:;]', fields[2])
+                require(elements[0] == os.fsencode(library) and all(elements),
+                        f'{label}: invalid LD_LIBRARY_PATH: {fields[2]!r}')
                 print(f'PASS {label}: stub exec, path, cwd, library path and argv', flush=True)
-    print('PASS Linux ZIP launcher runtime smoke (12 cases)')
+    print(f'PASS Linux ZIP launcher runtime smoke ({len(invocations) * len(environments)} cases)')
 
 
 if __name__ == '__main__':
