@@ -184,6 +184,7 @@ jobs:
           ####
           bash ../libs/package_zip.sh windows "$version_standalone-windows64.zip"
       - name: Verify Linux ZIP launcher
+        timeout-minutes: 2
         run: |
           source libs/env_deploy.sh
           archive="deployment/$version_standalone-linux64.zip"
@@ -197,6 +198,7 @@ jobs:
               assert stat.S_ISREG(mode) and stat.S_IMODE(mode) == 0o755, oct(mode)
           PY
           unzip -p "$archive" nekoray/launcher | sh -n
+          python3 tests/verify_linux_zip_launcher.py "$archive"
       - name: Pack Debian
         run: |
           source libs/env_deploy.sh
