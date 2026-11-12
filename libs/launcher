@@ -48,23 +48,31 @@ while [ -L "$launcher" ]; do
 done
 dir=$(CDPATH= cd -P "${launcher%/*}/." && pwd -P && printf '.')
 dir=${dir%?.}
+# Only absolute, literal directories can form one loader/plugin search entry.
 case "$dir" in
-    *:*|*'
-'*)
-        printf '%s\n' 'launcher: install directory contains a colon or newline; move or rename it before launching.' >&2
+    *[:\;\$[:cntrl:]]*)
+        printf '%s\n' 'launcher: install directory contains a colon, semicolon, dollar sign or control character; move or rename the folder before launching.' >&2
+        exit 1
+        ;;
+    /*) ;;
+    *)
+        printf '%s\n' 'launcher: install directory must be absolute; move or rename the folder before launching.' >&2
         exit 1
         ;;
 esac
 
 library_path=$dir/usr/lib
 remaining=${LD_LIBRARY_PATH-}
+# glibc accepts both separators and expands dollar tokens. Keep literal,
+# absolute inherited entries only; never introduce cwd or relative lookup.
 while [ -n "$remaining" ]; do
-    entry=${remaining%%:*}
-    if [ -n "$entry" ]; then
-        library_path=$library_path:$entry
-    fi
+    entry=${remaining%%[:;]*}
+    case "$entry" in
+        *\$*) ;;
+        /*) library_path=$library_path:$entry ;;
+    esac
     case "$remaining" in
-        *:*) remaining=${remaining#*:} ;;
+        *[:\;]*) remaining=${remaining#*[:;]} ;;
         *) break ;;
     esac
 done
