@@ -13,6 +13,10 @@ on:
       artifact-pack:
         description: "artifact-pack: If want ignore"
         required: false
+      verify-only:
+        description: "Build and verify packages without preparing or publishing a release"
+        type: boolean
+        default: false
 jobs:
   build-go:
     strategy:
@@ -167,10 +171,13 @@ jobs:
       - name: Check required notices fail closed
         timeout-minutes: 10
         run: python3 tests/test_package_licenses.py
-      - name: Pack
+      - name: Prepare release uploader
+        if: github.event.inputs.verify-only != 'true' && github.event.inputs.publish != 'y'
         run: |
           curl -Lo - https://github.com/tcnksm/ghr/releases/download/v0.13.0/ghr_v0.13.0_linux_amd64.tar.gz | tar xzv
           mv ghr*linux_amd64/ghr .
+      - name: Pack
+        run: |
           ####
           source libs/env_deploy.sh
           find . -name artifacts.tgz | xargs -n1 tar xvzf
@@ -184,6 +191,7 @@ jobs:
           ####
           bash ../libs/package_zip.sh windows "$version_standalone-windows64.zip"
       - name: Verify Linux ZIP launcher
+        timeout-minutes: 2
         run: |
           source libs/env_deploy.sh
           archive="deployment/$version_standalone-linux64.zip"
@@ -197,6 +205,7 @@ jobs:
               assert stat.S_ISREG(mode) and stat.S_IMODE(mode) == 0o755, oct(mode)
           PY
           unzip -p "$archive" nekoray/launcher | sh -n
+          python3 tests/verify_linux_zip_launcher.py "$archive"
       - name: Pack Debian
         run: |
           source libs/env_deploy.sh
@@ -258,7 +267,7 @@ jobs:
           name: Deployment-${{ github.sha }}
           path: deployment
       - name: Release
-        if: github.event.inputs.publish != 'y'
+        if: github.event.inputs.verify-only != 'true' && github.event.inputs.publish != 'y'
         run: |
           ./ghr -delete -t "${{ github.token }}" -n "${{ github.event.inputs.tag }}" "${{ github.event.inputs.tag }}" deployment
 
